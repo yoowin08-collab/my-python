@@ -4,17 +4,8 @@ import logging
 import html
 import os
 import psycopg2
-from psycopg2 import pool
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes
-)
-from telegram.error import RetryAfter, BadRequest
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # Logging Config
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -24,51 +15,34 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN", "8847802267:AAFuOudnLo1CnSpu3YcLSZZ56gMM9aLVloA")
 BOT_ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 
-# --- DATABASE CONNECTION POOL ---
-DATABASE_URL = os.getenv("DATABASE_URL")
-db_pool = None
+# --- DATABASE CONNECTION (PostgreSQL Support for Railway) ---
+RAW_DATABASE_URL = os.getenv("DATABASE_URL")
 
-def init_db_pool():
-    global db_pool
-    try:
-        url = DATABASE_URL
-        if url and url.endswith("/railway"):
-            url = url[:-8] + "/postgres"
+# Internal Postgres URL / Railway URL fix
+DATABASE_URL = RAW_DATABASE_URL.replace("/railway", "/postgres") if RAW_DATABASE_URL else None
 
-        if url:
-            db_pool = pool.SimpleConnectionPool(1, 20, url, sslmode="require")
-        else:
-            db_pool = pool.SimpleConnectionPool(
-                1, 20,
-                dbname=os.getenv("DB_NAME", "football_bot"),
-                user=os.getenv("DB_USER", "postgres"),
-                password=os.getenv("DB_PASSWORD", "postgres"),
-                host=os.getenv("DB_HOST", "localhost"),
-                port=os.getenv("DB_PORT", "5432")
-            )
-        logger.info("Database Connection Pool initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Connection Pool: {e}")
+def get_db_connection():
+    if DATABASE_URL:
+        # Railway Cloud Environment
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+    else:
+        # Local Environment Fallback
+        conn = psycopg2.connect(
+            dbname=os.getenv("DB_NAME", "football_bot"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", "postgres"),
+            host=os.getenv("DB_HOST", "localhost"),
+            port=os.getenv("DB_PORT", "5432")
+        )
+    return conn
 
-class get_db:
-    """Context Manager for Database Connections using Connection Pool"""
-    def __enter__(self):
-        self.conn = db_pool.getconn()
-        return self.conn
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.conn:
-            if exc_type:
-                self.conn.rollback()
-            else:
-                self.conn.commit()
-            db_pool.putconn(self.conn)
-
-# Initialize Database Tables
+# Database Tables Initialization
 def init_db():
-    init_db_pool()
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
+
+        # Table for User Coins & Names
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -76,12 +50,16 @@ def init_db():
             coins INT DEFAULT 0
         );
         """)
+
+        # Table for Groups
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS groups (
             chat_id BIGINT PRIMARY KEY,
             title TEXT
         );
         """)
+
+        # Table for Group-User Memberships
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS group_users (
             chat_id BIGINT,
@@ -89,6 +67,8 @@ def init_db():
             PRIMARY KEY (chat_id, user_id)
         );
         """)
+
+        # Table for Settings (Global Threshold, Media)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -96,81 +76,126 @@ def init_db():
             type TEXT
         );
         """)
-        cursor.close()
 
-# Start Initial DB Setup
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+
+# Initialize DB Tables
 init_db()
 
 # --- DATABASE HELPER FUNCTIONS ---
 
 def db_add_or_update_user(user_id, first_name):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO users (user_id, first_name) VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name
         """, (user_id, first_name))
+        conn.commit()
         cursor.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in db_add_or_update_user: {e}")
 
 def db_add_group(chat_id, title):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO groups (chat_id, title) VALUES (%s, %s)
             ON CONFLICT (chat_id) DO UPDATE SET title = EXCLUDED.title
         """, (chat_id, title))
+        conn.commit()
         cursor.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in db_add_group: {e}")
 
 def db_add_group_user(chat_id, user_id):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO group_users (chat_id, user_id) VALUES (%s, %s)
             ON CONFLICT DO NOTHING
         """, (chat_id, user_id))
+        conn.commit()
         cursor.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in db_add_group_user: {e}")
 
 def db_add_coins(user_id, reward):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE users SET coins = coins + %s WHERE user_id = %s
         """, (reward, user_id))
+        conn.commit()
         cursor.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in db_add_coins: {e}")
 
 def db_get_user_info(user_id):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT first_name, coins FROM users WHERE user_id = %s", (user_id,))
         res = cursor.fetchone()
         cursor.close()
+        conn.close()
         return res
+    except Exception as e:
+        logger.error(f"Error in db_get_user_info: {e}")
+        return None
 
 def db_get_setting(key, default=None):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT value, type FROM settings WHERE key = %s", (key,))
         res = cursor.fetchone()
         cursor.close()
+        conn.close()
         if res:
             return res[0], res[1]
         return default, None
+    except Exception as e:
+        logger.error(f"Error in db_get_setting: {e}")
+        return default, None
 
 def db_set_setting(key, value, media_type=None):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO settings (key, value, type) VALUES (%s, %s, %s)
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type
         """, (key, str(value), media_type))
+        conn.commit()
         cursor.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in db_set_setting: {e}")
 
 def db_delete_setting(key):
-    with get_db() as conn:
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM settings WHERE key = %s", (key,))
+        conn.commit()
         cursor.close()
-
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in db_delete_setting: {e}")
 
 # --- TEAMS DATA ---
 TEAMS = {
@@ -209,29 +234,42 @@ TEAMS = {
     "PSG": {"emoji": "🔵🔴", "stadium": "Parc des Princes"}
 }
 
-# --- GLOBAL RUNTIME MEMORY & CACHE ---
+# --- GLOBAL RUNTIME MEMORY ---
 group_counters = {}   # {chat_id: int}
 active_games = {}     # {chat_id: game_data}
 last_result_data = {} # {chat_id: {"text": str, "markup": InlineKeyboardMarkup}}
-CACHE_SETTINGS = {"threshold": 6}
 
-def load_cached_threshold():
+def get_global_threshold():
     val, _ = db_get_setting("global_threshold")
-    if val:
-        CACHE_SETTINGS["threshold"] = int(val)
+    return int(val) if val else 6
 
-load_cached_threshold()
+def get_media_setting(key):
+    val, media_type = db_get_setting(key)
+    return {"type": media_type, "file_id": val} if val else {"type": None, "file_id": None}
 
 def get_mention(user_id, name):
     safe_name = html.escape(str(name))
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
-# Admin Command: /c <number> (Bot Admin Only)
+# Admin Command: /c <number>
 async def set_counter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     user = update.effective_user
 
-    # Strictly Bot Admin Only
-    if user.id != BOT_ADMIN_ID:
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ ဒီ Command ကို Group ထဲတွင်သာ သုံးပါ။")
+        return
+
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user.id)
+        is_group_admin = chat_member.status in ["creator", "administrator"]
+    except Exception:
+        is_group_admin = False
+
+    is_bot_admin = (user.id == BOT_ADMIN_ID)
+
+    if not (is_group_admin or is_bot_admin):
+        await update.message.reply_text("❌ ဒီ Command ကို Admin များသာ သုံးနိုင်ပါသည်။")
         return
 
     if not context.args or not context.args[0].isdigit():
@@ -239,15 +277,13 @@ async def set_counter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     new_threshold = int(context.args[0])
-    await asyncio.to_thread(db_set_setting, "global_threshold", new_threshold)
-    CACHE_SETTINGS["threshold"] = new_threshold
-
+    db_set_setting("global_threshold", new_threshold)
     await update.message.reply_text(f"🌐 <b>Global Setting Updated:</b>\nGroup အားလုံးအတွက် စာကြောင်း <b>{new_threshold}</b> ကြောင်း ပြည့်တိုင်း ဂိမ်းစတင်ပါမည်။", parse_mode="HTML")
 
 # Start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await asyncio.to_thread(db_add_or_update_user, user.id, user.first_name)
+    db_add_or_update_user(user.id, user.first_name)
     bot_info = await context.bot.get_me()
     
     first_name_safe = html.escape(user.first_name) if user.first_name else "User"
@@ -258,7 +294,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚽ <b>{bot_name_safe}</b> မှ ကြိုဆိုပါတယ်။\n"
         f"ဒီ Bot ဟာ Group ထဲမှာ ဘောလုံးပွဲစဉ်များကို ခန့်မှန်းပြီး 🩸 <b>Kachin Coin</b> များ စုဆောင်းနိုင်မည့် Game Bot ဖြစ်ပါတယ်။\n\n"
         f"📌 <b>အဓိက Commands များ -</b>\n"
-        f"• `/kc` - မိမိ၏ Coin ပမာဏနှင့် Rank ကို စစ်ဆေးရန်\n\n"
+        f"• `/kc` - မိမိ၏ Coin ပမာဏနှင့် Rank ကို စစ်ဆေးရန်\n"
+        f"• `/c &lt;ပမာဏ&gt;` - Group Admin များ စာကြောင်းအရေအတွက် သတ်မှတ်ရန်\n\n"
         f"👇 အောက်ပါ Button ကို နှိပ်ပြီး သင့် Group သို့ Bot ကို ထည့်သွင်းနိုင်ပါသည်-"
     )
     
@@ -295,8 +332,7 @@ async def media_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id != BOT_ADMIN_ID:
         return
 
-    msg_text = update.message.caption or update.message.text or ""
-    cmd = msg_text.strip().split()
+    cmd = update.message.text.strip().split()
     if not cmd:
         return
 
@@ -308,22 +344,22 @@ async def media_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if sub_cmd == "set":
-        # Check replied message or current message
-        target_msg = update.message.reply_to_message or update.message
+        reply = update.message.reply_to_message
+        if not reply:
+            await update.message.reply_text("⚠️ ပုံ သို့မဟုတ် ဗီဒီယိုကို Reply ထောက်ပြီး မိန့်ခွန်းပေးပါ။")
+            return
 
-        if target_msg.photo:
-            file_id = target_msg.photo[-1].file_id
-            await asyncio.to_thread(db_set_setting, setting_key, file_id, "photo")
+        if reply.photo:
+            db_set_setting(setting_key, reply.photo[-1].file_id, "photo")
             await update.message.reply_text("✅ Photo ကို အောင်မြင်စွာ သတ်မှတ်လိုက်ပါပြီ။")
-        elif target_msg.video:
-            file_id = target_msg.video.file_id
-            await asyncio.to_thread(db_set_setting, setting_key, file_id, "video")
+        elif reply.video:
+            db_set_setting(setting_key, reply.video.file_id, "video")
             await update.message.reply_text("✅ Video ကို အောင်မြင်စွာ သတ်မှတ်လိုက်ပါပြီ။")
         else:
-            await update.message.reply_text("⚠️ ပုံ သို့မဟုတ် ဗီဒီယိုကို Reply ထောက်ပြီး မိန့်ခွန်းပေးပါ သို့မဟုတ် ပုံနှင့်အတူ Caption တွင် /g set ဟု ရေးပါ။")
+            await update.message.reply_text("❌ Photo သို့မဟုတ် Video မဟုတ်ပါ။")
 
     elif sub_cmd == "del":
-        await asyncio.to_thread(db_delete_setting, setting_key)
+        db_delete_setting(setting_key)
         await update.message.reply_text("🗑️ Media ကို ဖျက်လိုက်ပါပြီ။")
 
 # Stats Command
@@ -331,17 +367,14 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != BOT_ADMIN_ID:
         return
 
-    def get_stats():
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users")
-            u_count = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM groups")
-            g_count = cursor.fetchone()[0]
-            cursor.close()
-            return u_count, g_count
-
-    total_users, total_groups = await asyncio.to_thread(get_stats)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM groups")
+    total_groups = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
 
     msg = (
         f"📊 <b>BOT STATISTICS</b>\n"
@@ -363,17 +396,16 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text("🚀 Broadcast စတင်ပို့ဆောင်နေပါသည်...")
 
-    def get_broadcast_targets():
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM users")
-            users = [row[0] for row in cursor.fetchall()]
-            cursor.execute("SELECT chat_id FROM groups")
-            groups = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            return list(set(users) | set(groups))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT chat_id FROM groups")
+    groups = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
 
-    targets = await asyncio.to_thread(get_broadcast_targets)
+    targets = list(set(users) | set(groups))
     success = 0
     failed = 0
 
@@ -381,14 +413,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.copy_message(chat_id=chat_id, from_chat_id=reply.chat_id, message_id=reply.message_id)
             success += 1
-            await asyncio.sleep(0.04) # Telegram Rate Limit Protection
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after)
-            try:
-                await context.bot.copy_message(chat_id=chat_id, from_chat_id=reply.chat_id, message_id=reply.message_id)
-                success += 1
-            except Exception:
-                failed += 1
+            await asyncio.sleep(0.05) # Flood Control
         except Exception:
             failed += 1
 
@@ -404,16 +429,15 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_chat.type == "private":
         if user:
-            await asyncio.to_thread(db_add_or_update_user, user.id, user.first_name)
+            db_add_or_update_user(user.id, user.first_name)
         return
 
-    # Track Group and Users
     if update.effective_chat.title:
-        await asyncio.to_thread(db_add_group, chat_id, update.effective_chat.title)
+        db_add_group(chat_id, update.effective_chat.title)
 
     if user:
-        await asyncio.to_thread(db_add_or_update_user, user.id, user.first_name)
-        await asyncio.to_thread(db_add_group_user, chat_id, user.id)
+        db_add_or_update_user(user.id, user.first_name)
+        db_add_group_user(chat_id, user.id)
 
     if update.message and update.message.text and update.message.text.startswith('/'):
         return
@@ -424,32 +448,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_counters[chat_id] = group_counters.get(chat_id, 0) + 1
     current_count = group_counters[chat_id]
 
-    threshold = CACHE_SETTINGS.get("threshold", 6)
+    threshold = get_global_threshold()
     if current_count >= threshold:
         group_counters[chat_id] = 0
         asyncio.create_task(start_game(chat_id, context))
-
-# UI Text Generator
-def generate_game_text(game):
-    t1 = TEAMS[game['team1']]
-    t2 = TEAMS[game['team2']]
-
-    list_t1 = [get_mention(uid, b['name']) for uid, b in game['bets'].items() if b['choice'] == '1']
-    list_draw = [get_mention(uid, b['name']) for uid, b in game['bets'].items() if b['choice'] == 'draw']
-    list_t2 = [get_mention(uid, b['name']) for uid, b in game['bets'].items() if b['choice'] == '2']
-
-    text = (
-        f"⚽  <b>𝗖𝗵𝗼𝗼𝘀𝗲 𝗙𝗼𝗿 𝗪𝗶𝗻 🍀</b>\n\n"
-        f"🏖️ {t1['emoji']} <b>{game['team1']}</b> 𝚟𝚜 <b>{game['team2']}</b> {t2['emoji']} ⛵\n\n"
-        f"⛲ 𝘚𝘵𝘢𝘥𝘪𝘶𝘮 - {t1['stadium']}\n"
-        f"⏲ 𝘛𝘪𝘮𝘦 𝘓𝘦𝘧𝘵 - <code>{game['time_left']}</code>s\n\n"
-        f"🧩 𝙇𝙞𝙫𝙚 𝘽𝙚𝙩𝙩𝙞𝙣𝙜 𝙇𝙞𝙨𝙩\n\n"
-        f"♠️ <b>{game['team1']}:</b> {', '.join(list_t1) if list_t1 else '-'}\n"
-        f"♦ <b>Draw:</b> {', '.join(list_draw) if list_draw else '-'}\n"
-        f"♥ <b>{game['team2']}:</b> {', '.join(list_t2) if list_t2 else '-'}\n\n"
-        f"GᴏᴏᴅLᴜᴄᴋ G_ʏ ☘️"
-    )
-    return text
 
 # Start Game
 async def start_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
@@ -478,8 +480,7 @@ async def start_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = generate_game_text(game_data)
 
-        val, media_type = await asyncio.to_thread(db_get_setting, "game_media")
-        game_media = {"type": media_type, "file_id": val} if val else {"type": None, "file_id": None}
+        game_media = get_media_setting("game_media")
 
         if game_media["type"] == "photo":
             sent_msg = await context.bot.send_photo(chat_id=chat_id, photo=game_media["file_id"], caption=text, parse_mode="HTML", reply_markup=reply_markup)
@@ -490,7 +491,7 @@ async def start_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
 
         game_data["message_id"] = sent_msg.message_id
 
-        # Countdown Loop
+        # Countdown
         for _ in range(12):
             await asyncio.sleep(5)
             if chat_id not in active_games:
@@ -513,16 +514,36 @@ async def start_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="HTML",
                         reply_markup=reply_markup
                     )
-            except BadRequest:
+            except Exception:
                 pass
-            except Exception as e:
-                logger.error(f"Error updating game countdown: {e}")
 
         await resolve_game(chat_id, context)
 
     except Exception as e:
-        logger.error(f"Error in start_game: {e}")
+        logger.error(f"[ERROR in start_game]: {e}")
         active_games.pop(chat_id, None)
+
+# UI Text Generator
+def generate_game_text(game):
+    t1 = TEAMS[game['team1']]
+    t2 = TEAMS[game['team2']]
+
+    list_t1 = [get_mention(uid, b['name']) for uid, b in game['bets'].items() if b['choice'] == '1']
+    list_draw = [get_mention(uid, b['name']) for uid, b in game['bets'].items() if b['choice'] == 'draw']
+    list_t2 = [get_mention(uid, b['name']) for uid, b in game['bets'].items() if b['choice'] == '2']
+
+    text = (
+        f"⚽  <b>𝗖𝗵𝗼𝗼𝘀𝗲 𝗙𝗼𝗿 𝗪𝗶𝗻 🍀</b>\n\n"
+        f"🏖️ {t1['emoji']} <b>{game['team1']}</b> 𝚟𝚜 <b>{game['team2']}</b> {t2['emoji']} ⛵\n\n"
+        f"⛲ 𝘚𝘵𝘢𝘥𝘪𝘶𝘮 - {t1['stadium']}\n"
+        f"⏲ 𝘛𝘪𝘮𝘦 𝘓𝘦𝘧𝘵 - <code>{game['time_left']}</code>s\n\n"
+        f"🧩 𝙇𝙞𝙫𝙚 𝘽𝙚𝙩𝙩𝙞𝙣𝙜 𝙇𝙞𝙨𝙩\n\n"
+        f"♠️ <b>{game['team1']}:</b> {', '.join(list_t1) if list_t1 else '-'}\n"
+        f"♦️ <b>Draw:</b> {', '.join(list_draw) if list_draw else '-'}\n"
+        f"♥ <b>{game['team2']}:</b> {', '.join(list_t2) if list_t2 else '-'}\n\n"
+        f"GᴏᴏᴅLᴜᴄᴋ G_ʏ ☘️"
+    )
+    return text
 
 # Button Handler
 async def handle_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -537,7 +558,7 @@ async def handle_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = query.data.replace("bet_", "")
     game = active_games[chat_id]
 
-    await asyncio.to_thread(db_add_or_update_user, user.id, user.first_name)
+    db_add_or_update_user(user.id, user.first_name)
     game["bets"][user.id] = {
         "name": user.first_name,
         "choice": choice
@@ -586,8 +607,8 @@ async def resolve_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
         user_mt = get_mention(user_id, bet['name'])
         if bet["choice"] == winning_choice:
             reward = 30 if winning_choice == "draw" else 10
-            await asyncio.to_thread(db_add_coins, user_id, reward)
-            winners.append(f"{user_mt} (+{reward} 🩸Kachin Coin)")
+            db_add_coins(user_id, reward)
+            winners.append(f"{user_mt} (+{reward} 🩸Kachi Coin)")
         else:
             losers.append(f"{user_mt}")
 
@@ -618,8 +639,7 @@ async def resolve_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
         "markup": reply_markup
     }
 
-    val, media_type = await asyncio.to_thread(db_get_setting, "result_media")
-    result_media = {"type": media_type, "file_id": val} if val else {"type": None, "file_id": None}
+    result_media = get_media_setting("result_media")
 
     if result_media["type"] == "photo":
         await context.bot.send_photo(chat_id=chat_id, photo=result_media["file_id"], caption=result_text, parse_mode="HTML", reply_markup=reply_markup)
@@ -632,22 +652,22 @@ async def resolve_game(chat_id, context: ContextTypes.DEFAULT_TYPE):
 async def check_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    await asyncio.to_thread(db_add_or_update_user, user_id, user.first_name)
+    db_add_or_update_user(user_id, user.first_name)
 
-    info = await asyncio.to_thread(db_get_user_info, user_id)
+    info = db_get_user_info(user_id)
     coins = info[1] if info else 0
     user_mt = get_mention(user_id, user.first_name)
 
-    def get_rank():
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users WHERE coins > %s", (coins,))
-            higher_rank_users = cursor.fetchone()[0]
-            cursor.close()
-            return higher_rank_users + 1
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users ORDER BY coins DESC")
+    sorted_users = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
 
-    rank_num = await asyncio.to_thread(get_rank)
-    rank = f"#{rank_num}" if coins > 0 else "Unranked"
+    rank = "Unranked"
+    if user_id in sorted_users:
+        rank = f"#{sorted_users.index(user_id) + 1}"
 
     msg = (
         f"💳 <b>KACHIN COIN INFO</b>\n"
@@ -677,21 +697,18 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass
 
     if data == "top_gp":
-        def get_top_gp():
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT u.user_id, u.first_name, u.coins 
-                    FROM group_users gu 
-                    JOIN users u ON gu.user_id = u.user_id 
-                    WHERE gu.chat_id = %s AND u.coins > 0 
-                    ORDER BY u.coins DESC LIMIT 10
-                """, (chat_id,))
-                res = cursor.fetchall()
-                cursor.close()
-                return res
-
-        top10 = await asyncio.to_thread(get_top_gp)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT u.user_id, u.first_name, u.coins 
+            FROM group_users gu 
+            JOIN users u ON gu.user_id = u.user_id 
+            WHERE gu.chat_id = %s AND u.coins > 0 
+            ORDER BY u.coins DESC LIMIT 10
+        """, (chat_id,))
+        top10 = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
         text = "🏆 <b>TOP 10 IN GROUP</b>\n━━━━━━━━━━━━━━━━━━━\n"
         if not top10:
@@ -703,15 +720,12 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update_msg(text, back_button)
 
     elif data == "top_global":
-        def get_top_global():
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT user_id, first_name, coins FROM users WHERE coins > 0 ORDER BY coins DESC LIMIT 10")
-                res = cursor.fetchall()
-                cursor.close()
-                return res
-
-        global_scores = await asyncio.to_thread(get_top_global)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, first_name, coins FROM users WHERE coins > 0 ORDER BY coins DESC LIMIT 10")
+        global_scores = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
         text = "🌐 <b>GLOBAL TOP 10 PLAYERS</b>\n━━━━━━━━━━━━━━━━━━━\n"
         if not global_scores:
@@ -723,23 +737,20 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update_msg(text, back_button)
 
     elif data == "top_groups":
-        def get_top_groups():
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT g.chat_id, g.title, SUM(u.coins) as total_coins 
-                    FROM group_users gu 
-                    JOIN groups g ON gu.chat_id = g.chat_id 
-                    JOIN users u ON gu.user_id = u.user_id 
-                    GROUP BY g.chat_id, g.title 
-                    HAVING SUM(u.coins) > 0 
-                    ORDER BY total_coins DESC LIMIT 10
-                """)
-                res = cursor.fetchall()
-                cursor.close()
-                return res
-
-        sorted_gps = await asyncio.to_thread(get_top_groups)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT g.chat_id, g.title, SUM(u.coins) as total_coins 
+            FROM group_users gu 
+            JOIN groups g ON gu.chat_id = g.chat_id 
+            JOIN users u ON gu.user_id = u.user_id 
+            GROUP BY g.chat_id, g.title 
+            HAVING SUM(u.coins) > 0 
+            ORDER BY total_coins DESC LIMIT 10
+        """)
+        sorted_gps = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
         text = "🏰 <b>The Group with the Highest Total Kachi Coin</b>\n━━━━━━━━━━━━━━━━━━━\n"
         if not sorted_gps:
@@ -768,15 +779,16 @@ def main():
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
 
-    # Message Handler for /g and /r commands (including photo/video captions)
-    app.add_handler(MessageHandler(filters.Regex(r"^/(g|r)(\s|$)"), media_control))
+    # Photo / Video Commands for Admin
+    app.add_handler(CommandHandler("g", media_control))
+    app.add_handler(CommandHandler("r", media_control))
 
     app.add_handler(CallbackQueryHandler(handle_bet, pattern="^bet_"))
     app.add_handler(CallbackQueryHandler(handle_leaderboards, pattern="^(top_gp|top_global|top_groups|back_to_result)$"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
 
-    print("=== Bot is running cleanly with PostgreSQL Connection Pool ===")
+    print("=== Bot is running cleanly with PostgreSQL Database ===")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
