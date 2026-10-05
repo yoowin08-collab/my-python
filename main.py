@@ -31,8 +31,12 @@ db_pool = None
 def init_db_pool():
     global db_pool
     try:
-        if DATABASE_URL:
-            db_pool = pool.SimpleConnectionPool(1, 20, DATABASE_URL, sslmode="require")
+        url = DATABASE_URL
+        if url and url.endswith("/railway"):
+            url = url[:-8] + "/postgres"
+
+        if url:
+            db_pool = pool.SimpleConnectionPool(1, 20, url, sslmode="require")
         else:
             db_pool = pool.SimpleConnectionPool(
                 1, 20,
@@ -291,7 +295,8 @@ async def media_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id != BOT_ADMIN_ID:
         return
 
-    cmd = update.message.text.strip().split()
+    msg_text = update.message.caption or update.message.text or ""
+    cmd = msg_text.strip().split()
     if not cmd:
         return
 
@@ -303,19 +308,19 @@ async def media_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if sub_cmd == "set":
-        reply = update.message.reply_to_message
-        if not reply:
-            await update.message.reply_text("⚠️ ပုံ သို့မဟုတ် ဗီဒီယိုကို Reply ထောက်ပြီး မိန့်ခွန်းပေးပါ။")
-            return
+        # Check replied message or current message
+        target_msg = update.message.reply_to_message or update.message
 
-        if reply.photo:
-            await asyncio.to_thread(db_set_setting, setting_key, reply.photo[-1].file_id, "photo")
+        if target_msg.photo:
+            file_id = target_msg.photo[-1].file_id
+            await asyncio.to_thread(db_set_setting, setting_key, file_id, "photo")
             await update.message.reply_text("✅ Photo ကို အောင်မြင်စွာ သတ်မှတ်လိုက်ပါပြီ။")
-        elif reply.video:
-            await asyncio.to_thread(db_set_setting, setting_key, reply.video.file_id, "video")
+        elif target_msg.video:
+            file_id = target_msg.video.file_id
+            await asyncio.to_thread(db_set_setting, setting_key, file_id, "video")
             await update.message.reply_text("✅ Video ကို အောင်မြင်စွာ သတ်မှတ်လိုက်ပါပြီ။")
         else:
-            await update.message.reply_text("❌ Photo သို့မဟုတ် Video မဟုတ်ပါ။")
+            await update.message.reply_text("⚠️ ပုံ သို့မဟုတ် ဗီဒီယိုကို Reply ထောက်ပြီး မိန့်ခွန်းပေးပါ သို့မဟုတ် ပုံနှင့်အတူ Caption တွင် /g set ဟု ရေးပါ။")
 
     elif sub_cmd == "del":
         await asyncio.to_thread(db_delete_setting, setting_key)
@@ -440,7 +445,7 @@ def generate_game_text(game):
         f"⏲ 𝘛𝘪𝘮𝘦 𝘓𝘦𝘧𝘵 - <code>{game['time_left']}</code>s\n\n"
         f"🧩 𝙇𝙞𝙫𝙚 𝘽𝙚𝙩𝙩𝙞𝙣𝙜 𝙇𝙞𝙨𝙩\n\n"
         f"♠️ <b>{game['team1']}:</b> {', '.join(list_t1) if list_t1 else '-'}\n"
-        f"♦️️ <b>Draw:</b> {', '.join(list_draw) if list_draw else '-'}\n"
+        f"♦ <b>Draw:</b> {', '.join(list_draw) if list_draw else '-'}\n"
         f"♥ <b>{game['team2']}:</b> {', '.join(list_t2) if list_t2 else '-'}\n\n"
         f"GᴏᴏᴅLᴜᴄᴋ G_ʏ ☘️"
     )
@@ -763,9 +768,8 @@ def main():
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
 
-    # Photo / Video Commands for Admin
-    app.add_handler(CommandHandler("g", media_control))
-    app.add_handler(CommandHandler("r", media_control))
+    # Message Handler for /g and /r commands (including photo/video captions)
+    app.add_handler(MessageHandler(filters.Regex(r"^/(g|r)(\s|$)"), media_control))
 
     app.add_handler(CallbackQueryHandler(handle_bet, pattern="^bet_"))
     app.add_handler(CallbackQueryHandler(handle_leaderboards, pattern="^(top_gp|top_global|top_groups|back_to_result)$"))
