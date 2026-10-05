@@ -251,25 +251,12 @@ def get_mention(user_id, name):
     safe_name = html.escape(str(name))
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
-# Admin Command: /c <number>
+# Admin Command: /c <number> (ONLY BOT ADMIN ALLOWED)
 async def set_counter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
     user = update.effective_user
 
-    if update.effective_chat.type == "private":
-        await update.message.reply_text("❌ ဒီ Command ကို Group ထဲတွင်သာ သုံးပါ။")
-        return
-
-    try:
-        chat_member = await context.bot.get_chat_member(chat_id, user.id)
-        is_group_admin = chat_member.status in ["creator", "administrator"]
-    except Exception:
-        is_group_admin = False
-
-    is_bot_admin = (user.id == BOT_ADMIN_ID)
-
-    if not (is_group_admin or is_bot_admin):
-        await update.message.reply_text("❌ ဒီ Command ကို Admin များသာ သုံးနိုင်ပါသည်။")
+    # Strict Admin Check (Only 7940553702 can use)
+    if user.id != BOT_ADMIN_ID:
         return
 
     if not context.args or not context.args[0].isdigit():
@@ -294,8 +281,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚽ <b>{bot_name_safe}</b> မှ ကြိုဆိုပါတယ်။\n"
         f"ဒီ Bot ဟာ Group ထဲမှာ ဘောလုံးပွဲစဉ်များကို ခန့်မှန်းပြီး 🩸 <b>Kachin Coin</b> များ စုဆောင်းနိုင်မည့် Game Bot ဖြစ်ပါတယ်။\n\n"
         f"📌 <b>အဓိက Commands များ -</b>\n"
-        f"• `/kc` - မိမိ၏ Coin ပမာဏနှင့် Rank ကို စစ်ဆေးရန်\n"
-        f"• `/c &lt;ပမာဏ&gt;` - Group Admin များ စာကြောင်းအရေအတွက် သတ်မှတ်ရန်\n\n"
+        f"• `/kc` - မိမိ၏ Coin ပမာဏနှင့် Rank ကို စစ်ဆေးရန်\n\n"
         f"👇 အောက်ပါ Button ကို နှိပ်ပြီး သင့် Group သို့ Bot ကို ထည့်သွင်းနိုင်ပါသည်-"
     )
     
@@ -339,7 +325,7 @@ async def media_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_cmd = cmd[0].lower()
     sub_cmd = cmd[1].lower() if len(cmd) > 1 else ""
 
-    setting_key = "game_media" if main_cmd == "/g" else ("result_media" if main_cmd == "/r" else None)
+    setting_key = "game_media" if main_cmd in ["/g", "/g@botname"] else ("result_media" if main_cmd in ["/r", "/r@botname"] else None)
     if setting_key is None:
         return
 
@@ -367,22 +353,26 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != BOT_ADMIN_ID:
         return
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM groups")
-    total_groups = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM groups")
+        total_groups = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
 
-    msg = (
-        f"📊 <b>BOT STATISTICS</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Total Users:</b> <code>{total_users}</code>\n"
-        f"🏰 <b>Total Groups:</b> <code>{total_groups}</code>"
-    )
-    await update.message.reply_text(msg, parse_mode="HTML")
+        msg = (
+            f"📊 <b>BOT STATISTICS</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>Total Users:</b> <code>{total_users}</code>\n"
+            f"🏰 <b>Total Groups:</b> <code>{total_groups}</code>"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error in stats: {e}")
+        await update.message.reply_text("❌ Stats ဆွဲထုတ်ရာတွင် အမှားအယွင်းရှိနေပါသည်။")
 
 # Broadcast Command
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,7 +403,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.copy_message(chat_id=chat_id, from_chat_id=reply.chat_id, message_id=reply.message_id)
             success += 1
-            await asyncio.sleep(0.05) # Flood Control
+            await asyncio.sleep(0.05)
         except Exception:
             failed += 1
 
@@ -682,6 +672,8 @@ async def check_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Leaderboard Callback Query Handler
 async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
+    
     chat_id = query.message.chat_id
     data = query.data
 
@@ -693,8 +685,8 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
             else:
                 await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error updating leaderboard msg: {e}")
 
     if data == "top_gp":
         conn = get_db_connection()
@@ -710,7 +702,7 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
         cursor.close()
         conn.close()
 
-        text = "🏆 <b>TOP 10 IN GROUP</b>\n━━━━━━━━━━━━━━━━━━━\n"
+        text = "🏆 <b>TOP 10 IN GROUP</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         if not top10:
             text += "မရှိသေးပါ"
         else:
@@ -727,7 +719,7 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
         cursor.close()
         conn.close()
 
-        text = "🌐 <b>GLOBAL TOP 10 PLAYERS</b>\n━━━━━━━━━━━━━━━━━━━\n"
+        text = "🌐 <b>GLOBAL TOP 10 PLAYERS</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         if not global_scores:
             text += "မရှိသေးပါ"
         else:
@@ -752,7 +744,7 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
         cursor.close()
         conn.close()
 
-        text = "🏰 <b>The Group with the Highest Total Kachi Coin</b>\n━━━━━━━━━━━━━━━━━━━\n"
+        text = "🏰 <b>The Group with the Highest Total Kachi Coin</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         if not sorted_gps:
             text += "မရှိသေးပါ"
         else:
