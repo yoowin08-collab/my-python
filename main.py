@@ -21,8 +21,8 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- BOT TOKEN & ADMIN CONFIG ---
-TOKEN = "8847802267:AAFuOudnLo1CnSpu3YcLSZZ56gMM9aLVloA"
-BOT_ADMIN_ID = 7940553702
+TOKEN = os.getenv("BOT_TOKEN", "8847802267:AAFuOudnLo1CnSpu3YcLSZZ56gMM9aLVloA")
+BOT_ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 
 # --- DATABASE CONNECTION POOL ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -49,13 +49,11 @@ def init_db_pool():
 class get_db:
     """Context Manager for Database Connections using Connection Pool"""
     def __enter__(self):
-        if not db_pool:
-            raise Exception("DB Pool not initialized")
         self.conn = db_pool.getconn()
         return self.conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if hasattr(self, 'conn') and self.conn:
+        if self.conn:
             if exc_type:
                 self.conn.rollback()
             else:
@@ -65,41 +63,36 @@ class get_db:
 # Initialize Database Tables
 def init_db():
     init_db_pool()
-    if not db_pool:
-        return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                first_name TEXT,
-                coins INT DEFAULT 0
-            );
-            """)
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS groups (
-                chat_id BIGINT PRIMARY KEY,
-                title TEXT
-            );
-            """)
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS group_users (
-                chat_id BIGINT,
-                user_id BIGINT,
-                PRIMARY KEY (chat_id, user_id)
-            );
-            """)
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                type TEXT
-            );
-            """)
-            cursor.close()
-    except Exception as e:
-        logger.error(f"Error initializing DB tables: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            first_name TEXT,
+            coins INT DEFAULT 0
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            chat_id BIGINT PRIMARY KEY,
+            title TEXT
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_users (
+            chat_id BIGINT,
+            user_id BIGINT,
+            PRIMARY KEY (chat_id, user_id)
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            type TEXT
+        );
+        """)
+        cursor.close()
 
 # Start Initial DB Setup
 init_db()
@@ -107,106 +100,72 @@ init_db()
 # --- DATABASE HELPER FUNCTIONS ---
 
 def db_add_or_update_user(user_id, first_name):
-    if not db_pool: return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (user_id, first_name) VALUES (%s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name
-            """, (user_id, first_name))
-            cursor.close()
-    except Exception as e:
-        logger.error(f"db_add_or_update_user error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO users (user_id, first_name) VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name
+        """, (user_id, first_name))
+        cursor.close()
 
 def db_add_group(chat_id, title):
-    if not db_pool: return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO groups (chat_id, title) VALUES (%s, %s)
-                ON CONFLICT (chat_id) DO UPDATE SET title = EXCLUDED.title
-            """, (chat_id, title))
-            cursor.close()
-    except Exception as e:
-        logger.error(f"db_add_group error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO groups (chat_id, title) VALUES (%s, %s)
+            ON CONFLICT (chat_id) DO UPDATE SET title = EXCLUDED.title
+        """, (chat_id, title))
+        cursor.close()
 
 def db_add_group_user(chat_id, user_id):
-    if not db_pool: return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO group_users (chat_id, user_id) VALUES (%s, %s)
-                ON CONFLICT DO NOTHING
-            """, (chat_id, user_id))
-            cursor.close()
-    except Exception as e:
-        logger.error(f"db_add_group_user error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO group_users (chat_id, user_id) VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+        """, (chat_id, user_id))
+        cursor.close()
 
 def db_add_coins(user_id, reward):
-    if not db_pool: return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users SET coins = coins + %s WHERE user_id = %s
-            """, (reward, user_id))
-            cursor.close()
-    except Exception as e:
-        logger.error(f"db_add_coins error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE users SET coins = coins + %s WHERE user_id = %s
+        """, (reward, user_id))
+        cursor.close()
 
 def db_get_user_info(user_id):
-    if not db_pool: return None
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT first_name, coins FROM users WHERE user_id = %s", (user_id,))
-            res = cursor.fetchone()
-            cursor.close()
-            return res
-    except Exception as e:
-        logger.error(f"db_get_user_info error: {e}")
-        return None
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT first_name, coins FROM users WHERE user_id = %s", (user_id,))
+        res = cursor.fetchone()
+        cursor.close()
+        return res
 
 def db_get_setting(key, default=None):
-    if not db_pool: return default, None
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT value, type FROM settings WHERE key = %s", (key,))
-            res = cursor.fetchone()
-            cursor.close()
-            if res:
-                return res[0], res[1]
-            return default, None
-    except Exception as e:
-        logger.error(f"db_get_setting error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value, type FROM settings WHERE key = %s", (key,))
+        res = cursor.fetchone()
+        cursor.close()
+        if res:
+            return res[0], res[1]
         return default, None
 
 def db_set_setting(key, value, media_type=None):
-    if not db_pool: return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO settings (key, value, type) VALUES (%s, %s, %s)
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type
-            """, (key, str(value), media_type))
-            cursor.close()
-    except Exception as e:
-        logger.error(f"db_set_setting error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO settings (key, value, type) VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type
+        """, (key, str(value), media_type))
+        cursor.close()
 
 def db_delete_setting(key):
-    if not db_pool: return
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM settings WHERE key = %s", (key,))
-            cursor.close()
-    except Exception as e:
-        logger.error(f"db_delete_setting error: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM settings WHERE key = %s", (key,))
+        cursor.close()
 
 
 # --- TEAMS DATA ---
@@ -263,25 +222,12 @@ def get_mention(user_id, name):
     safe_name = html.escape(str(name))
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
-# Admin Command: /c <number>
+# Admin Command: /c <number> (Bot Admin Only)
 async def set_counter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
     user = update.effective_user
 
-    if update.effective_chat.type == "private":
-        await update.message.reply_text("❌ ဒီ Command ကို Group ထဲတွင်သာ သုံးပါ။")
-        return
-
-    try:
-        chat_member = await context.bot.get_chat_member(chat_id, user.id)
-        is_group_admin = chat_member.status in ["creator", "administrator"]
-    except Exception:
-        is_group_admin = False
-
-    is_bot_admin = (user.id == BOT_ADMIN_ID)
-
-    if not (is_group_admin or is_bot_admin):
-        await update.message.reply_text("❌ ဒီ Command ကို Admin များသာ သုံးနိုင်ပါသည်။")
+    # Strictly Bot Admin Only
+    if user.id != BOT_ADMIN_ID:
         return
 
     if not context.args or not context.args[0].isdigit():
@@ -308,8 +254,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚽ <b>{bot_name_safe}</b> မှ ကြိုဆိုပါတယ်။\n"
         f"ဒီ Bot ဟာ Group ထဲမှာ ဘောလုံးပွဲစဉ်များကို ခန့်မှန်းပြီး 🩸 <b>Kachin Coin</b> များ စုဆောင်းနိုင်မည့် Game Bot ဖြစ်ပါတယ်။\n\n"
         f"📌 <b>အဓိက Commands များ -</b>\n"
-        f"• `/kc` - မိမိ၏ Coin ပမာဏနှင့် Rank ကို စစ်ဆေးရန်\n"
-        f"• `/c &lt;ပမာဏ&gt;` - Group Admin များ စာကြောင်းအရေအတွက် သတ်မှတ်ရန်\n\n"
+        f"• `/kc` - မိမိ၏ Coin ပမာဏနှင့် Rank ကို စစ်ဆေးရန်\n\n"
         f"👇 အောက်ပါ Button ကို နှိပ်ပြီး သင့် Group သို့ Bot ကို ထည့်သွင်းနိုင်ပါသည်-"
     )
     
@@ -382,19 +327,14 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     def get_stats():
-        if not db_pool:
-            return 0, 0
-        try:
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM users")
-                u_count = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM groups")
-                g_count = cursor.fetchone()[0]
-                cursor.close()
-                return u_count, g_count
-        except Exception:
-            return 0, 0
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            u_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM groups")
+            g_count = cursor.fetchone()[0]
+            cursor.close()
+            return u_count, g_count
 
     total_users, total_groups = await asyncio.to_thread(get_stats)
 
@@ -419,19 +359,14 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🚀 Broadcast စတင်ပို့ဆောင်နေပါသည်...")
 
     def get_broadcast_targets():
-        if not db_pool:
-            return []
-        try:
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT user_id FROM users")
-                users = [row[0] for row in cursor.fetchall()]
-                cursor.execute("SELECT chat_id FROM groups")
-                groups = [row[0] for row in cursor.fetchall()]
-                cursor.close()
-                return list(set(users) | set(groups))
-        except Exception:
-            return []
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM users")
+            users = [row[0] for row in cursor.fetchall()]
+            cursor.execute("SELECT chat_id FROM groups")
+            groups = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            return list(set(users) | set(groups))
 
     targets = await asyncio.to_thread(get_broadcast_targets)
     success = 0
@@ -699,17 +634,12 @@ async def check_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_mt = get_mention(user_id, user.first_name)
 
     def get_rank():
-        if not db_pool:
-            return 1
-        try:
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM users WHERE coins > %s", (coins,))
-                higher_rank_users = cursor.fetchone()[0]
-                cursor.close()
-                return higher_rank_users + 1
-        except Exception:
-            return 1
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users WHERE coins > %s", (coins,))
+            higher_rank_users = cursor.fetchone()[0]
+            cursor.close()
+            return higher_rank_users + 1
 
     rank_num = await asyncio.to_thread(get_rank)
     rank = f"#{rank_num}" if coins > 0 else "Unranked"
@@ -743,23 +673,18 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data == "top_gp":
         def get_top_gp():
-            if not db_pool:
-                return []
-            try:
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT u.user_id, u.first_name, u.coins 
-                        FROM group_users gu 
-                        JOIN users u ON gu.user_id = u.user_id 
-                        WHERE gu.chat_id = %s AND u.coins > 0 
-                        ORDER BY u.coins DESC LIMIT 10
-                    """, (chat_id,))
-                    res = cursor.fetchall()
-                    cursor.close()
-                    return res
-            except Exception:
-                return []
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT u.user_id, u.first_name, u.coins 
+                    FROM group_users gu 
+                    JOIN users u ON gu.user_id = u.user_id 
+                    WHERE gu.chat_id = %s AND u.coins > 0 
+                    ORDER BY u.coins DESC LIMIT 10
+                """, (chat_id,))
+                res = cursor.fetchall()
+                cursor.close()
+                return res
 
         top10 = await asyncio.to_thread(get_top_gp)
 
@@ -774,17 +699,12 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     elif data == "top_global":
         def get_top_global():
-            if not db_pool:
-                return []
-            try:
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT user_id, first_name, coins FROM users WHERE coins > 0 ORDER BY coins DESC LIMIT 10")
-                    res = cursor.fetchall()
-                    cursor.close()
-                    return res
-            except Exception:
-                return []
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id, first_name, coins FROM users WHERE coins > 0 ORDER BY coins DESC LIMIT 10")
+                res = cursor.fetchall()
+                cursor.close()
+                return res
 
         global_scores = await asyncio.to_thread(get_top_global)
 
@@ -799,25 +719,20 @@ async def handle_leaderboards(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     elif data == "top_groups":
         def get_top_groups():
-            if not db_pool:
-                return []
-            try:
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT g.chat_id, g.title, SUM(u.coins) as total_coins 
-                        FROM group_users gu 
-                        JOIN groups g ON gu.chat_id = g.chat_id 
-                        JOIN users u ON gu.user_id = u.user_id 
-                        GROUP BY g.chat_id, g.title 
-                        HAVING SUM(u.coins) > 0 
-                        ORDER BY total_coins DESC LIMIT 10
-                    """)
-                    res = cursor.fetchall()
-                    cursor.close()
-                    return res
-            except Exception:
-                return []
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT g.chat_id, g.title, SUM(u.coins) as total_coins 
+                    FROM group_users gu 
+                    JOIN groups g ON gu.chat_id = g.chat_id 
+                    JOIN users u ON gu.user_id = u.user_id 
+                    GROUP BY g.chat_id, g.title 
+                    HAVING SUM(u.coins) > 0 
+                    ORDER BY total_coins DESC LIMIT 10
+                """)
+                res = cursor.fetchall()
+                cursor.close()
+                return res
 
         sorted_gps = await asyncio.to_thread(get_top_groups)
 
