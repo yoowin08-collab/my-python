@@ -523,13 +523,24 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>Top 10 Owners:</b>
 {owners_str}"""
 
-    try:
-        if card['type'] == 'photo':
-            await update.message.reply_photo(photo=card['file_id'], caption=caption_text, parse_mode="HTML")
-        else:
-            await update.message.reply_video(video=card['file_id'], caption=caption_text, parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text(caption_text, parse_mode="HTML")
+    is_video = (card['type'] == 'video') or (str(card['file_id']).startswith("BAA"))
+
+    if is_video:
+        try:
+            await context.bot.send_video(chat_id=chat.id, video=card['file_id'], caption=caption_text, parse_mode="HTML")
+        except Exception:
+            try:
+                await context.bot.send_animation(chat_id=chat.id, animation=card['file_id'], caption=caption_text, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(caption_text, parse_mode="HTML")
+    else:
+        try:
+            await context.bot.send_photo(chat_id=chat.id, photo=card['file_id'], caption=caption_text, parse_mode="HTML")
+        except Exception:
+            try:
+                await context.bot.send_document(chat_id=chat.id, document=card['file_id'], caption=caption_text, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(caption_text, parse_mode="HTML")
 
 # /glist Command for Admin
 async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -914,7 +925,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💰 <b>Kachi Coin လက်ကျန်:</b> {rem_coins} 🩸
 
 🎴 <b>ရရှိသွားသော Card အချက်အလက်:</b>
-🏷️️ <b>Name:</b> {won_card['name']}
+🏷 <b>Name:</b> {won_card['name']}
 🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
 
         if won_card['type'] == 'photo':
