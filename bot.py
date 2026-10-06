@@ -295,7 +295,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🌺 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်။
 
-📌 ဂိမ်းကစားနည်း
+📌 <b>ဂိမ်းကစားနည်း</b>
 - Bot ကို Group တွင် Add ပါ။
 - Group အတွင်း စာစကားပြောရင်း သတ်မှတ်စာကြောင်းပြည့်လျှင် Game ကျလာပါမည်။
 - မိမိနှစ်သက်ရာ အသင်း သို့မဟုတ် Draw ကို 1 မိနစ်အတွင်း ရွေးချယ်လောင်းကြေးထပ်နိုင်ပါသည်။
@@ -304,12 +304,15 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - အသင်းနိုင်လျှင်: 10 🩸Kachi Coin
 - Draw နိုင်လျှင်: 30 🩸Kachi Coin
 
-📜 **အသုံးပြုနိုင်သော Commands များ:**
+📜 <b>အသုံးပြုနိုင်သော Commands များ:</b>
 • /kc - မိမိ Coin နှင့် ကဒ်များ စစ်ဆေးရန်
 • /kbox - 300 Coin သုံး၍ Card Box ဖောက်ရန်
-• /kgift - Card သို့မဟုတ် Kachi Coin လက်ဆောင်ပေးရန် (Reply ထောက်၍ အသုံးပြုပါ)
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
-• /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်"""
+• /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
+
+🎁 <b>/kgift လက်ဆောင်ပေးပို့နည်း (Reply ထောက်၍ သုံးပါ):</b>
+• <b>Coin ပေးရန်:</b> ပေးပို့ချင်သူ၏ စာကို Reply ထောက်ပြီး <code>/kgift c100</code> (c နောက်တွင် အကြွေစေ့ပမာဏ ရိုက်ပါ)
+• <b>Card ပေးရန်:</b> ပေးပို့ချင်သူ၏ စာကို Reply ထောက်ပြီး <code>/kgift 1201</code> (ကဒ် ID ရိုက်ပါ)"""
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("➕ Add To Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
@@ -610,7 +613,7 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "card_name": card['name']
         }
 
-# Helper to render /kc command
+# Helper to render /kc view
 async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
     user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
     target_id = owner_id if owner_id else user.id
@@ -744,7 +747,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     if page > 0:
         buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"clist_{page - 1}_{owner_id}"))
     if page < total_pages - 1:
-        buttons.append(InlineKeyboardButton("Next ▶️️", callback_data=f"clist_{page + 1}_{owner_id}"))
+        buttons.append(InlineKeyboardButton("Next ▶", callback_data=f"clist_{page + 1}_{owner_id}"))
 
     markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
@@ -1144,6 +1147,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     else:
         sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
 
+    # Result Text ကို Memory ထဲတွင် သိမ်းဆည်းခြင်း
     last_results[sent_res.message_id] = res_text
     if chat_id in active_games:
         del active_games[chat_id]
@@ -1393,6 +1397,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("✅ လောင်းကြေးထပ်ပြီးပါပြီ!")
         return
 
+    # Leaderboard ပြန်ထွက်ရန် Back Action
     if data == "lb_back":
         original_text = last_results.get(msg_id, "🎗️ 𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
@@ -1406,7 +1411,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # Leaderboard Actions
+    # Leaderboard Actions (Richest Card Owners တွင် Name Mentions ပါဝင်အောင် ပြင်ဆင်ထားသည်)
     if data.startswith("lb_"):
         lb_type = data.replace("lb_", "")
         async with db_pool.acquire() as conn:
@@ -1424,14 +1429,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title = "🏆 <b>Top In Group</b>"
             elif lb_type == "global":
                 rows = await conn.fetch("""
-                    SELECT name, coins FROM users 
+                    SELECT user_id, name, coins FROM users 
                     WHERE coins > 0 
                     ORDER BY coins DESC LIMIT 10
                 """)
                 title = "🌍 <b>Global Top 10 Users</b>"
             elif lb_type == "cards":
                 rows = await conn.fetch("""
-                    SELECT u.name, SUM(uc.amount) AS card_count
+                    SELECT u.user_id, u.name, SUM(uc.amount) AS card_count
                     FROM user_cards uc
                     JOIN users u ON uc.user_id = u.user_id
                     WHERE uc.amount > 0
@@ -1448,11 +1453,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"{title}\n\n<i>စာရင်းမရှိသေးပါ သို့မဟုတ် စာရင်းဝင်ရှိသူ မရှိသေးပါ။</i>"
         else:
             if lb_type == "gp":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — {r['coins']} 🩸Kachi Coin ({r['total_cards']} Cards)" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin ({r['total_cards']} Cards)" for i, r in enumerate(rows)])
             elif lb_type == "global":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
             else:
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
