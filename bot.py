@@ -86,6 +86,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS user_cards (
                 user_id BIGINT,
                 card_id TEXT,
+                amount INT DEFAULT 1,
                 PRIMARY KEY (user_id, card_id)
             );
         """)
@@ -94,6 +95,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_card_id TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
+            await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
         except Exception:
             pass
 
@@ -184,12 +186,13 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 1. <b>/c [count]</b> - Group စာကြောင်းရေ သတ်မှတ်ရန် (DM Only)
 2. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
-3. <b>/add [card_id] [card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-4. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
-5. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+3. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+4. <b>/del [card_id]</b> - Card ဖျက်ရန် (User များဆီမှပါ ပျက်မည်)
+5. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
+6. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန် (Photo/Video ကို Reply လုပ်ပါ)
    - `/g del` သို့မဟုတ် `/r del` ဖြင့် ပြန်ဖျက်နိုင်ပါသည်။
-6. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
-7. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန် (Reply လုပ်ပါ)"""
+7. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
+8. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန် (Reply လုပ်ပါ)"""
 
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -248,22 +251,30 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ အသုံးပြုနည်း: `/k 1928382 200` သို့မဟုတ် `/k 1928382 -200`", parse_mode="Markdown")
 
-# /add Command (Add Card by Admin)
+# /add Command (Add Card by Admin - Fixed for Dot Splitter)
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     reply = update.message.reply_to_message
     if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ ပုံ သို့မဟုတ် Video ကို Reply ထောက်ပြီး `/add card_id card_name` ဟု ရိုက်ပါ။", parse_mode="Markdown")
+        return await update.message.reply_text("❌ ပုံ သို့မဟုတ် Video ကို Reply ထောက်ပြီး `/add [card_id].[card_name]` ဟု ရိုက်ပါ။", parse_mode="Markdown")
 
     try:
-        args = context.args
-        if len(args) < 2:
-            return await update.message.reply_text("❌ အသုံးပြုနည်း: Reply ထောက်ပြီး `/add [card_id] [card_name]` ရိုက်ပါ (ဥပမာ: `/add 001 Naruto`)", parse_mode="Markdown")
+        # Full text မှ /add ကို ဖြုတ်ပြီး ကျန်သော စာကြောင်းတစ်ခုလုံးကို ယူသည်
+        full_text = update.message.text
+        raw_args = full_text.partition(" ")[2].strip()
+
+        if "." not in raw_args:
+            return await update.message.reply_text("❌ အသုံးပြုနည်း: Reply ထောက်ပြီး `/add [card_id].[card_name]` ဟု ရိုက်ပါ (ဥပမာ: `/add 313.Monkey D - Luffy`)", parse_mode="Markdown")
         
-        card_id = args[0]
-        card_name = " ".join(args[1:])
+        # အစက် (.) ဖြင့် ခွဲခြားသည်
+        card_id, _, card_name = raw_args.partition(".")
+        card_id = card_id.strip()
+        card_name = card_name.strip()
+
+        if not card_id or not card_name:
+            return await update.message.reply_text("❌ Card ID သို့မဟုတ် Card Name မှားယွင်းနေပါသည်။", parse_mode="Markdown")
 
         if reply.photo:
             file_id = reply.photo[-1].file_id
@@ -283,6 +294,30 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ ထည့်သွင်းရာတွင် အမှားအယွင်းရှိပါသည်: {e}")
 
+# /del Command (Delete Card globally by Admin)
+async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/del [card_id]` (ဥပမာ- `/del 313`)", parse_mode="Markdown")
+
+    target_card_id = context.args[0].strip()
+
+    async with db_pool.acquire() as conn:
+        card = await conn.fetchrow("SELECT name FROM cards WHERE card_id = $1", target_card_id)
+        if not card:
+            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> မရှိပါ သို့မဟုတ် ဖျက်ပြီးသားဖြစ်ပါသည်။", parse_mode="HTML")
+
+        # cards နှင့် user_cards Table နှစ်ခုလုံးမှ ဖျက်သည်
+        await conn.execute("DELETE FROM user_cards WHERE card_id = $1", target_card_id)
+        await conn.execute("DELETE FROM cards WHERE card_id = $1", target_card_id)
+        
+        # User များ အသုံးပြုလက်စ selected_card_id ဖြစ်နေပါက ပြန်လည် Reset လိုက်ပါ
+        await conn.execute("UPDATE users SET selected_card_id = NULL WHERE selected_card_id = $1", target_card_id)
+
+    await update.message.reply_text(f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) ကို စနစ်နှင့် User များဆီမှ အပြီးတိုင် ဖျက်လိုက်ပါပြီ။", parse_mode="HTML")
+
 # /set Command (Set active profile card)
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -290,7 +325,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/set [Card_ID]` (ဥပမာ- `/set 001`)", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/set [Card_ID]` (ဥပမာ- `/set 313`)", parse_mode="Markdown")
 
     target_card_id = context.args[0]
 
@@ -338,7 +373,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=reply_to_msg_id
     )
 
-# /kc Command
+# /kc Command (Display Multiple Counts e.g., 2x, 3x)
 async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -353,7 +388,7 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rank = rank_row['rank']
 
         user_card_rows = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id 
+            SELECT c.card_id, c.name, c.type, c.file_id, uc.amount 
             FROM user_cards uc 
             JOIN cards c ON uc.card_id = c.card_id 
             WHERE uc.user_id = $1
@@ -375,7 +410,12 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not active_card:
             active_card = user_card_rows[-1]
 
-        cards_info = "\n".join([f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>)" for c in user_card_rows])
+        cards_info_list = []
+        for c in user_card_rows:
+            count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
+            cards_info_list.append(f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>){count_str}")
+
+        cards_info = "\n".join(cards_info_list)
         full_text = f"{text}\n\n🎴 <b>ပိုင်ဆိုင်ထားသော ကဒ်များ:</b>\n{cards_info}"
 
         try:
@@ -386,7 +426,7 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await update.message.reply_text(full_text, parse_mode="HTML")
 
-# /cardlist Command
+# /cardlist Command with Top 10 Owners
 async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await render_cardlist_page(update, context, page=0, owner_id=update.effective_user.id)
 
@@ -404,17 +444,39 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     total_cards = len(cards)
     c = cards[page]
 
+    # Fetch Top 10 Owners for this specific card
+    async with db_pool.acquire() as conn:
+        top_owners = await conn.fetch("""
+            SELECT u.user_id, u.name, uc.amount 
+            FROM user_cards uc
+            JOIN users u ON uc.user_id = u.user_id
+            WHERE uc.card_id = $1
+            ORDER BY uc.amount DESC, u.user_id ASC
+            LIMIT 10
+        """, c['card_id'])
+
+    owners_text_list = []
+    if top_owners:
+        for idx, row in enumerate(top_owners, 1):
+            owners_text_list.append(f"{idx}. {get_mention(row['user_id'], row['name'])} — {row['amount']}x")
+        owners_str = "\n".join(owners_text_list)
+    else:
+        owners_str = "<i>ပိုင်ဆိုင်သူ မရှိသေးပါ။</i>"
+
     text = f"""🎴 <b>Card List ({page + 1}/{total_cards})</b>
 
 🔸 <b>Card Name:</b> {c['name']}
 🆔 <b>Card ID:</b> <code>{c['card_id']}</code>
-📂 <b>Type:</b> {c['type'].upper()}"""
+📂 <b>Type:</b> {c['type'].upper()}
+
+👑 <b>Top 10 Owners:</b>
+{owners_str}"""
 
     buttons = []
     if page > 0:
         buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"clist_{page - 1}_{owner_id}"))
     if page < total_cards - 1:
-        buttons.append(InlineKeyboardButton("Next ▶️️", callback_data=f"clist_{page + 1}_{owner_id}"))
+        buttons.append(InlineKeyboardButton("Next ▶", callback_data=f"clist_{page + 1}_{owner_id}"))
 
     markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
@@ -484,7 +546,7 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
 
     buttons = []
     if page > 0:
-        buttons.append(InlineKeyboardButton("◀️️ Back", callback_data=f"glist_{page - 1}"))
+        buttons.append(InlineKeyboardButton("◀ Back", callback_data=f"glist_{page - 1}"))
     if page < total_groups - 1:
         buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"glist_{page + 1}"))
 
@@ -793,17 +855,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         won_card = random.choice(cards)
 
         async with db_pool.acquire() as conn:
+            # ရှိပြီးသားကဒ်ဆိုပါက amount ကို 1 တိုးမည်၊ မရှိသေးပါက amount = 1 ထည့်မည်
             await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id) VALUES ($1, $2)
-                ON CONFLICT (user_id, card_id) DO NOTHING
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
             """, user.id, won_card['card_id'])
 
             rem_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
+            new_amount = await conn.fetchval("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, won_card['card_id'])
 
         try:
             await query.message.delete()
         except Exception:
             pass
+
+        amount_notice = f"\n📦 <b>စုစုပေါင်း ပိုင်ဆိုင်မှု:</b> {new_amount}x" if new_amount > 1 else ""
 
         win_text = f"""🎉 <b>Congratulations {get_mention(user.id, user.first_name)}!</b>
 
@@ -812,7 +878,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🎴 <b>ရရှိသွားသော Card အချက်အလက်:</b>
 🏷️ <b>Name:</b> {won_card['name']}
-🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>"""
+🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
 
         if won_card['type'] == 'photo':
             await context.bot.send_photo(chat_id=chat_id, photo=won_card['file_id'], caption=win_text, parse_mode="HTML")
@@ -906,6 +972,7 @@ def main():
     
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
+    app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
 
