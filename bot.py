@@ -4,7 +4,7 @@ import os
 import random
 import re
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -49,14 +49,15 @@ group_msg_count = {}
 group_threshold = {}
 active_games = {}
 last_results = {}
-active_cboxes = {}  # Store active Coin Boxes: {msg_id: dict}
+active_cboxes = {}  # Store active Coin Boxes
+pending_gifts = {}   # Store pending gifts for confirmation
 game_media = None
 result_media = None
 global_default_threshold = 10
 wait_time_seconds = 600  # Default: 10m
 permission_checking_groups = set()
 
-# Database Connection Pool Global Instance
+# Database Connection Pool
 db_pool = None
 
 async def init_db():
@@ -162,7 +163,6 @@ def get_mention(user_id, name):
     clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
-# Check Bot Admin Permission Function
 async def check_bot_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
     try:
         bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
@@ -190,7 +190,7 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
     start_time = asyncio.get_event_loop().time()
 
     while True:
-        await asyncio.sleep(15)  # 15 စက္ကန့်တစ်ခါ admin စစ်
+        await asyncio.sleep(15)
         is_admin = await check_bot_admin(context, chat_id)
         if is_admin:
             try:
@@ -210,12 +210,11 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
 
     permission_checking_groups.discard(chat_id)
 
-# Coin Box (Giveaway) Command Implementation - Restricted to Bot Owner Only
+# Coin Box Command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
-    # Admin Exclusive Restriction
     if user.id != ADMIN_ID:
         return
 
@@ -250,10 +249,10 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "total_amount": total_amount,
         "remaining": total_amount,
         "creator": user.first_name,
-        "claimed_users": {},  # {user_id: {"name": str, "got": int}}
+        "claimed_users": {},
     }
 
-# Admin Command: Wait Time Set - Restricted to Bot Owner Only
+# Admin Command: Wait Time Set
 async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global wait_time_seconds
     if update.effective_user.id != ADMIN_ID:
@@ -263,7 +262,7 @@ async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match = re.search(r"/wait\s+time\s+(\d+)([mh])", full_text, re.IGNORECASE)
 
     if not match:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/wait time 10m` (မိနစ်) သို့မဟုတ် `/wait time 1h` (နာရီ)", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/wait time 10m` သို့မဟုတ် `/wait time 1h`", parse_mode="Markdown")
 
     num = int(match.group(1))
     unit = match.group(2).lower()
@@ -308,7 +307,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📜 **အသုံးပြုနိုင်သော Commands များ:**
 • /kc - မိမိ Coin နှင့် ကဒ်များ စစ်ဆေးရန်
 • /kbox - 300 Coin သုံး၍ Card Box ဖောက်ရန်
-• /cardlist - ရှိသမျှ Card List များ ကြည့်ရန်
+• /kgift - Card သို့မဟုတ် Kachi Coin လက်ဆောင်ပေးရန် (Reply ထောက်၍ အသုံးပြုပါ)
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်"""
 
@@ -318,7 +317,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
-# /admin Command (Admin Exclusive)
+# /admin Command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -332,11 +331,12 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 3. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
 4. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
 5. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-6. <b>/del [card_id]</b> - Card ဖျက်ရန် (User များဆီမှပါ ပျက်မည်)
-7. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
-8. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-9. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
-10. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
+6. <b>/del [card_id]</b> - Card ဖျက်ရန်
+7. <b>/cardlist</b> - ရှိသမျှ Card List များ ကြည့်ရန် (Admin Only)
+8. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
+9. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန်
+10. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
+11. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
 
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -369,7 +369,7 @@ async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ အသုံးပြုနည်း: `/c 6`", parse_mode="Markdown")
 
-# Admin Coin Give/Take (/k id amount)
+# Admin Coin Give/Take
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -512,16 +512,114 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=reply_to_msg_id
     )
 
-# /kc Command
-async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+# /kgift Command Implementation
+async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sender = update.effective_user
     chat = update.effective_chat
-    await register_user_group(user, chat)
+    reply_msg = update.message.reply_to_message
+
+    if not reply_msg or not reply_msg.from_user or reply_msg.from_user.is_bot:
+        return await update.message.reply_text("❌ လက်ဆောင်ပေးလိုသည့် အသုံးပြုသူ၏ Message ကို Reply ထောက်၍ သုံးပါ။")
+
+    receiver = reply_msg.from_user
+    if sender.id == receiver.id:
+        return await update.message.reply_text("❌ မိမိကိုယ်ကို လက်ဆောင်ပြန်ပေး၍ မရပါ။")
+
+    await register_user_group(sender, chat)
+    await register_user_group(receiver, chat)
+
+    if not context.args:
+        return await update.message.reply_text("❌ အသုံးပြုနည်း:\n• Card ပေးရန်: Reply ထောက်၍ `/kgift [card_id]`\n• Coin ပေးရန်: Reply ထောက်၍ `/kgift c[amount]`", parse_mode="Markdown")
+
+    arg = context.args[0].strip()
+
+    # Case 1: Coin Gift (e.g. /kgift c200)
+    if arg.lower().startswith("c") and arg[1:].isdigit():
+        amount = int(arg[1:])
+        if amount <= 0:
+            return await update.message.reply_text("❌ Kachi Coin ပမာဏသည် 0 ထက် ကြီးရပါမည်။")
+
+        async with db_pool.acquire() as conn:
+            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", sender.id)
+            sender_coins = user_row['coins'] if user_row else 0
+
+        if sender_coins < amount:
+            return await update.message.reply_text(f"❌ သင့်ထံတွင် Kachi Coin {amount} မလုံလောက်ပါ။ (လက်ရှိ: {sender_coins} 🩸)")
+
+        text = f"""🎁 <b>Kachi Coin Gift Transfer</b>
+
+👤 <b>ပေးပို့သူ:</b> {get_mention(sender.id, sender.first_name)}
+👤 <b>လက်ခံမည့်သူ:</b> {get_mention(receiver.id, receiver.first_name)}
+💰 <b>လက်ဆောင် Coin ပမာဏ:</b> <b>{amount}</b> 🩸 Kachi Coin
+
+<i>လက်ဆောင်ပေးပို့ခြင်းကို အတည်ပြုရန် အောက်ပါ Gift ခလုတ်ကို နှိပ်ပါ။</i>"""
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data=f"gift_cancel_{sender.id}"),
+            InlineKeyboardButton("🎁 Gift", callback_data=f"gift_confirm_{sender.id}")
+        ]])
+
+        sent_msg = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+        pending_gifts[sent_msg.message_id] = {
+            "type": "coin",
+            "sender_id": sender.id,
+            "receiver_id": receiver.id,
+            "receiver_name": receiver.first_name,
+            "amount": amount
+        }
+
+    # Case 2: Card Gift (e.g. /kgift 1263)
+    else:
+        card_id = arg
+        async with db_pool.acquire() as conn:
+            card = await conn.fetchrow("SELECT card_id, name, type, file_id FROM cards WHERE card_id = $1", card_id)
+            if not card:
+                return await update.message.reply_text(f"❌ Card ID <code>{card_id}</code> မရှိပါ။", parse_mode="HTML")
+
+            user_card = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", sender.id, card_id)
+            if not user_card or user_card['amount'] <= 0:
+                return await update.message.reply_text(f"❌ သင့်ထံတွင် Card ID <code>{card_id}</code> (<b>{card['name']}</b>) မရှိပါ။", parse_mode="HTML")
+
+        text = f"""🎁 <b>Kachi Card Gift Transfer</b>
+
+👤 <b>ပေးပို့သူ:</b> {get_mention(sender.id, sender.first_name)}
+👤 <b>လက်ခံမည့်သူ:</b> {get_mention(receiver.id, receiver.first_name)}
+
+🎴 <b>Card အချက်အလက်:</b>
+🏷️ <b>Name:</b> {card['name']}
+🆔 <b>Card ID:</b> <code>{card['card_id']}</code>
+
+<i>လက်ဆောင်ပေးပို့ခြင်းကို အတည်ပြုရန် အောက်ပါ Gift ခလုတ်ကို နှိပ်ပါ။</i>"""
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data=f"gift_cancel_{sender.id}"),
+            InlineKeyboardButton("🎁 Gift", callback_data=f"gift_confirm_{sender.id}")
+        ]])
+
+        if card['type'] == 'photo':
+            sent_msg = await context.bot.send_photo(chat_id=chat.id, photo=card['file_id'], caption=text, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            sent_msg = await context.bot.send_video(chat_id=chat.id, video=card['file_id'], caption=text, parse_mode="HTML", reply_markup=keyboard)
+
+        pending_gifts[sent_msg.message_id] = {
+            "type": "card",
+            "sender_id": sender.id,
+            "receiver_id": receiver.id,
+            "receiver_name": receiver.first_name,
+            "card_id": card_id,
+            "card_name": card['name']
+        }
+
+# Helper to render /kc command
+async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
+    user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
+    target_id = owner_id if owner_id else user.id
 
     async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT coins, selected_card_id FROM users WHERE user_id = $1", user.id)
+        user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         coins = user_row['coins'] if user_row else 0
         selected_card_id = user_row['selected_card_id'] if user_row else None
+        display_name = user_row['name'] if user_row else user.first_name
 
         rank_row = await conn.fetchrow("SELECT COUNT(*) + 1 AS rank FROM users WHERE coins > $1", coins)
         rank = rank_row['rank']
@@ -530,43 +628,84 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SELECT c.card_id, c.name, c.type, c.file_id, uc.amount 
             FROM user_cards uc 
             JOIN cards c ON uc.card_id = c.card_id 
-            WHERE uc.user_id = $1
-        """, user.id)
+            WHERE uc.user_id = $1 AND uc.amount > 0
+            ORDER BY c.card_id ASC
+        """, target_id)
 
-    text = f"""◓𝙉𝘼𝙈𝙀〇 {get_mention(user.id, user.first_name)}
-        ◒ 𝙸𝙳⊝ <code>{user.id}</code>
+    text_header = f"""◓𝙉𝘼𝙈𝙀〇 {get_mention(target_id, display_name)}
+        ◒ 𝙸𝙳⊝ <code>{target_id}</code>
 ◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
          ◓𝙶𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
 
     if not user_card_rows:
-        text += "\n\n🎴 <i>ပိုင်ဆိုင်ထားသော ကဒ် မရှိသေးပါ။</i>"
-        await update.message.reply_text(text, parse_mode="HTML")
-    else:
-        active_card = None
-        if selected_card_id:
-            active_card = next((c for c in user_card_rows if c['card_id'] == selected_card_id), None)
-        
-        if not active_card:
-            active_card = user_card_rows[-1]
+        full_text = f"{text_header}\n\n🎴 <i>ပိုင်ဆိုင်ထားသော ကဒ် မရှိသေးပါ။</i>"
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(full_text, parse_mode="HTML")
+        else:
+            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML")
 
-        cards_info_list = []
-        for c in user_card_rows:
-            count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
-            cards_info_list.append(f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>){count_str}")
+    active_card = None
+    if selected_card_id:
+        active_card = next((c for c in user_card_rows if c['card_id'] == selected_card_id), None)
+    if not active_card:
+        active_card = user_card_rows[-1]
 
-        cards_info = "\n".join(cards_info_list)
-        full_text = f"{text}\n\n🎴 <b>ပိုင်ဆိုင်ထားသော ကဒ်များ:</b>\n{cards_info}"
+    per_page = 5
+    total_cards = len(user_card_rows)
+    total_pages = (total_cards + per_page - 1) // per_page
+    page = max(0, min(page, total_pages - 1))
 
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_page_cards = user_card_rows[start_idx:end_idx]
+
+    cards_info_list = []
+    for c in current_page_cards:
+        count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
+        cards_info_list.append(f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>){count_str}")
+
+    cards_info = "\n".join(cards_info_list)
+    page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
+    full_text = f"{text_header}\n\n🎴 <b>ပိုင်ဆိုင်ထားသော ကဒ်များ{page_str}:</b>\n{cards_info}"
+
+    buttons = []
+    if total_pages > 1:
+        if page > 0:
+            buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
+        if page < total_pages - 1:
+            buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
+
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
+    if isinstance(update_or_query, Update):
         try:
             if active_card['type'] == 'photo':
-                await update.message.reply_photo(photo=active_card['file_id'], caption=full_text, parse_mode="HTML")
+                await update_or_query.message.reply_photo(photo=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup)
             else:
-                await update.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML")
+                await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup)
         except Exception:
-            await update.message.reply_text(full_text, parse_mode="HTML")
+            await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup)
+    else:
+        query = update_or_query
+        try:
+            await query.edit_message_caption(caption=full_text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            try:
+                await query.edit_message_text(text=full_text, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
 
-# --- /cardlist Command ---
+# /kc Command Handler
+async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat)
+    await render_kc_view(update, context, page=0, owner_id=user.id)
+
+# /cardlist Command - Admin Only
 async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
     await render_cardlist_page(update, context, page=0, owner_id=update.effective_user.id)
 
 async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
@@ -591,7 +730,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
 
     card_text_list = []
     for idx, c in enumerate(current_page_cards, start=start_idx + 1):
-        type_emoji = "🖼️️" if c['type'] == 'photo' else "🎥"
+        type_emoji = "🖼" if c['type'] == 'photo' else "🎥"
         card_text_list.append(f"{idx}. <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{type_emoji} {c['type'].upper()}]")
 
     cards_str = "\n".join(card_text_list)
@@ -605,7 +744,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     if page > 0:
         buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"clist_{page - 1}_{owner_id}"))
     if page < total_pages - 1:
-        buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"clist_{page + 1}_{owner_id}"))
+        buttons.append(InlineKeyboardButton("Next ▶️️", callback_data=f"clist_{page + 1}_{owner_id}"))
 
     markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
@@ -618,7 +757,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
-# --- /card [card_id] Command ---
+# /card [card_id] Command
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -849,7 +988,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
     chat_id = chat.id
 
-    # Admin Permission Check
     is_admin = await check_bot_admin(context, chat_id)
     if not is_admin:
         asyncio.create_task(handle_permission_wait(context, chat_id))
@@ -906,7 +1044,10 @@ def get_leaderboard_buttons():
             InlineKeyboardButton("🏆 Top In Gp", callback_data="lb_gp"),
             InlineKeyboardButton("🌍 Global Top", callback_data="lb_global"),
         ],
-        [InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups")],
+        [
+            InlineKeyboardButton("💎 Richest Card Owners", callback_data="lb_cards"),
+            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups")
+        ],
     ])
 
 # Game Flow
@@ -935,7 +1076,6 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     game_state["msg_id"] = sent.message_id
 
-    # Countdown Loop
     while game_state["time_left"] > 0:
         await asyncio.sleep(5)
         game_state["time_left"] -= 5
@@ -1008,7 +1148,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     if chat_id in active_games:
         del active_games[chat_id]
 
-# Callbacks
+# Callback Query Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -1018,6 +1158,94 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat)
 
+    # Gift Confirmation & Cancel Actions
+    if data.startswith("gift_"):
+        parts = data.split("_")
+        action = parts[1]
+        allowed_sender_id = int(parts[2])
+
+        if user.id != allowed_sender_id:
+            return await query.answer("❌ သင်သည် ပေးပို့သူ မဟုတ်သည့်အတွက် နှိပ်ပိုင်ခွင့် မရှိပါ။", show_alert=True)
+
+        gift_info = pending_gifts.get(msg_id)
+        if not gift_info:
+            return await query.answer("❌ ဒီ Gift Transfer သက်တမ်းကုန်သွားပါပြီ။", show_alert=True)
+
+        if action == "cancel":
+            del pending_gifts[msg_id]
+            cancel_text = "❌ <b>Gift Transfer ကို ပေးပို့သူမှ ပယ်ဖျက်လိုက်ပါပြီ။</b>"
+            try:
+                if query.message.caption:
+                    await query.edit_message_caption(caption=cancel_text, parse_mode="HTML")
+                else:
+                    await query.edit_message_text(text=cancel_text, parse_mode="HTML")
+            except Exception:
+                pass
+            return await query.answer("ပယ်ဖျက်လိုက်ပါပြီ။")
+
+        elif action == "confirm":
+            sender_id = gift_info["sender_id"]
+            receiver_id = gift_info["receiver_id"]
+            receiver_name = gift_info["receiver_name"]
+
+            async with db_pool.acquire() as conn:
+                if gift_info["type"] == "coin":
+                    amount = gift_info["amount"]
+                    s_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", sender_id)
+                    if not s_row or s_row['coins'] < amount:
+                        return await query.answer("❌ သင့်ထံတွင် Kachi Coin မလုံလောက်တော့ပါ။", show_alert=True)
+
+                    await conn.execute("UPDATE users SET coins = coins - $1 WHERE user_id = $2", amount, sender_id)
+                    await conn.execute("""
+                        INSERT INTO users (user_id, name, coins) VALUES ($1, $2, $3)
+                        ON CONFLICT(user_id) DO UPDATE SET coins = users.coins + EXCLUDED.coins
+                    """, receiver_id, receiver_name, amount)
+
+                    success_text = f"✅ {get_mention(sender_id, user.first_name)} မှ {get_mention(receiver_id, receiver_name)} ထံသို့ Kachi Coin <b>{amount}</b> 🩸 လက်ဆောင်ပေးပို့ခြင်း အောင်မြင်ပါပြီ!"
+
+                elif gift_info["type"] == "card":
+                    card_id = gift_info["card_id"]
+                    card_name = gift_info["card_name"]
+
+                    s_card = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", sender_id, card_id)
+                    if not s_card or s_card['amount'] <= 0:
+                        return await query.answer(f"❌ သင့်ထံတွင် Card ID {card_id} မရှိတော့ပါ။", show_alert=True)
+
+                    if s_card['amount'] == 1:
+                        await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", sender_id, card_id)
+                    else:
+                        await conn.execute("UPDATE user_cards SET amount = amount - 1 WHERE user_id = $1 AND card_id = $2", sender_id, card_id)
+
+                    await conn.execute("""
+                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                        ON CONFLICT(user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                    """, receiver_id, card_id)
+
+                    success_text = f"✅ {get_mention(sender_id, user.first_name)} မှ {get_mention(receiver_id, receiver_name)} ထံသို့ <b>{card_name}</b> (ID: <code>{card_id}</code>) Card လက်ဆောင်ပေးပို့ခြင်း အောင်မြင်ပါပြီ!"
+
+            del pending_gifts[msg_id]
+            try:
+                if query.message.caption:
+                    await query.edit_message_caption(caption=success_text, parse_mode="HTML")
+                else:
+                    await query.edit_message_text(text=success_text, parse_mode="HTML")
+            except Exception:
+                pass
+            return await query.answer("လက်ဆောင်ပေးပြီးပါပြီ!")
+
+    # KC Pagination Action
+    if data.startswith("kcpage_"):
+        parts = data.split("_")
+        page = int(parts[1])
+        target_id = int(parts[2])
+
+        if user.id != target_id:
+            return await query.answer("❌ သင် ခေါ်ယူထားသော /kc မဟုတ်ပါ!", show_alert=True)
+
+        await render_kc_view(query, context, page=page, owner_id=target_id)
+        await query.answer()
+        return
+
     # Coin Box Claim Action
     if data == "claim_cbox":
         box = active_cboxes.get(msg_id)
@@ -1025,12 +1253,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.answer("❌ ဒီ Coin Box သက်တမ်းကုန်သွားပါပြီ သို့မဟုတ် မရှိတော့ပါ။", show_alert=True)
 
         if user.id in box["claimed_users"]:
-            return await query.answer("❌ သင် ဒီ Box မှ Coin ခိုးယူပြီးပါပြီ! (တစ်ယောက်လျှင် ၁ ကြိမ်သာ)", show_alert=True)
+            return await query.answer("❌ သင် ဒီ Box မှ Coin ခိုးယူပြီးပါပြီ!", show_alert=True)
 
         if box["remaining"] <= 0:
             return await query.answer("❌ Coin Box ထဲတွင် Coin များ ကုန်သွားပါပြီ!", show_alert=True)
 
-        # Random Coin calculation (Max random range limit based on remaining)
         max_steal = max(1, min(box["remaining"], int(box["total_amount"] * 0.4)))
         stolen_amount = random.randint(1, max_steal) if box["remaining"] > 1 else box["remaining"]
 
@@ -1040,12 +1267,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "got": stolen_amount
         }
 
-        # Add coin to database
         await add_coins(user.id, stolen_amount)
-
         await query.answer(f"🎉 သင့်ထံသို့ {stolen_amount} 🩸 Kachi Coin ရရှိသွားပါပြီ!", show_alert=True)
 
-        # Build list string
         claimed_list = []
         for uid, udata in box["claimed_users"].items():
             claimed_list.append(f"• {get_mention(uid, udata['name'])} — <b>{udata['got']}</b> 🩸")
@@ -1182,16 +1406,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # Leaderboard (Top In Group & Global Top)
+    # Leaderboard Actions
     if data.startswith("lb_"):
         lb_type = data.replace("lb_", "")
         async with db_pool.acquire() as conn:
             if lb_type == "gp":
                 rows = await conn.fetch("""
-                    SELECT u.name, u.coins 
+                    SELECT u.user_id, u.name, u.coins, COALESCE(SUM(uc.amount), 0) AS total_cards
                     FROM users u
                     JOIN group_members gm ON u.user_id = gm.user_id
+                    LEFT JOIN user_cards uc ON u.user_id = uc.user_id
                     WHERE gm.chat_id = $1 AND u.coins > 0
+                    GROUP BY u.user_id, u.name, u.coins
                     ORDER BY u.coins DESC
                     LIMIT 10
                 """, chat_id)
@@ -1203,15 +1429,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ORDER BY coins DESC LIMIT 10
                 """)
                 title = "🌍 <b>Global Top 10 Users</b>"
+            elif lb_type == "cards":
+                rows = await conn.fetch("""
+                    SELECT u.name, SUM(uc.amount) AS card_count
+                    FROM user_cards uc
+                    JOIN users u ON uc.user_id = u.user_id
+                    WHERE uc.amount > 0
+                    GROUP BY u.user_id, u.name
+                    ORDER BY card_count DESC
+                    LIMIT 10
+                """)
+                title = "💎 <b>Richest Card Owners (Top 10)</b>"
             elif lb_type == "groups":
                 rows = await conn.fetch("SELECT title FROM groups LIMIT 10")
                 title = "🏰 <b>Top Groups</b>"
 
         if not rows:
-            text = f"{title}\n\n<i>စာရင်းမရှိသေးပါ သို့မဟုတ် စာရင်းဝင် Coin ရှိသူ မရှိသေးပါ။</i>"
+            text = f"{title}\n\n<i>စာရင်းမရှိသေးပါ သို့မဟုတ် စာရင်းဝင်ရှိသူ မရှိသေးပါ။</i>"
         else:
-            if lb_type in ["gp", "global"]:
+            if lb_type == "gp":
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — {r['coins']} 🩸Kachi Coin ({r['total_cards']} Cards)" for i, r in enumerate(rows)])
+            elif lb_type == "global":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
+            elif lb_type == "cards":
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
             else:
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
@@ -1236,10 +1477,11 @@ def main():
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
-    app.add_handler(CommandHandler("cardlist", cardlist_cmd))
+    app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
 
     # Admin Exclusive Commands
+    app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
     app.add_handler(CommandHandler("cbox", cbox_cmd))
