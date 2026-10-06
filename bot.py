@@ -4,21 +4,20 @@ import os
 import random
 import re
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    ChatMemberHandler,
     filters,
 )
 
-# Environment Variables
+# Environment Variables မှ ယူသုံးခြင်း (Railway Setup အတွက်)
 TOKEN = os.getenv("BOT_TOKEN", "8617814117:AAGbTDFaabbt2RUuHSPQDqT9S6WZqiNosvM")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL Connection String
 
 TEAMS = [
     {"name": "Arsenal", "stadium": "Emirates Stadium", "emoji": "🔴"},
@@ -45,6 +44,7 @@ TEAMS = [
     {"name": "Inter Milan", "stadium": "San Siro", "emoji": "🔵⚫"},
 ]
 
+# Global Memory Stores
 group_msg_count = {}
 group_threshold = {}
 active_games = {}
@@ -52,8 +52,10 @@ last_results = {}
 game_media = None
 result_media = None
 global_default_threshold = 10
-wait_time_seconds = 600  # Default 10 minutes (600s)
+wait_time_seconds = 600  # Default: 10 မိနစ် (10m)
+permission_checking_groups = set()
 
+# Database Connection Pool Global Instance
 db_pool = None
 
 async def init_db():
@@ -74,10 +76,9 @@ async def init_db():
                 added_by_id BIGINT,
                 added_by_name TEXT
             );
-            CREATE TABLE IF NOT EXISTS group_users (
+            CREATE TABLE IF NOT EXISTS group_members (
                 chat_id BIGINT,
                 user_id BIGINT,
-                coins BIGINT DEFAULT 0,
                 PRIMARY KEY (chat_id, user_id)
             );
             CREATE TABLE IF NOT EXISTS settings (
@@ -118,9 +119,9 @@ async def init_db():
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
 
-        wt_row = await conn.fetchrow("SELECT value FROM settings WHERE key='wait_time_seconds'")
-        if wt_row:
-            wait_time_seconds = int(wt_row['value'])
+        wait_row = await conn.fetchrow("SELECT value FROM settings WHERE key='wait_time'")
+        if wait_row:
+            wait_time_seconds = int(wait_row['value'])
 
 async def register_user_group(user, chat):
     if not db_pool:
@@ -131,13 +132,6 @@ async def register_user_group(user, chat):
                 INSERT INTO users (user_id, name) VALUES ($1, $2)
                 ON CONFLICT(user_id) DO UPDATE SET name = EXCLUDED.name
             """, user.id, user.first_name)
-            
-            if chat and chat.type in ["group", "supergroup"]:
-                await conn.execute("""
-                    INSERT INTO group_users (chat_id, user_id, coins) VALUES ($1, $2, 0)
-                    ON CONFLICT(chat_id, user_id) DO NOTHING
-                """, chat.id, user.id)
-
         if chat and chat.type in ["group", "supergroup"]:
             added_id = user.id if user else None
             added_name = user.first_name if user else None
@@ -150,94 +144,103 @@ async def register_user_group(user, chat):
                     added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
             """, chat.id, chat.title or "Group", added_id, added_name)
 
-async def add_coins(user_id, amount, chat_id=None):
+            if user and not user.is_bot:
+                await conn.execute("""
+                    INSERT INTO group_members (chat_id, user_id) VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                """, chat.id, user.id)
+
+async def add_coins(user_id, amount):
     async with db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE users SET coins = GREATEST(0, coins + $1) WHERE user_id = $2",
             amount, user_id
         )
-        if chat_id:
-            await conn.execute("""
-                INSERT INTO group_users (chat_id, user_id, coins) VALUES ($1, $2, GREATEST(0, $3))
-                ON CONFLICT (chat_id, user_id) 
-                DO UPDATE SET coins = GREATEST(0, group_users.coins + $3)
-            """, chat_id, user_id, amount)
 
 def get_mention(user_id, name):
     clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
-# Admin Command: /waittime [m/h]
-async def set_waittime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Admin Command: Wait Time Set
+async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global wait_time_seconds
     if update.effective_user.id != ADMIN_ID:
         return
 
-    if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/waittime 10m` သို့မဟုတ် `/waittime 1h`", parse_mode="Markdown")
+    # /wait time 10m သို့မဟုတ် /wait time 1h
+    full_text = update.message.text.strip()
+    match = re.search(r"/wait\s+time\s+(\d+)([mh])", full_text, re.IGNORECASE)
 
-    arg = context.args[0].lower().strip()
-    match = re.match(r"^(\d+)([mh])$", arg)
     if not match:
-        return await update.message.reply_text("❌ ပုံစံမှားယွင်းနေပါသည်။ မိနစ်အတွက် `m`၊ နာရီအတွက် `h` သုံးပါ (ဥပမာ: `10m`, `2h`)။", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/wait time 10m` (မိနစ်) သို့မဟုတ် `/wait time 1h` (နာရီ)", parse_mode="Markdown")
 
-    val, unit = int(match.group(1)), match.group(2)
-    seconds = val * 60 if unit == 'm' else val * 3600
+    num = int(match.group(1))
+    unit = match.group(2).lower()
 
-    wait_time_seconds = seconds
+    if unit == "m":
+        sec = num * 60
+        unit_str = f"{num} မိနစ်"
+    else:
+        sec = num * 3600
+        unit_str = f"{num} နာရီ"
+
+    wait_time_seconds = sec
+
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO settings (key, value) VALUES ('wait_time_seconds', $1)
+            INSERT INTO settings (key, value) VALUES ('wait_time', $1)
             ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-        """, str(seconds))
+        """, str(sec))
 
-    unit_str = "မိနစ်" if unit == 'm' else "နာရီ"
-    await update.message.reply_text(f"✅ Admin Wait Time ကို <b>{val} {unit_str}</b> သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ။", parse_mode="HTML")
+    await update.message.reply_text(f"✅ Bot ကို Admin Permission မပေးထားပါက စောင့်ဆိုင်းမည့် Wait Time ကို **{unit_str}** သို့ ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="Markdown")
 
-# Bot Group Join Permission Check Loop
-async def check_admin_perm_and_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+# Check Bot Admin Permission Function
+async def check_bot_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
+    try:
+        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+        if bot_member.status in ["administrator", "creator"]:
+            return True
+    except Exception:
+        pass
+    return False
+
+async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    if chat_id in permission_checking_groups:
+        return
+    permission_checking_groups.add(chat_id)
+
+    try:
+        msg = await context.bot.send_message(
+            chat_id,
+            "⚠️ **Bot ကို Admin Permission လေးပေးပေးပါဦး။**\n"
+            "ဒါမှ Bot သုံးရတာ အဆင်ပြေမှာပါဗျ။ Permission မပေးထားပါက သတ်မှတ် Wait Time ပြည့်လျှင် Auto ထွက်ပါမည်။",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        msg = None
+
     start_time = asyncio.get_event_loop().time()
-    msg_sent = False
 
     while True:
-        try:
-            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-            if bot_member.status in ["administrator", "creator"]:
-                if msg_sent:
-                    await context.bot.send_message(chat_id, "✅ Admin Permission ရရှိလိုက်ပါပြီ! Bot ကို စတင်အသုံးပြုနိုင်ပါပြီဗျ။")
-                break
-            else:
-                if not msg_sent:
-                    time_str = f"{wait_time_seconds // 60} မိနစ်" if wait_time_seconds < 3600 else f"{wait_time_seconds // 3600} နာရီ"
-                    await context.bot.send_message(
-                        chat_id,
-                        f"⚠️ **Admin Permission လိုအပ်နေပါသည်။**\n\n"
-                        f"Bot ကို ချောမွေ့စွာ အသုံးပြုနိုင်ရန် ကျေးဇူးပြု၍ Admin Permission လေး ပေးပေးပါဗျ။\n"
-                        f"စောင့်ဆိုင်းချိန် **{time_str}** အတွင်း Admin မပေးပါက Bot သည် အလိုအလျောက် ထွက်သွားမည် ဖြစ်ပါသည်။",
-                        parse_mode="Markdown"
-                    )
-                    msg_sent = True
-        except Exception:
-            pass
+        await asyncio.sleep(15)  # 15 စက္ကန့်တစ်ခါ admin စစ်
+        is_admin = await check_bot_admin(context, chat_id)
+        if is_admin:
+            try:
+                await context.bot.send_message(chat_id, "✅ Admin Permission ရရှိပါပြီ! ကျေးဇူးတင်ပါတယ်။ Bot ကို ပုံမှန်အတိုင်း သုံးနိုင်ပါပြီ။")
+            except Exception:
+                pass
+            break
 
         elapsed = asyncio.get_event_loop().time() - start_time
         if elapsed >= wait_time_seconds:
             try:
-                await context.bot.send_message(chat_id, "❌ သတ်မှတ်ထားသော စောင့်ဆိုင်းချိန် ပြည့်သွားသော်လည်း Admin Permission မရရှိသေးသဖြင့် Bot သည် Group မှ ထွက်ပါမည်။")
+                await context.bot.send_message(chat_id, "❌ သတ်မှတ်ထားသော Wait Time အတွင်း Admin Permission မရရှိသောကြောင့် Bot Group မှ Auto ထွက်ခွာသွားပါသည်။")
                 await context.bot.leave_chat(chat_id)
             except Exception:
                 pass
             break
 
-        await asyncio.sleep(15)
-
-# Group Member Status Handler
-async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    new_status = update.my_chat_member.new_chat_member.status
-
-    if chat.type in ["group", "supergroup"] and new_status in ["member", "administrator"]:
-        asyncio.create_task(check_admin_perm_and_wait(context, chat.id))
+    permission_checking_groups.discard(chat_id)
 
 # /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,12 +285,13 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>အသုံးပြုနိုင်သော Admin Commands များ:</b>
 
 1. <b>/c [count]</b> - Group စာကြောင်းရေ သတ်မှတ်ရန် (DM Only)
-2. <b>/waittime [time]</b> - Admin Perm စောင့်ဆိုင်းချိန် သတ်မှတ်ရန် (ဥပမာ: /waittime 10m သို့ /waittime 1h)
+2. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
 3. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
 4. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
 5. <b>/del [card_id]</b> - Card ဖျက်ရန် (User များဆီမှပါ ပျက်မည်)
 6. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
 7. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+   - `/g del` သို့မဟုတ် `/r del` ဖြင့် ပြန်ဖျက်နိုင်ပါသည်။
 8. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
 9. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန် (Reply လုပ်ပါ)"""
 
@@ -322,7 +326,7 @@ async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ အသုံးပြုနည်း: `/c 6`", parse_mode="Markdown")
 
-# Admin Coin Give/Take
+# Admin Coin Give/Take (/k id amount)
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -362,16 +366,21 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_args = full_text.partition(" ")[2].strip()
 
         if "." not in raw_args:
-            return await update.message.reply_text("❌ အသုံးပြုနည်း: Reply ထောက်ပြီး `/add [card_id].[card_name]` ဟု ရိုက်ပါ", parse_mode="Markdown")
+            return await update.message.reply_text("❌ အသုံးပြုနည်း: Reply ထောက်ပြီး `/add [card_id].[card_name]` ဟု ရိုက်ပါ (ဥပမာ: `/add 313.Monkey D - Luffy`)", parse_mode="Markdown")
         
         card_id, _, card_name = raw_args.partition(".")
-        card_id, card_name = card_id.strip(), card_name.strip()
+        card_id = card_id.strip()
+        card_name = card_name.strip()
 
         if not card_id or not card_name:
             return await update.message.reply_text("❌ Card ID သို့မဟုတ် Card Name မှားယွင်းနေပါသည်။", parse_mode="Markdown")
 
-        file_id = reply.photo[-1].file_id if reply.photo else reply.video.file_id
-        c_type = "photo" if reply.photo else "video"
+        if reply.photo:
+            file_id = reply.photo[-1].file_id
+            c_type = "photo"
+        else:
+            file_id = reply.video.file_id
+            c_type = "video"
 
         async with db_pool.acquire() as conn:
             await conn.execute("""
@@ -390,7 +399,7 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/del [card_id]`", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/del [card_id]` (ဥပမာ- `/del 313`)", parse_mode="Markdown")
 
     target_card_id = context.args[0].strip()
 
@@ -412,7 +421,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/set [Card_ID]`", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/set [Card_ID]` (ဥပမာ- `/set 313`)", parse_mode="Markdown")
 
     target_card_id = context.args[0]
 
@@ -453,7 +462,12 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🎰 စလှည့်ရန်", callback_data=f"spin_{user.id}")
     ]])
 
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=reply_to_msg_id)
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+        reply_to_message_id=reply_to_msg_id
+    )
 
 # /kc Command
 async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -485,8 +499,18 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n\n🎴 <i>ပိုင်ဆိုင်ထားသော ကဒ် မရှိသေးပါ။</i>"
         await update.message.reply_text(text, parse_mode="HTML")
     else:
-        active_card = next((c for c in user_card_rows if c['card_id'] == selected_card_id), user_card_rows[-1])
-        cards_info_list = [f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>){f' <b>({c[\"amount\"]}x)</b>' if c['amount'] > 1 else ''}" for c in user_card_rows]
+        active_card = None
+        if selected_card_id:
+            active_card = next((c for c in user_card_rows if c['card_id'] == selected_card_id), None)
+        
+        if not active_card:
+            active_card = user_card_rows[-1]
+
+        cards_info_list = []
+        for c in user_card_rows:
+            count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
+            cards_info_list.append(f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>){count_str}")
+
         cards_info = "\n".join(cards_info_list)
         full_text = f"{text}\n\n🎴 <b>ပိုင်ဆိုင်ထားသော ကဒ်များ:</b>\n{cards_info}"
 
@@ -498,7 +522,7 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await update.message.reply_text(full_text, parse_mode="HTML")
 
-# /cardlist Command
+# --- /cardlist Command ---
 async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await render_cardlist_page(update, context, page=0, owner_id=update.effective_user.id)
 
@@ -518,12 +542,21 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     total_pages = (total_cards + per_page - 1) // per_page
 
     page = max(0, min(page, total_pages - 1))
-    current_page_cards = cards[page * per_page : (page + 1) * per_page]
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_page_cards = cards[start_idx:end_idx]
 
-    card_text_list = [f"{idx}. <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{'🖼️' if c['type'] == 'photo' else '🎥'} {c['type'].upper()}]" for idx, c in enumerate(current_page_cards, start=page * per_page + 1)]
+    card_text_list = []
+    for idx, c in enumerate(current_page_cards, start=start_idx + 1):
+        type_emoji = "🖼️" if c['type'] == 'photo' else "🎥"
+        card_text_list.append(f"{idx}. <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{type_emoji} {c['type'].upper()}]")
+
     cards_str = "\n".join(card_text_list)
 
-    text = f"📜 <b>Kachi Card List (Page {page + 1}/{total_pages})</b>\n📌 <i>ကဒ်၏ အသေးစိတ်နှင့် ပုံကို ကြည့်ရှုလိုပါက <code>/card [card_id]</code> ကို ရိုက်ပါ။</i>\n\n{cards_str}"
+    text = f"""📜 <b>Kachi Card List (Page {page + 1}/{total_pages})</b>
+📌 <i>ကဒ်၏ အသေးစိတ်နှင့် ပုံကို ကြည့်ရှုလိုပါက <code>/card [card_id]</code> ကို ရိုက်ပါ။</i>
+
+{cards_str}"""
 
     buttons = []
     if page > 0:
@@ -536,38 +569,47 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     if isinstance(update_or_query, Update):
         await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     else:
+        query = update_or_query
         try:
-            await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             pass
 
-# /card [card_id] Command
+# --- /card [card_id] Command ---
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     await register_user_group(user, chat)
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/card [card_id]`", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/card [card_id]` (ဥပမာ- `/card 313`)", parse_mode="Markdown")
 
     target_card_id = context.args[0].strip()
 
     async with db_pool.acquire() as conn:
         card = await conn.fetchrow("SELECT card_id, name, type, file_id FROM cards WHERE card_id = $1", target_card_id)
+
         if not card:
             return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> ရှာမတွေ့ပါ။", parse_mode="HTML")
 
         global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", target_card_id)
+
         top_owners = await conn.fetch("""
             SELECT u.user_id, u.name, uc.amount 
             FROM user_cards uc
             JOIN users u ON uc.user_id = u.user_id
-            WHERE uc.card_id = $1
+            WHERE uc.card_id = $1 AND uc.amount > 0
             ORDER BY uc.amount DESC, u.user_id ASC
             LIMIT 10
         """, target_card_id)
 
-    owners_str = "\n".join([f"{idx}. {get_mention(r['user_id'], r['name'])} — <b>{r['amount']}x</b>" for idx, r in enumerate(top_owners, 1)]) if top_owners else "<i>မည်သူမျှ ပိုင်ဆိုင်ထားခြင်း မရှိသေးပါ။</i>"
+    owners_text_list = []
+    if top_owners:
+        for idx, row in enumerate(top_owners, 1):
+            owners_text_list.append(f"{idx}. {get_mention(row['user_id'], row['name'])} — <b>{row['amount']}x</b>")
+        owners_str = "\n".join(owners_text_list)
+    else:
+        owners_str = "<i>မည်သူမျှ ပိုင်ဆိုင်ထားခြင်း မရှိသေးပါ။</i>"
 
     caption_text = f"""🎴 <b>Card Info Details</b>
 
@@ -576,18 +618,29 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📂 <b>Type:</b> {card['type'].upper()}
 🌐 <b>Global Drop Count:</b> <b>{global_drop_count}</b> ကဒ်
 
-👑 <b>Top 10 Owners:</b>
+👑 <b>Top Owners:</b>
 {owners_str}"""
 
-    try:
-        if card['type'] == 'video':
-            await context.bot.send_video(chat_id=chat.id, video=card['file_id'], caption=caption_text, parse_mode="HTML")
-        else:
-            await context.bot.send_photo(chat_id=chat.id, photo=card['file_id'], caption=caption_text, parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text(caption_text, parse_mode="HTML")
+    is_video = (card['type'] == 'video') or (str(card['file_id']).startswith("BAA"))
 
-# /glist Command
+    if is_video:
+        try:
+            await context.bot.send_video(chat_id=chat.id, video=card['file_id'], caption=caption_text, parse_mode="HTML")
+        except Exception:
+            try:
+                await context.bot.send_animation(chat_id=chat.id, animation=card['file_id'], caption=caption_text, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(caption_text, parse_mode="HTML")
+    else:
+        try:
+            await context.bot.send_photo(chat_id=chat.id, photo=card['file_id'], caption=caption_text, parse_mode="HTML")
+        except Exception:
+            try:
+                await context.bot.send_document(chat_id=chat.id, document=card['file_id'], caption=caption_text, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(caption_text, parse_mode="HTML")
+
+# /glist Command for Admin
 async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -599,21 +652,36 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
 
     if not groups:
         text = "🏰 **Group List ခွင့်ပြုထားသော Group မရှိသေးပါ။**"
-        return await (update_or_query.message.reply_text(text, parse_mode="Markdown") if isinstance(update_or_query, Update) else update_or_query.edit_message_text(text, parse_mode="Markdown"))
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(text, parse_mode="Markdown")
+        else:
+            return await update_or_query.edit_message_text(text, parse_mode="Markdown")
 
     total_groups = len(groups)
     g = groups[page]
     chat_id = g['chat_id']
 
-    member_count, invite_link = "N/A", "မရရှိနိုင်ပါ"
+    member_count = "N/A"
+    invite_link = "မရရှိနိုင်ပါ (No Permission)"
     try:
         member_count = await context.bot.get_chat_member_count(chat_id)
-        chat_obj = await context.bot.get_chat(chat_id)
-        invite_link = chat_obj.invite_link or (f"https://t.me/{chat_obj.username}" if chat_obj.username else await context.bot.export_chat_invite_link(chat_id))
     except Exception:
         pass
 
-    adder_text = get_mention(g['added_by_id'], g['added_by_name'] or "User") if g['added_by_id'] else "—"
+    try:
+        chat_obj = await context.bot.get_chat(chat_id)
+        if chat_obj.invite_link:
+            invite_link = chat_obj.invite_link
+        elif chat_obj.username:
+            invite_link = f"https://t.me/{chat_obj.username}"
+        else:
+            invite_link = await context.bot.export_chat_invite_link(chat_id)
+    except Exception:
+        pass
+
+    adder_text = "—"
+    if g['added_by_id']:
+        adder_text = get_mention(g['added_by_id'], g['added_by_name'] or "User")
 
     text = f"""🏰 <b>Group List ({page + 1}/{total_groups})</b>
 
@@ -630,12 +698,13 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"glist_{page + 1}"))
 
     markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
     if isinstance(update_or_query, Update):
         await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     else:
         await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
-# Media Commands
+# Media Commands (/g, /r)
 async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -648,59 +717,99 @@ async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global game_media, result_media
 
     if sub_cmd == "del":
-        if target == "g": game_media = None
-        else: result_media = None
+        if target == "g":
+            game_media = None
+        else:
+            result_media = None
+
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM settings WHERE key=$1", key)
-        return await update.message.reply_text(f"🗑️ {'Game' if target == 'g' else 'Result'} Media ကို ဖျက်လိုက်ပါပြီ။")
+
+        return await update.message.reply_text(f"🗑️️ {'Game' if target == 'g' else 'Result'} Media ကို ဖျက်လိုက်ပါပြီ။")
 
     reply = update.message.reply_to_message
-    if not reply or (not reply.photo and not reply.video):
+    if not reply:
         return await update.message.reply_text("❌ ပုံ သို့မဟုတ် Video ပို့ထားတဲ့ စာကို Reply ထောက်ပြီး Command ရိုက်ပါ။")
 
-    media_obj = {"type": "photo" if reply.photo else "video", "file_id": reply.photo[-1].file_id if reply.photo else reply.video.file_id}
-    if target == "g": game_media = media_obj
-    else: result_media = media_obj
+    media_obj = None
+    if reply.photo:
+        media_obj = {"type": "photo", "file_id": reply.photo[-1].file_id}
+    elif reply.video:
+        media_obj = {"type": "video", "file_id": reply.video.file_id}
+    else:
+        return await update.message.reply_text("❌ Photo သို့မဟုတ် Video ဖြင့် Reply တွဲပါ။")
+
+    if target == "g":
+        game_media = media_obj
+    else:
+        result_media = media_obj
 
     async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value", key, json.dumps(media_obj))
+        await conn.execute("""
+            INSERT INTO settings (key, value) VALUES ($1, $2)
+            ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+        """, key, json.dumps(media_obj))
 
     await update.message.reply_text(f"✅ {'Game' if target == 'g' else 'Result'} Media သတ်မှတ်ပြီးပါပြီ။")
 
-# /stats & /broadcast
+# /stats Command
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID:
+        return
+
     async with db_pool.acquire() as conn:
         u_count = await conn.fetchval("SELECT COUNT(*) FROM users")
         g_count = await conn.fetchval("SELECT COUNT(*) FROM groups")
-    await update.message.reply_text(f"📊 **Bot Statistics:**\n\n👥 Users: {u_count}\n🏰 Groups: {g_count}", parse_mode="Markdown")
 
+    await update.message.reply_text(
+        f"📊 **Bot Statistics:**\n\n👥 Users: {u_count}\n🏰 Groups: {g_count}",
+        parse_mode="Markdown"
+    )
+
+# /broadcast Command
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID:
+        return
     reply = update.message.reply_to_message
-    if not reply: return await update.message.reply_text("❌ Forward ပို့ချင်သော Message ကို Reply ထောက်ပြီး /broadcast ရိုက်ပါ။")
+    if not reply:
+        return await update.message.reply_text("❌ Broadcast ပို့ချင်သော Message ကို Reply ထောက်ပြီး /broadcast ဟု ရိုက်ပါ။")
 
     async with db_pool.acquire() as conn:
-        targets = list(set([r['user_id'] for r in await conn.fetch("SELECT user_id FROM users")] + [r['chat_id'] for r in await conn.fetch("SELECT chat_id FROM groups")]))
+        users = [r['user_id'] for r in await conn.fetch("SELECT user_id FROM users")]
+        groups = [r['chat_id'] for r in await conn.fetch("SELECT chat_id FROM groups")]
 
-    await update.message.reply_text(f"🚀 Broadcast စတင်နေပါပြီ... (Target: {len(targets)})")
+    targets = list(set(users + groups))
+    await update.message.reply_text(f"🚀 Broadcast (Forward) စတင်နေပါပြီ... (Target: {len(targets)})")
+
     success = 0
     for tid in targets:
         try:
-            await context.bot.forward_message(chat_id=tid, from_chat_id=update.effective_chat.id, message_id=reply.message_id)
+            await context.bot.forward_message(
+                chat_id=tid,
+                from_chat_id=update.effective_chat.id,
+                message_id=reply.message_id
+            )
             success += 1
             await asyncio.sleep(0.04)
-        except Exception: pass
+        except Exception:
+            pass
+
     await update.message.reply_text(f"✅ Broadcast ပို့ဆောင်ပြီးပါပြီ! (အောင်မြင်: {success}/{len(targets)})")
 
 # Message Handler
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    if not chat or chat.type not in ["group", "supergroup"]: return
+    if not chat or chat.type not in ["group", "supergroup"]:
+        return
 
     await register_user_group(user, chat)
     chat_id = chat.id
+
+    # Admin Permission Check
+    is_admin = await check_bot_admin(context, chat_id)
+    if not is_admin:
+        asyncio.create_task(handle_permission_wait(context, chat_id))
 
     group_msg_count[chat_id] = group_msg_count.get(chat_id, 0) + 1
     threshold = group_threshold.get(chat_id, global_default_threshold)
@@ -709,11 +818,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_msg_count[chat_id] = 0
         asyncio.create_task(start_game(context, chat_id))
 
-# UI Builder
+# UI & Buttons
 def build_game_ui(game):
     home_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "home"]
     away_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "away"]
     draw_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "draw"]
+
+    home_str = "\n".join(home_list) if home_list else "—"
+    away_str = "\n".join(away_list) if away_list else "—"
+    draw_str = "\n".join(draw_list) if draw_list else "—"
 
     return f"""⚽  𝗖𝗵𝗼𝗼𝘀𝗲 𝗙𝗼𝗿 𝗪𝗶𝗻 🍀
 
@@ -725,76 +838,106 @@ def build_game_ui(game):
 🧩 𝙇𝙞𝙫𝙚 𝘽𝙚𝙩𝙩𝙞𝙣𝙜 𝙇𝙞𝙨𝙩 
 
 ♠ <b>{game['home']['name']}</b>
-{"\n".join(home_list) if home_list else "—"}
+{home_str}
 
 ♥ <b>{game['away']['name']}</b>
-{"\n".join(away_list) if away_list else "—"}
+{away_str}
 
 ♦️ <b>Draw</b>
-{"\n".join(draw_list) if draw_list else "—"}
+{draw_str}
 
 GᴏᴏᴅLᴜᴄᴋ G_ʏ ☘️"""
 
 def build_game_buttons(game):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{game['home']['emoji']} {game['home']['name']}", callback_data="bet_home"),
-         InlineKeyboardButton(f"{game['away']['emoji']} {game['away']['name']}", callback_data="bet_away")],
+        [
+            InlineKeyboardButton(f"{game['home']['emoji']} {game['home']['name']}", callback_data="bet_home"),
+            InlineKeyboardButton(f"{game['away']['emoji']} {game['away']['name']}", callback_data="bet_away"),
+        ],
         [InlineKeyboardButton("🤝 Draw", callback_data="bet_draw")],
     ])
 
 def get_leaderboard_buttons():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏆 Top In Gp", callback_data="lb_gp"), InlineKeyboardButton("🌍 Global Top", callback_data="lb_global")],
+        [
+            InlineKeyboardButton("🏆 Top In Gp", callback_data="lb_gp"),
+            InlineKeyboardButton("🌍 Global Top", callback_data="lb_global"),
+        ],
         [InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups")],
     ])
 
-# Game Logic
+# Game Flow
 async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     home_team, away_team = random.sample(TEAMS, 2)
-    game_state = {"home": home_team, "away": away_team, "bets": {}, "user_names": {}, "time_left": 60, "msg_id": None}
+    game_state = {
+        "home": home_team,
+        "away": away_team,
+        "bets": {},
+        "user_names": {},
+        "time_left": 60,
+        "msg_id": None,
+    }
     active_games[chat_id] = game_state
 
     caption = build_game_ui(game_state)
     markup = build_game_buttons(game_state)
 
     if game_media:
-        sent = await (context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup) if game_media["type"] == "photo" else context.bot.send_video(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup))
+        if game_media["type"] == "photo":
+            sent = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
+        else:
+            sent = await context.bot.send_video(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
     else:
         sent = await context.bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=markup)
 
     game_state["msg_id"] = sent.message_id
 
+    # Countdown Loop
     while game_state["time_left"] > 0:
         await asyncio.sleep(5)
         game_state["time_left"] -= 5
         text = build_game_ui(game_state)
         buttons = build_game_buttons(game_state)
         try:
-            if game_media: await context.bot.edit_message_caption(chat_id=chat_id, message_id=game_state["msg_id"], caption=text, parse_mode="HTML", reply_markup=buttons)
-            else: await context.bot.edit_message_text(chat_id=chat_id, message_id=game_state["msg_id"], text=text, parse_mode="HTML", reply_markup=buttons)
-        except Exception: pass
+            if game_media:
+                await context.bot.edit_message_caption(chat_id=chat_id, message_id=game_state["msg_id"], caption=text, parse_mode="HTML", reply_markup=buttons)
+            else:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=game_state["msg_id"], text=text, parse_mode="HTML", reply_markup=buttons)
+        except Exception:
+            pass
 
-    try: await context.bot.delete_message(chat_id, game_state["msg_id"])
-    except Exception: pass
+    try:
+        await context.bot.delete_message(chat_id, game_state["msg_id"])
+    except Exception:
+        pass
 
     anim = await context.bot.send_message(chat_id, "⚡")
     await asyncio.sleep(3)
-    try: await context.bot.delete_message(chat_id, anim.message_id)
-    except Exception: pass
+    try:
+        await context.bot.delete_message(chat_id, anim.message_id)
+    except Exception:
+        pass
 
     home_g, away_g = random.randint(0, 3), random.randint(0, 3)
-    win_choice = "home" if home_g > away_g else ("away" if away_g > home_g else "draw")
-    win_name = home_team["name"] if win_choice == "home" else (away_team["name"] if win_choice == "away" else "Draw")
+    if home_g > away_g:
+        win_choice, win_name = "home", home_team["name"]
+    elif away_g > home_g:
+        win_choice, win_name = "away", away_team["name"]
+    else:
+        win_choice, win_name = "draw", "Draw"
 
     winners, losers = [], []
     for uid, choice in game_state["bets"].items():
         uname = game_state["user_names"][uid]
         if choice == win_choice:
             reward = 30 if win_choice == "draw" else 10
-            await add_coins(uid, reward, chat_id=chat_id)
+            await add_coins(uid, reward)
             winners.append(f"{uname} (+{reward} 🩸)")
         else:
             losers.append(uname)
+
+    win_str = "\n".join(winners) if winners else "—"
+    loss_str = "\n".join(losers) if losers else "—"
 
     res_text = f"""🎗️  𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁   🧶
 
@@ -803,21 +946,26 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 ⚡ <b>Win</b> - {win_name}
 
 ✨ <b>𝐖𝐢𝐧𝐧𝐞𝐫𝐬</b> -
-{"\n".join(winners) if winners else "—"}
+{win_str}
 
 🐸 <b>𝐋𝐨𝐬𝐬𝐞𝐫𝐬</b> -
-{"\n".join(losers) if losers else "—"}"""
+{loss_str}"""
 
     leader_markup = get_leaderboard_buttons()
+
     if result_media:
-        sent_res = await (context.bot.send_photo(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup) if result_media["type"] == "photo" else context.bot.send_video(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup))
+        if result_media["type"] == "photo":
+            sent_res = await context.bot.send_photo(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
+        else:
+            sent_res = await context.bot.send_video(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
     else:
         sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
 
     last_results[sent_res.message_id] = res_text
-    if chat_id in active_games: del active_games[chat_id]
+    if chat_id in active_games:
+        del active_games[chat_id]
 
-# Callbacks Logic
+# Callbacks
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -827,6 +975,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat)
 
+    # Spin Kachi Box Action
     if data.startswith("spin_"):
         owner_id = int(data.split("_")[1])
         if user.id != owner_id:
@@ -835,18 +984,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
             coins = row['coins'] if row else 0
-            if coins < 300: return await query.answer("❌ Kachi Coin 300 မလုံလောက်ပါ။", show_alert=True)
+
+            if coins < 300:
+                return await query.answer("❌ Kachi Coin 300 မလုံလောက်ပါ။", show_alert=True)
 
             cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards")
-            if not cards: return await query.answer("❌ Box အတွင်း Card များ မရှိသေးပါ၊ ခဏစောင့်ပါ။", show_alert=True)
+            if not cards:
+                return await query.answer("❌ Box အတွင်း Card များ မရှိသေးပါ၊ ခဏစောင့်ပါ။", show_alert=True)
 
             await conn.execute("UPDATE users SET coins = coins - 300 WHERE user_id = $1", user.id)
 
         await query.answer("🎰 Box စတင်လှည့်နေပါပြီ...")
+
         frames = ["🔄 [▰▱▱▱▱▱▱▱▱▱] Loading 10%...", "🔄 [▰▰▰▰▱▱▱▱▱▱] Loading 40%...", "🔄 [▰▰▰▰▰▰▰▱▱▱] Loading 70%...", "🔄 [▰▰▰▰▰▰▰▰▰▰] Complete!"]
         for frame in frames:
-            try: await query.edit_message_text(f"🎁 {get_mention(user.id, user.first_name)} မင်္ဂလာပါ!\n\n{frame}", parse_mode="HTML")
-            except Exception: pass
+            try:
+                await query.edit_message_text(f"🎁 {get_mention(user.id, user.first_name)} မင်္ဂလာပါ!\n\n{frame}", parse_mode="HTML")
+            except Exception:
+                pass
             await asyncio.sleep(1)
 
         won_card = random.choice(cards)
@@ -860,8 +1015,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rem_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
             new_amount = await conn.fetchval("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, won_card['card_id'])
 
-        try: await query.message.delete()
-        except Exception: pass
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        amount_notice = f"\n📦 <b>စုစုပေါင်း ပိုင်ဆိုင်မှု:</b> {new_amount}x" if new_amount > 1 else ""
 
         win_text = f"""🎉 <b>Congratulations {get_mention(user.id, user.first_name)}!</b>
 
@@ -870,7 +1029,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🎴 <b>ရရှိသွားသော Card အချက်အလက်:</b>
 🏷 <b>Name:</b> {won_card['name']}
-🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{f'\n📦 <b>စုစုပေါင်း ပိုင်ဆိုင်မှု:</b> {new_amount}x' if new_amount > 1 else ''}"""
+🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
 
         if won_card['type'] == 'photo':
             await context.bot.send_photo(chat_id=chat_id, photo=won_card['file_id'], caption=win_text, parse_mode="HTML")
@@ -878,75 +1037,96 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_video(chat_id=chat_id, video=won_card['file_id'], caption=win_text, parse_mode="HTML")
         return
 
+    # glist Pagination Handling
     if data.startswith("glist_"):
-        if user.id != ADMIN_ID: return await query.answer("❌ Admin သီးသန့်ဖြစ်ပါသည်။", show_alert=True)
-        await render_glist_page(query, context, page=int(data.replace("glist_", "")))
-        return await query.answer()
+        if user.id != ADMIN_ID:
+            return await query.answer("❌ Admin သီးသန့်ဖြစ်ပါသည်။", show_alert=True)
+        page = int(data.replace("glist_", ""))
+        await render_glist_page(query, context, page=page)
+        await query.answer()
+        return
 
+    # cardlist Pagination Handling
     if data.startswith("clist_"):
         parts = data.split("_")
-        page, owner_id = int(parts[1]), int(parts[2]) if len(parts) > 2 else None
+        page = int(parts[1])
+        owner_id = int(parts[2]) if len(parts) > 2 else None
+
         if owner_id and user.id != owner_id:
-            return await query.answer("❌ သင် ခေါ်ယူထားသော Card List မဟုတ်ပါ။", show_alert=True)
+            return await query.answer("❌ သင် ခေါ်ယူထားသော Card List မဟုတ်ပါ! မိမိကိုယ်တိုင် /cardlist ရိုက်ပြီး ကြည့်ပါ။", show_alert=True)
+
         await render_cardlist_page(query, context, page=page, owner_id=owner_id)
-        return await query.answer()
+        await query.answer()
+        return
 
     if data.startswith("bet_"):
         game = active_games.get(chat_id)
-        if not game: return await query.answer("❌ ဒီပွဲ ပွဲပြီးသွားပါပြီ။", show_alert=True)
+        if not game:
+            return await query.answer("❌ ဒီပွဲ ပွဲပြီးသွားပါပြီ။", show_alert=True)
 
-        game["bets"][user.id] = data.replace("bet_", "")
+        choice = data.replace("bet_", "")
+        game["bets"][user.id] = choice
         game["user_names"][user.id] = get_mention(user.id, user.first_name)
-        return await query.answer("✅ လောင်းကြေးထပ်ပြီးပါပြီ!")
+
+        await query.answer("✅ လောင်းကြေးထပ်ပြီးပါပြီ!")
+        return
 
     if data == "lb_back":
         original_text = last_results.get(msg_id, "🎗️ 𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
         try:
-            if query.message.caption: await query.edit_message_caption(caption=original_text, parse_mode="HTML", reply_markup=original_markup)
-            else: await query.edit_message_text(text=original_text, parse_mode="HTML", reply_markup=original_markup)
-        except Exception: pass
-        return await query.answer()
+            if query.message.caption:
+                await query.edit_message_caption(caption=original_text, parse_mode="HTML", reply_markup=original_markup)
+            else:
+                await query.edit_message_text(text=original_text, parse_mode="HTML", reply_markup=original_markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
 
-    # --- Leaderboard Logic (Only Coins > 0 & Filtered per group) ---
+    # Leaderboard (Top In Group & Global Top)
     if data.startswith("lb_"):
         lb_type = data.replace("lb_", "")
         async with db_pool.acquire() as conn:
             if lb_type == "gp":
+                # ဒီ Group ထဲက တကယ်ရှိပြီး Coin 0 ထက်ကြီးတဲ့သူများကိုသာ ဆွဲထုတ်ခြင်း
                 rows = await conn.fetch("""
-                    SELECT u.name, gu.coins 
-                    FROM group_users gu
-                    JOIN users u ON gu.user_id = u.user_id
-                    WHERE gu.chat_id = $1 AND gu.coins > 0
-                    ORDER BY gu.coins DESC LIMIT 10
+                    SELECT u.name, u.coins 
+                    FROM users u
+                    JOIN group_members gm ON u.user_id = gm.user_id
+                    WHERE gm.chat_id = $1 AND u.coins > 0
+                    ORDER BY u.coins DESC
+                    LIMIT 10
                 """, chat_id)
                 title = "🏆 <b>Top In Group</b>"
             elif lb_type == "global":
-                rows = await conn.fetch("SELECT name, coins FROM users WHERE coins > 0 ORDER BY coins DESC LIMIT 10")
+                # Global Top မပြောင်းလဲပါ (Coin 0 ထက်ကြီးသူများသာ)
+                rows = await conn.fetch("""
+                    SELECT name, coins FROM users 
+                    WHERE coins > 0 
+                    ORDER BY coins DESC LIMIT 10
+                """)
                 title = "🌍 <b>Global Top 10 Users</b>"
             elif lb_type == "groups":
                 rows = await conn.fetch("SELECT title FROM groups LIMIT 10")
                 title = "🏰 <b>Top Groups</b>"
 
-        if lb_type in ["gp", "global"]:
-            if rows:
-                body = "\n".join([f"{i+1}. {r['name']} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
-            else:
-                body = "<i>မည်သူမျှ Coin မရှိသေးပါ။</i>"
+        if not rows:
+            text = f"{title}\n\n<i>စာရင်းမရှိသေးပါ သို့မဟုတ် စာရင်းဝင် Coin ရှိသူ မရှိသေးပါ။</i>"
         else:
-            if rows:
-                body = "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
+            if lb_type in ["gp", "global"]:
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['name']} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             else:
-                body = "<i>Group များ မရှိသေးပါ။</i>"
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
-        text = f"{title}\n\n{body}"
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="lb_back")]])
         try:
             if query.message.caption:
                 await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=back_markup)
             else:
                 await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=back_markup)
-        except Exception: pass
+        except Exception:
+            pass
         await query.answer()
 
 async def post_init(app: Application):
@@ -958,7 +1138,7 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
-    app.add_handler(CommandHandler("waittime", set_waittime_cmd))
+    app.add_handler(CommandHandler("wait", set_wait_time_cmd))  # /wait time 10m handler
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
@@ -972,9 +1152,6 @@ def main():
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
-
-    # Bot Join Event Handler
-    app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
