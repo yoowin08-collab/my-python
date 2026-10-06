@@ -14,10 +14,10 @@ from telegram.ext import (
     filters,
 )
 
-# Environment Variables မှ ယူသုံးခြင်း (Railway Setup အတွက်)
+# Environment Variables
 TOKEN = os.getenv("BOT_TOKEN", "8617814117:AAGbTDFaabbt2RUuHSPQDqT9S6WZqiNosvM")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
-DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL Connection String
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 TEAMS = [
     {"name": "Arsenal", "stadium": "Emirates Stadium", "emoji": "🔴"},
@@ -49,10 +49,11 @@ group_msg_count = {}
 group_threshold = {}
 active_games = {}
 last_results = {}
+active_cboxes = {}  # Store active Coin Boxes: {msg_id: dict}
 game_media = None
 result_media = None
 global_default_threshold = 10
-wait_time_seconds = 600  # Default: 10 မိနစ် (10m)
+wait_time_seconds = 600  # Default: 10m
 permission_checking_groups = set()
 
 # Database Connection Pool Global Instance
@@ -161,39 +162,6 @@ def get_mention(user_id, name):
     clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
-# Admin Command: Wait Time Set
-async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global wait_time_seconds
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    # /wait time 10m သို့မဟုတ် /wait time 1h
-    full_text = update.message.text.strip()
-    match = re.search(r"/wait\s+time\s+(\d+)([mh])", full_text, re.IGNORECASE)
-
-    if not match:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/wait time 10m` (မိနစ်) သို့မဟုတ် `/wait time 1h` (နာရီ)", parse_mode="Markdown")
-
-    num = int(match.group(1))
-    unit = match.group(2).lower()
-
-    if unit == "m":
-        sec = num * 60
-        unit_str = f"{num} မိနစ်"
-    else:
-        sec = num * 3600
-        unit_str = f"{num} နာရီ"
-
-    wait_time_seconds = sec
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO settings (key, value) VALUES ('wait_time', $1)
-            ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-        """, str(sec))
-
-    await update.message.reply_text(f"✅ Bot ကို Admin Permission မပေးထားပါက စောင့်ဆိုင်းမည့် Wait Time ကို **{unit_str}** သို့ ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="Markdown")
-
 # Check Bot Admin Permission Function
 async def check_bot_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
     try:
@@ -226,7 +194,7 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
         is_admin = await check_bot_admin(context, chat_id)
         if is_admin:
             try:
-                await context.bot.send_message(chat_id, "✅ Admin Permission ရရှိပါပြီ! ကျေးဇူးတင်ပါတယ်။ Bot ကို ပုံမှန်အတိုင်း သုံးနိုင်ပါပြီ။")
+                await context.bot.send_message(chat_id, "✅ **Admin Permission ရရှိပါပြီ!** ကျေးဇူးတင်ပါတယ်။ Bot ကို စတင်အလုပ်လုပ်ပါပြီ။", parse_mode="Markdown")
             except Exception:
                 pass
             break
@@ -241,6 +209,92 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             break
 
     permission_checking_groups.discard(chat_id)
+
+# Coin Box (Giveaway) Command Implementation
+async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in ["group", "supergroup"]:
+        return await update.message.reply_text("❌ ဒီ Command ကို Group ထဲမှာပဲ အသုံးပြုနိုင်ပါသည်။")
+
+    # Check sender admin status
+    is_admin = False
+    if user.id == ADMIN_ID:
+        is_admin = True
+    else:
+        try:
+            member = await context.bot.get_chat_member(chat.id, user.id)
+            if member.status in ["administrator", "creator"]:
+                is_admin = True
+        except Exception:
+            pass
+
+    if not is_admin:
+        return await update.message.reply_text("❌ ဒီ Command ကို Group Admin သာ အသုံးပြုခွင့်ရှိပါသည်။")
+
+    if not context.args:
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/cbox [amount]` (ဥပမာ- `/cbox 2000`)", parse_mode="Markdown")
+
+    try:
+        total_amount = int(context.args[0])
+        if total_amount <= 0:
+            return await update.message.reply_text("❌ Amount သည် 0 ထက် ကြီးရပါမည်။")
+    except ValueError:
+        return await update.message.reply_text("❌ Amount ကို ကိန်းဂဏန်းသီးသန့် ရိုက်ထည့်ပါ။")
+
+    text = f"""🎁 <b>Kachi Coin Box ကျလာပါပြီ!</b> 🩸
+
+💰 <b>Live Remaining Amount:</b> <code>{total_amount}</code> 🩸
+👤 <b>Created By:</b> {get_mention(user.id, user.first_name)}
+
+📋 <b>ခိုးယူသွားသူများ Live List:</b>
+<i>မည်သူမျှ မခိုးယူရသေးပါ။</i>"""
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🏴‍☠️ ခိုးရန်", callback_data="claim_cbox")
+    ]])
+
+    sent_msg = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    active_cboxes[sent_msg.message_id] = {
+        "total_amount": total_amount,
+        "remaining": total_amount,
+        "creator": user.first_name,
+        "claimed_users": {},  # {user_id: {"name": str, "got": int}}
+    }
+
+# Admin Command: Wait Time Set
+async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global wait_time_seconds
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    full_text = update.message.text.strip()
+    match = re.search(r"/wait\s+time\s+(\d+)([mh])", full_text, re.IGNORECASE)
+
+    if not match:
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/wait time 10m` (မိနစ်) သို့မဟုတ် `/wait time 1h` (နာရီ)", parse_mode="Markdown")
+
+    num = int(match.group(1))
+    unit = match.group(2).lower()
+
+    if unit == "m":
+        sec = num * 60
+        unit_str = f"{num} မိနစ်"
+    else:
+        sec = num * 3600
+        unit_str = f"{num} နာရီ"
+
+    wait_time_seconds = sec
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO settings (key, value) VALUES ('wait_time', $1)
+            ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+        """, str(sec))
+
+    await update.message.reply_text(f"✅ Bot ကို Admin Permission မပေးထားပါက စောင့်ဆိုင်းမည့် Wait Time ကို **{unit_str}** သို့ ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="Markdown")
 
 # /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,15 +339,15 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>အသုံးပြုနိုင်သော Admin Commands များ:</b>
 
 1. <b>/c [count]</b> - Group စာကြောင်းရေ သတ်မှတ်ရန် (DM Only)
-2. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
-3. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
-4. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-5. <b>/del [card_id]</b> - Card ဖျက်ရန် (User များဆီမှပါ ပျက်မည်)
-6. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
-7. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-   - `/g del` သို့မဟုတ် `/r del` ဖြင့် ပြန်ဖျက်နိုင်ပါသည်။
-8. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
-9. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန် (Reply လုပ်ပါ)"""
+2. <b>/cbox [amount]</b> - Group အတွင်း Coin Box (Giveaway) ချပေးရန်
+3. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
+4. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
+5. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+6. <b>/del [card_id]</b> - Card ဖျက်ရန် (User များဆီမှပါ ပျက်မည်)
+7. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
+8. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+9. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
+10. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
 
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -366,7 +420,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_args = full_text.partition(" ")[2].strip()
 
         if "." not in raw_args:
-            return await update.message.reply_text("❌ အသုံးပြုနည်း: Reply ထောက်ပြီး `/add [card_id].[card_name]` ဟု ရိုက်ပါ (ဥပမာ: `/add 313.Monkey D - Luffy`)", parse_mode="Markdown")
+            return await update.message.reply_text("❌ အသုံးပြုနည်း: Reply ထောက်ပြီး `/add [card_id].[card_name]` ဟု ရိုက်ပါ", parse_mode="Markdown")
         
         card_id, _, card_name = raw_args.partition(".")
         card_id = card_id.strip()
@@ -399,7 +453,7 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/del [card_id]` (ဥပမာ- `/del 313`)", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/del [card_id]`", parse_mode="Markdown")
 
     target_card_id = context.args[0].strip()
 
@@ -421,7 +475,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/set [Card_ID]` (ဥပမာ- `/set 313`)", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/set [Card_ID]`", parse_mode="Markdown")
 
     target_card_id = context.args[0]
 
@@ -433,11 +487,11 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """, user.id, target_card_id)
 
         if not has_card:
-            return await update.message.reply_text(f"❌ သင့်ထံတွင် Card ID <code>{target_card_id}</code> မရှိပါ သို့မဟုတ် ID မှားယွင်းနေပါသည်။", parse_mode="HTML")
+            return await update.message.reply_text(f"❌ သင့်ထံတွင် Card ID <code>{target_card_id}</code> မရှိပါ။", parse_mode="HTML")
 
         await conn.execute("UPDATE users SET selected_card_id = $1 WHERE user_id = $2", target_card_id, user.id)
 
-    await update.message.reply_text(f"✅ /kc တွင် ပြသမည့် Card ကို <b>{has_card['name']}</b> (ID: <code>{target_card_id}</code>) အဖြစ် ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="HTML")
+    await update.message.reply_text(f"✅ /kc တွင် ပြသမည့် Card ကို <b>{has_card['name']}</b> သို့ ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="HTML")
 
 # /kbox Command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -582,7 +636,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
 
     if not context.args:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/card [card_id]` (ဥပမာ- `/card 313`)", parse_mode="Markdown")
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/card [card_id]`", parse_mode="Markdown")
 
     target_card_id = context.args[0].strip()
 
@@ -725,7 +779,7 @@ async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM settings WHERE key=$1", key)
 
-        return await update.message.reply_text(f"🗑️️ {'Game' if target == 'g' else 'Result'} Media ကို ဖျက်လိုက်ပါပြီ။")
+        return await update.message.reply_text(f"🗑 {'Game' if target == 'g' else 'Result'} Media ကို ဖျက်လိုက်ပါပြီ။")
 
     reply = update.message.reply_to_message
     if not reply:
@@ -975,6 +1029,61 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat)
 
+    # Coin Box Claim Action
+    if data == "claim_cbox":
+        box = active_cboxes.get(msg_id)
+        if not box:
+            return await query.answer("❌ ဒီ Coin Box သက်တမ်းကုန်သွားပါပြီ သို့မဟုတ် မရှိတော့ပါ။", show_alert=True)
+
+        if user.id in box["claimed_users"]:
+            return await query.answer("❌ သင် ဒီ Box မှ Coin ခိုးယူပြီးပါပြီ! (တစ်ယောက်လျှင် ၁ ကြိမ်သာ)", show_alert=True)
+
+        if box["remaining"] <= 0:
+            return await query.answer("❌ Coin Box ထဲတွင် Coin များ ကုန်သွားပါပြီ!", show_alert=True)
+
+        # Random Coin calculation (Max random range limit based on remaining)
+        max_steal = max(1, min(box["remaining"], int(box["total_amount"] * 0.4)))
+        stolen_amount = random.randint(1, max_steal) if box["remaining"] > 1 else box["remaining"]
+
+        box["remaining"] -= stolen_amount
+        box["claimed_users"][user.id] = {
+            "name": user.first_name,
+            "got": stolen_amount
+        }
+
+        # Add coin to database
+        await add_coins(user.id, stolen_amount)
+
+        await query.answer(f"🎉 သင့်ထံသို့ {stolen_amount} 🩸 Kachi Coin ရရှိသွားပါပြီ!", show_alert=True)
+
+        # Build list string
+        claimed_list = []
+        for uid, udata in box["claimed_users"].items():
+            claimed_list.append(f"• {get_mention(uid, udata['name'])} — <b>{udata['got']}</b> 🩸")
+        
+        list_str = "\n".join(claimed_list)
+
+        if box["remaining"] > 0:
+            status_str = f"💰 <b>Live Remaining Amount:</b> <code>{box['remaining']}</code> 🩸"
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("🏴‍☠️️ ခိုးရန်", callback_data="claim_cbox")]])
+        else:
+            status_str = "🎁 <b>Coin Box ကုန်သွားပါပြီ!</b>"
+            markup = None
+
+        text = f"""🎁 <b>Kachi Coin Box!</b> 🩸
+
+{status_str}
+👤 <b>Created By:</b> {box['creator']}
+
+📋 <b>ခိုးယူသွားသူများ Live List:</b>
+{list_str}"""
+
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+        return
+
     # Spin Kachi Box Action
     if data.startswith("spin_"):
         owner_id = int(data.split("_")[1])
@@ -1053,7 +1162,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = int(parts[2]) if len(parts) > 2 else None
 
         if owner_id and user.id != owner_id:
-            return await query.answer("❌ သင် ခေါ်ယူထားသော Card List မဟုတ်ပါ! မိမိကိုယ်တိုင် /cardlist ရိုက်ပြီး ကြည့်ပါ။", show_alert=True)
+            return await query.answer("❌ သင် ခေါ်ယူထားသော Card List မဟုတ်ပါ!", show_alert=True)
 
         await render_cardlist_page(query, context, page=page, owner_id=owner_id)
         await query.answer()
@@ -1089,7 +1198,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lb_type = data.replace("lb_", "")
         async with db_pool.acquire() as conn:
             if lb_type == "gp":
-                # ဒီ Group ထဲက တကယ်ရှိပြီး Coin 0 ထက်ကြီးတဲ့သူများကိုသာ ဆွဲထုတ်ခြင်း
                 rows = await conn.fetch("""
                     SELECT u.name, u.coins 
                     FROM users u
@@ -1100,7 +1208,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 """, chat_id)
                 title = "🏆 <b>Top In Group</b>"
             elif lb_type == "global":
-                # Global Top မပြောင်းလဲပါ (Coin 0 ထက်ကြီးသူများသာ)
                 rows = await conn.fetch("""
                     SELECT name, coins FROM users 
                     WHERE coins > 0 
@@ -1138,7 +1245,8 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
-    app.add_handler(CommandHandler("wait", set_wait_time_cmd))  # /wait time 10m handler
+    app.add_handler(CommandHandler("cbox", cbox_cmd))  # /cbox amount handler
+    app.add_handler(CommandHandler("wait", set_wait_time_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
