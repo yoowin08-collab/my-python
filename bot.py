@@ -23,7 +23,7 @@ TEAMS = [
     {"name": "Aston Villa", "stadium": "Villa Park", "emoji": "🦁"},
     {"name": "Bournemouth", "stadium": "Vitality Stadium", "emoji": "🍒"},
     {"name": "Brentford", "stadium": "Gtech Community Stadium", "emoji": "🐝"},
-    {"name": "Brighton", "stadium": "AMEX Stadium", "emoji": "🕊️"},
+    {"name": "Brighton", "stadium": "AMEX Stadium", "emoji": "🕊️️"},
     {"name": "Chelsea", "stadium": "Stamford Bridge", "emoji": "🔵"},
     {"name": "Crystal Palace", "stadium": "Selhurst Park", "emoji": "🦅"},
     {"name": "Everton", "stadium": "Goodison Park", "emoji": "🔵"},
@@ -69,13 +69,22 @@ async def init_db():
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
-                title TEXT
+                title TEXT,
+                added_by_id BIGINT,
+                added_by_name TEXT
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
         """)
+
+        # Database Schema Update (added_by Columns ထည့်ရန်)
+        try:
+            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
+            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
+        except Exception:
+            pass
 
         g_media_row = await conn.fetchrow("SELECT value FROM settings WHERE key='game_media'")
         if g_media_row:
@@ -99,10 +108,16 @@ async def register_user_group(user, chat):
                 ON CONFLICT(user_id) DO UPDATE SET name = EXCLUDED.name
             """, user.id, user.first_name)
         if chat and chat.type in ["group", "supergroup"]:
+            added_id = user.id if user else None
+            added_name = user.first_name if user else None
             await conn.execute("""
-                INSERT INTO groups (chat_id, title) VALUES ($1, $2)
-                ON CONFLICT(chat_id) DO UPDATE SET title = EXCLUDED.title
-            """, chat.id, chat.title or "Group")
+                INSERT INTO groups (chat_id, title, added_by_id, added_by_name) 
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT(chat_id) DO UPDATE SET 
+                    title = EXCLUDED.title,
+                    added_by_id = COALESCE(groups.added_by_id, EXCLUDED.added_by_id),
+                    added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
+            """, chat.id, chat.title or "Group", added_id, added_name)
 
 async def add_coins(user_id, amount):
     async with db_pool.acquire() as conn:
@@ -111,10 +126,9 @@ async def add_coins(user_id, amount):
             amount, user_id
         )
 
-def get_mention(user):
-    name = user.first_name or "User"
-    name = name.replace("<", "&lt;").replace(">", "&gt;")
-    return f'<a href="tg://user?id={user.id}">{name}</a>'
+def get_mention(user_id, name):
+    clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 # /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,20 +137,20 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
 
     bot_info = await context.bot.get_me()
-    text = f"""👋 မင်္ဂလာပါ {get_mention(user)}!
+    text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
-🤖 **Choose For Win Game Bot** မှ ကြိုဆိုပါတယ်။
+🌺 𝙆𝘼𝘾𝙃𝙄 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်။
 
-📌 **ဂိမ်းကစားနည်း:**
+📌 ဂိမ်းကစားနည်း
 - Bot ကို Group တွင် Add ပါ။
 - Group အတွင်း စာစကားပြောရင်း သတ်မှတ်စာကြောင်းပြည့်လျှင် Game ကျလာပါမည်။
 - မိမိနှစ်သက်ရာ အသင်း သို့မဟုတ် Draw ကို 1 မိနစ်အတွင်း ရွေးချယ်လောင်းကြေးထပ်နိုင်ပါသည်။
 
-💰 **ဆုကြေးများ:**
-- အသင်းနိုင်လျှင်: **10 🩸Kachi Coin**
-- Draw နိုင်လျှင်: **30 🩸Kachi Coin**
+ဆုကြေးများ / 𝙋𝙧𝙞𝙘𝙚
+- အသင်းနိုင်လျှင်: 10 🩸Kachi Coin
+- Draw နိုင်လျှင်: 30 🩸Kachi Coin
 
-💰 /kc ဖြင့် မိမိ Coin စစ်ဆေးနိုင်ပါသည်။"""
+🕸️ /kc ဖြင့် မိမိ Coin စစ်ဆေးနိုင်ပါသည်။"""
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("➕ Add To Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
@@ -186,12 +200,78 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rank_row = await conn.fetchrow("SELECT COUNT(*) + 1 AS rank FROM users WHERE coins > $1", coins)
         rank = rank_row['rank']
 
-    text = f"""👤 **Name:** {get_mention(user)}
-🆔 **ID:** `{user.id}`
-💰 **Kachi Coin:** {coins} 🩸Kachi Coin
-🌍 **Global No:** #{rank}"""
+    text = f"""◓𝙉𝘼𝙈𝙀〇 {get_mention(user.id, user.first_name)}
+        ◒ 𝙸𝙳⊝ <code>{user.id}</code>
+◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
+         ◓𝙶𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
 
     await update.message.reply_text(text, parse_mode="HTML")
+
+# /glist Command for Admin
+async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await render_glist_page(update, context, page=0)
+
+async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    async with db_pool.acquire() as conn:
+        groups = await conn.fetch("SELECT chat_id, title, added_by_id, added_by_name FROM groups")
+
+    if not groups:
+        text = "🏰 **Group List ခွင့်ပြုထားသော Group မရှိသေးပါ။**"
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(text, parse_mode="Markdown")
+        else:
+            return await update_or_query.edit_message_text(text, parse_mode="Markdown")
+
+    total_groups = len(groups)
+    g = groups[page]
+    chat_id = g['chat_id']
+
+    # Member count နှင့် Invite Link ထုတ်ယူခြင်း
+    member_count = "N/A"
+    invite_link = "မရရှိနိုင်ပါ (No Permission)"
+    try:
+        member_count = await context.bot.get_chat_member_count(chat_id)
+    except Exception:
+        pass
+
+    try:
+        chat_obj = await context.bot.get_chat(chat_id)
+        if chat_obj.invite_link:
+            invite_link = chat_obj.invite_link
+        elif chat_obj.username:
+            invite_link = f"https://t.me/{chat_obj.username}"
+        else:
+            invite_link = await context.bot.export_chat_invite_link(chat_id)
+    except Exception:
+        pass
+
+    adder_text = "—"
+    if g['added_by_id']:
+        adder_text = get_mention(g['added_by_id'], g['added_by_name'] or "User")
+
+    text = f"""🏰 <b>Group List ({page + 1}/{total_groups})</b>
+
+🔹 <b>Group Name:</b> {g['title']}
+🆔 <b>Group ID:</b> <code>{chat_id}</code>
+👥 <b>Members:</b> {member_count}
+👤 <b>Added By:</b> {adder_text}
+🔗 <b>Link:</b> {invite_link}"""
+
+    # Navigation Buttons (Back / Next)
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"glist_{page - 1}"))
+    if page < total_groups - 1:
+        buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"glist_{page + 1}"))
+
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
+    if isinstance(update_or_query, Update):
+        await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+    else:
+        await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 # Media Commands (/g, /r)
 async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,7 +341,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     reply = update.message.reply_to_message
     if not reply:
-        return await update.message.reply_text("❌ Reply ထောက်ပြီး /broadcast ရိုက်ပါ။")
+        return await update.message.reply_text("❌ Broadcast ပို့ချင်သော Message ကို Reply ထောက်ပြီး /broadcast ဟု ရိုက်ပါ။")
 
     async with db_pool.acquire() as conn:
         users = [r['user_id'] for r in await conn.fetch("SELECT user_id FROM users")]
@@ -270,14 +350,26 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     targets = list(set(users + groups))
     await update.message.reply_text(f"🚀 Broadcast စတင်နေပါပြီ... (Target: {len(targets)})")
 
+    # တကယ် Forward လုပ်ထားသော Message ဖြစ်မဖြစ် စစ်ဆေးခြင်း
+    is_forwarded = bool(reply.forward_date or reply.forward_from or reply.forward_from_chat)
+
     success = 0
     for tid in targets:
         try:
-            await context.bot.forward_message(
-                chat_id=tid,
-                from_chat_id=update.effective_chat.id,
-                message_id=reply.message_id
-            )
+            if is_forwarded:
+                # တကယ် Forward လာမှ Forward Message အဖြစ် ပို့မည်
+                await context.bot.forward_message(
+                    chat_id=tid,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=reply.message_id
+                )
+            else:
+                # ရိုးရိုး စာ သို့မဟုတ် Media ဆိုပါက Copy / Normal Message အဖြစ် ပို့မည်
+                await context.bot.copy_message(
+                    chat_id=tid,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=reply.message_id
+                )
             success += 1
             await asyncio.sleep(0.04)
         except Exception:
@@ -324,7 +416,7 @@ def build_game_ui(game):
 ♠ <b>{game['home']['name']}</b>
 {home_str}
 
-♥️️ <b>{game['away']['name']}</b>
+♥ <b>{game['away']['name']}</b>
 {away_str}
 
 ♦️ <b>Draw</b>
@@ -459,6 +551,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat)
 
+    # glist Pagination Handling
+    if data.startswith("glist_"):
+        if user.id != ADMIN_ID:
+            return await query.answer("❌ Admin သီးသန့်ဖြစ်ပါသည်။", show_alert=True)
+        page = int(data.replace("glist_", ""))
+        await render_glist_page(query, context, page=page)
+        await query.answer()
+        return
+
     if data.startswith("bet_"):
         game = active_games.get(chat_id)
         if not game:
@@ -466,7 +567,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         choice = data.replace("bet_", "")
         game["bets"][user.id] = choice
-        game["user_names"][user.id] = get_mention(user)
+        game["user_names"][user.id] = get_mention(user.id, user.first_name)
 
         await query.answer("✅ လောင်းကြေးထပ်ပြီးပါပြီ!")
         return
@@ -514,6 +615,7 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
+    app.add_handler(CommandHandler("glist", glist_cmd))
     app.add_handler(CommandHandler(["g", "r"], media_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
