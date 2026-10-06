@@ -210,28 +210,17 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
 
     permission_checking_groups.discard(chat_id)
 
-# Coin Box (Giveaway) Command Implementation
+# Coin Box (Giveaway) Command Implementation - Restricted to Bot Owner Only
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
+    # Admin Exclusive Restriction
+    if user.id != ADMIN_ID:
+        return
+
     if chat.type not in ["group", "supergroup"]:
         return await update.message.reply_text("❌ ဒီ Command ကို Group ထဲမှာပဲ အသုံးပြုနိုင်ပါသည်။")
-
-    # Check sender admin status
-    is_admin = False
-    if user.id == ADMIN_ID:
-        is_admin = True
-    else:
-        try:
-            member = await context.bot.get_chat_member(chat.id, user.id)
-            if member.status in ["administrator", "creator"]:
-                is_admin = True
-        except Exception:
-            pass
-
-    if not is_admin:
-        return await update.message.reply_text("❌ ဒီ Command ကို Group Admin သာ အသုံးပြုခွင့်ရှိပါသည်။")
 
     if not context.args:
         return await update.message.reply_text("❌ အသုံးပြုနည်း: `/cbox [amount]` (ဥပမာ- `/cbox 2000`)", parse_mode="Markdown")
@@ -264,7 +253,7 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claimed_users": {},  # {user_id: {"name": str, "got": int}}
     }
 
-# Admin Command: Wait Time Set
+# Admin Command: Wait Time Set - Restricted to Bot Owner Only
 async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global wait_time_seconds
     if update.effective_user.id != ADMIN_ID:
@@ -305,7 +294,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_info = await context.bot.get_me()
     text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
-🌺 𝙆𝘼𝘾𝙃𝙄 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်။
+🌺 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်။
 
 📌 ဂိမ်းကစားနည်း
 - Bot ကို Group တွင် Add ပါ။
@@ -602,7 +591,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
 
     card_text_list = []
     for idx, c in enumerate(current_page_cards, start=start_idx + 1):
-        type_emoji = "🖼️" if c['type'] == 'photo' else "🎥"
+        type_emoji = "🖼️️" if c['type'] == 'photo' else "🎥"
         card_text_list.append(f"{idx}. <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{type_emoji} {c['type'].upper()}]")
 
     cards_str = "\n".join(card_text_list)
@@ -1065,7 +1054,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if box["remaining"] > 0:
             status_str = f"💰 <b>Live Remaining Amount:</b> <code>{box['remaining']}</code> 🩸"
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("🏴‍☠️️ ခိုးရန်", callback_data="claim_cbox")]])
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("🏴‍☠ ခိုးရန်", callback_data="claim_cbox")]])
         else:
             status_str = "🎁 <b>Coin Box ကုန်သွားပါပြီ!</b>"
             markup = None
@@ -1242,24 +1231,26 @@ async def post_init(app: Application):
 def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
+    # Public User Commands
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CommandHandler("c", set_count_cmd))
-    app.add_handler(CommandHandler("cbox", cbox_cmd))  # /cbox amount handler
-    app.add_handler(CommandHandler("wait", set_wait_time_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
+    app.add_handler(CommandHandler("kbox", kbox_cmd))
+    app.add_handler(CommandHandler("cardlist", cardlist_cmd))
+    app.add_handler(CommandHandler("card", card_detail_cmd))
+
+    # Admin Exclusive Commands
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("c", set_count_cmd))
+    app.add_handler(CommandHandler("cbox", cbox_cmd))
+    app.add_handler(CommandHandler("wait", set_wait_time_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
     app.add_handler(CommandHandler(["g", "r"], media_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
-    
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
-    app.add_handler(CommandHandler("kbox", kbox_cmd))
-    app.add_handler(CommandHandler("cardlist", cardlist_cmd))
-    app.add_handler(CommandHandler("card", card_detail_cmd))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
