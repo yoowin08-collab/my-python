@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # Environment Variables မှ ယူသုံးခြင်း (Railway Setup အတွက်)
-TOKEN = os.getenv("BOT_TOKEN", "8617814117:AAFNiMNVmk7IDEbI-iMq1xH1npVWjxnzRbU")
+TOKEN = os.getenv("BOT_TOKEN", "8617814117:AAGbTDFaabbt2RUuHSPQDqT9S6WZqiNosvM")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL Connection String
 
@@ -304,15 +304,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # UI & Buttons
 def build_game_ui(game):
-    home_list, away_list, draw_list = [], [], []
-    for uid, choice in game["bets"].items():
-        name = game["user_names"][uid]
-        if choice == "home":
-            home_list.append(name)
-        elif choice == "away":
-            away_list.append(name)
-        elif choice == "draw":
-            draw_list.append(name)
+    home_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "home"]
+    away_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "away"]
+    draw_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "draw"]
+
+    home_str = "\n".join(home_list) if home_list else "—"
+    away_str = "\n".join(away_list) if away_list else "—"
+    draw_str = "\n".join(draw_list) if draw_list else "—"
 
     return f"""⚽  𝗖𝗵𝗼𝗼𝘀𝗲 𝗙𝗼𝗿 𝗪𝗶𝗻 🍀
 
@@ -324,13 +322,13 @@ def build_game_ui(game):
 🧩 𝙇𝙞𝙫𝙚 𝘽𝙚𝙩𝙩𝙞𝙣𝙜 𝙇𝙞𝙨𝙩 
 
 ♠ <b>{game['home']['name']}</b>
-{'\n'.join(home_list) if home_list else '—'}
+{home_str}
 
-♥️ <b>{game['away']['name']}</b>
-{'\n'.join(away_list) if away_list else '—'}
+♥️️ <b>{game['away']['name']}</b>
+{away_str}
 
 ♦️ <b>Draw</b>
-{'\n'.join(draw_list) if draw_list else '—'}
+{draw_str}
 
 GᴏᴏᴅLᴜᴄᴋ G_ʏ ☘️"""
 
@@ -422,6 +420,9 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         else:
             losers.append(uname)
 
+    win_str = "\n".join(winners) if winners else "—"
+    loss_str = "\n".join(losers) if losers else "—"
+
     res_text = f"""🎗️  𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁   🧶
 
 🏖️ <b>{home_team['name']}</b> {home_g} - {away_g} <b>{away_team['name']}</b> 🪂
@@ -429,10 +430,10 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 ⚡ <b>Win</b> - {win_name}
 
 ✨ <b>𝐖𝐢𝐧𝐧𝐞𝐫𝐬</b> -
-{'\n'.join(winners) if winners else '—'}
+{win_str}
 
 🐸 <b>𝐋𝐨𝐬𝐬𝐞𝐫𝐬</b> -
-{'\n'.join(losers) if losers else '—'}"""
+{loss_str}"""
 
     leader_markup = get_leaderboard_buttons()
 
