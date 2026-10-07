@@ -334,8 +334,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
 
 🛡️ <b>Team System အသုံးပြုနည်းများ:</b>
-• <b>/team</b> - Team တည်ထောင်ရန်
-• <b>/myteam</b> - မိမိဝင်ထားသော Team Status ကို ကြည့်ရန်
+• <b>/team</b> - Team တည်ထောင်ရန် သို့မဟုတ် မိမိဝင်ထားသော Team Status ကို ကြည့်ရန်
 • <b>/join [CODE]</b> - အဖွဲ့ Code ကို သုံး၍ Team ထဲသို့ ဝင်ရောက်ရန် လျှောက်ထားရန်
 • <b>/out</b> - လက်ရှိ ဝင်ရောက်ထားသော Team မှ ထွက်ရန် (Member သီးသန့်)
 • <b>/out [user_id]</b> - Team Member တစ်ဦးအား အဖွဲ့မှ Kick ထုတ်ရန် (Leader သီးသန့်)
@@ -346,7 +345,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • <b>Card ပေးရန်:</b> ပေးပို့ချင်သူ၏ စာကို Reply ထောက်ပြီး <code>/kgift 1201</code> (ကဒ် ID ရိုက်ပါ)"""
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➕ Add To Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
+        InlineKeyboardButton("➕ Add To Group", url=f"[https://t.me/](https://t.me/){bot_info.username}?startgroup=true")
     ]])
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -409,37 +408,24 @@ async def show_user_team(update_or_context, chat_id, team_code, bot=None):
 
     members_str = "\n".join(member_lines)
 
-    text = f"""TEAM - <b>{t_info['team_name']}</b>
+    text = f"""𝚃𝙴𝙰𝙼 - <b>{t_info['team_name']}</b>
 Code
 <code>{t_info['team_code']}</code>
 
- ▱ <i>Leader</i> : {get_mention(t_info['leader_id'], leader_name)}
+ ▱<i>𝘓𝘦𝘢𝘥𝘦𝘳</i> : {get_mention(t_info['leader_id'], leader_name)}
 
-<i>Team Members</i> ⊞ ({len(members)}/{t_info['member_limit']})
+<i>𝘛𝘦𝘢𝘮 𝑀𝑒𝑚𝑏𝑒𝘳𝘴</i> ⊞ ({len(members)}/{t_info['member_limit']})
 
 {members_str}"""
 
-    target_bot = bot if bot else (update_or_context.bot if hasattr(update_or_context, 'bot') else None)
-
+    target_bot = bot if bot else update_or_context.bot
     try:
         if t_info['logo_type'] == 'photo':
-            if hasattr(update_or_context, 'message') and update_or_context.message:
-                await update_or_context.message.reply_photo(t_info['logo_file_id'], caption=text, parse_mode="HTML")
-            elif target_bot:
-                await target_bot.send_photo(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
+            await target_bot.send_photo(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
         else:
-            if hasattr(update_or_context, 'message') and update_or_context.message:
-                await update_or_context.message.reply_video(t_info['logo_file_id'], caption=text, parse_mode="HTML")
-            elif target_bot:
-                await target_bot.send_video(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
+            await target_bot.send_video(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
     except Exception:
-        try:
-            if hasattr(update_or_context, 'message') and update_or_context.message:
-                await update_or_context.message.reply_text(text, parse_mode="HTML")
-            elif target_bot:
-                await target_bot.send_message(chat_id, text, parse_mode="HTML")
-        except Exception:
-            pass
+        await target_bot.send_message(chat_id, text, parse_mode="HTML")
 
 # /team Command Implementation
 async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -451,27 +437,13 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
 
     if user_team:
-        await update.message.reply_text("❌ သင် Team သို့ ဝင်ရောက်ထားပြီး ဖြစ်ပါသည်။ အဖွဲ့အချက်အလက်များကို ကြည့်ရန် `/myteam` ဟု ရိုက်ပါ။", parse_mode="Markdown")
+        await show_user_team(update, chat.id, user_team['team_code'])
     else:
         text = "ကဲ အခုပဲ Legendary Team တစ်ခုတည်ထောင်ပြီး Top 1 ယူပြီး 𝗚𝗲𝗺𝗦𝘁𝗼𝗻𝗲🗽 ကိုရယူကြစို့"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("Team ထောင်ရန်", callback_data=f"create_team_{user.id}")
         ]])
         await update.message.reply_text(text, reply_markup=keyboard)
-
-# /myteam Command Implementation
-async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    await register_user_group(user, chat)
-
-    async with db_pool.acquire() as conn:
-        user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
-
-    if user_team:
-        await show_user_team(update, chat.id, user_team['team_code'])
-    else:
-        await update.message.reply_text("❌ သင် မည်သည့် Team တွင်မျှ ဝင်ရောက်ထားခြင်း မရှိသေးပါ။ (/team ဖြင့် တည်ထောင်ပါ)")
 
 # /dele Command (Delete Team - Leader Only)
 async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1094,7 +1066,7 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         if chat_obj.invite_link:
             invite_link = chat_obj.invite_link
         elif chat_obj.username:
-            invite_link = f"https://t.me/{chat_obj.username}"
+            invite_link = f"[https://t.me/](https://t.me/){chat_obj.username}"
         else:
             invite_link = await context.bot.export_chat_invite_link(chat_id)
     except Exception:
@@ -1395,13 +1367,13 @@ async def render_top_teams_view(query, page: int = 0):
 
     text = f"""🌐 <b>GLOBAL TOP TEAM (RANK #{page + 1}/{total_teams})</b>
 
-TEAM - <b>{t['team_name']}</b>
+𝚃𝙴𝙰𝙼 - <b>{t['team_name']}</b>
 Code: <code>{t['team_code']}</code>
 
- ▱ <i>Leader</i> : {get_mention(t['leader_id'], t['leader_name'])}
+ ▱<i>𝘓𝘦𝘢𝘥𝘦𝘳</i> : {get_mention(t['leader_id'], t['leader_name'])}
  🩸 Coins: <b>{t['total_coins']}</b> | 🎯 Winrate: <b>{wr}%</b>
 
-<i>Team Members</i> ⊞ ({len(members)}/{t['member_limit']})
+<i>𝘛𝘦𝘢𝘮 𝑀𝑒𝑚𝑏𝑒𝘳𝘴</i> ⊞ ({len(members)}/{t['member_limit']})
 
 {members_str}"""
 
@@ -1985,7 +1957,6 @@ def main():
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("team", team_cmd))
-    app.add_handler(CommandHandler("myteam", myteam_cmd))
     app.add_handler(CommandHandler("dele", delete_team_cmd))
     app.add_handler(CommandHandler("join", join_team_cmd))
     app.add_handler(CommandHandler("out", out_team_cmd))
