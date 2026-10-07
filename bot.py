@@ -130,14 +130,14 @@ async def init_db():
         except Exception:
             pass
 
-        # Ensure GemStone Card Exists in Cards Table
+        # Ensure GemStone Card Exists in Database
         await conn.execute("""
             INSERT INTO cards (card_id, name, type, file_id)
             VALUES ('gemstone', 'GemStone 💎', 'photo', 'AgACAgUAAxkBAAIB')
             ON CONFLICT (card_id) DO NOTHING
         """)
 
-        # Initialize Reset Timer if not exists
+        # Reset Timer Setup
         reset_row = await conn.fetchrow("SELECT value FROM settings WHERE key='last_team_reset'")
         if not reset_row:
             await conn.execute("INSERT INTO settings (key, value) VALUES ('last_team_reset', $1)", str(int(time.time())))
@@ -246,7 +246,7 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
 
     permission_checking_groups.discard(chat_id)
 
-# 3-Day Team Leaderboard Reset and GemStone Reward Task
+# 3-Day Team Reset & Prize Distribution Task
 async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
     while True:
         await asyncio.sleep(60)
@@ -256,14 +256,11 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
                 last_reset = int(last_reset_row['value']) if last_reset_row else int(time.time())
                 now = int(time.time())
 
-                # 3 days = 3 * 24 * 3600 = 259200 seconds
+                # 3 Days = 3 * 24 * 3600 = 259200 seconds
                 if now - last_reset >= 259200:
-                    # Fetch Top 5 Teams
                     top_teams = await conn.fetch("""
                         SELECT ut.team_code, ut.team_name,
                                COALESCE(SUM(u_all.coins), 0) AS total_coins,
-                               COALESCE(SUM(u_all.wins), 0) AS total_wins,
-                               COALESCE(SUM(u_all.total_games), 0) AS total_games,
                                CASE WHEN SUM(u_all.total_games) > 0 
                                     THEN ROUND((SUM(u_all.wins)::NUMERIC / SUM(u_all.total_games)::NUMERIC) * 100, 1)
                                     ELSE 0.0 END AS winrate
@@ -465,7 +462,7 @@ async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_
         leader_name = leader['name'] if leader else "Leader"
 
         members = await conn.fetch("""
-            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games
+            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games 
             FROM team_members tm
             JOIN users u ON tm.user_id = u.user_id
             WHERE tm.team_code = $1
@@ -1469,7 +1466,7 @@ def get_leaderboard_buttons():
         ]
     ])
 
-# Helper to render Top Team details with media paging (Only Top 5)
+# Helper to render Top Team details with media paging (Top 5 Only)
 async def render_top_teams_view(query, page: int = 0):
     async with db_pool.acquire() as conn:
         teams = await conn.fetch("""
@@ -1507,7 +1504,7 @@ async def render_top_teams_view(query, page: int = 0):
 
     async with db_pool.acquire() as conn:
         members = await conn.fetch("""
-            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games 
+            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games
             FROM team_members tm
             JOIN users u ON tm.user_id = u.user_id
             WHERE tm.team_code = $1
@@ -1691,7 +1688,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if already_in:
                 return await query.answer("❌ သင် အဖွဲ့တစ်ခုတွင် ဝင်ရောက်ပြီးသား ဖြစ်ပါသည်။", show_alert=True)
 
-        # Start state setup
         team_creation_state[user.id] = {"step": "name"}
 
         try:
@@ -2087,7 +2083,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif lb_type == "global":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
             else:
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
