@@ -4,6 +4,7 @@ import os
 import random
 import re
 import string
+import time
 import asyncpg
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
@@ -129,6 +130,18 @@ async def init_db():
         except Exception:
             pass
 
+        # Ensure GemStone Card Exists in Cards Table
+        await conn.execute("""
+            INSERT INTO cards (card_id, name, type, file_id)
+            VALUES ('gemstone', 'GemStone 💎', 'photo', 'AgACAgUAAxkBAAIB')
+            ON CONFLICT (card_id) DO NOTHING
+        """)
+
+        # Initialize Reset Timer if not exists
+        reset_row = await conn.fetchrow("SELECT value FROM settings WHERE key='last_team_reset'")
+        if not reset_row:
+            await conn.execute("INSERT INTO settings (key, value) VALUES ('last_team_reset', $1)", str(int(time.time())))
+
         g_media_row = await conn.fetchrow("SELECT value FROM settings WHERE key='game_media'")
         if g_media_row:
             game_media = json.loads(g_media_row['value'])
@@ -232,6 +245,57 @@ async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             break
 
     permission_checking_groups.discard(chat_id)
+
+# 3-Day Team Leaderboard Reset and GemStone Reward Task
+async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with db_pool.acquire() as conn:
+                last_reset_row = await conn.fetchrow("SELECT value FROM settings WHERE key='last_team_reset'")
+                last_reset = int(last_reset_row['value']) if last_reset_row else int(time.time())
+                now = int(time.time())
+
+                # 3 days = 3 * 24 * 3600 = 259200 seconds
+                if now - last_reset >= 259200:
+                    # Fetch Top 5 Teams
+                    top_teams = await conn.fetch("""
+                        SELECT ut.team_code, ut.team_name,
+                               COALESCE(SUM(u_all.coins), 0) AS total_coins,
+                               COALESCE(SUM(u_all.wins), 0) AS total_wins,
+                               COALESCE(SUM(u_all.total_games), 0) AS total_games,
+                               CASE WHEN SUM(u_all.total_games) > 0 
+                                    THEN ROUND((SUM(u_all.wins)::NUMERIC / SUM(u_all.total_games)::NUMERIC) * 100, 1)
+                                    ELSE 0.0 END AS winrate
+                        FROM user_teams ut
+                        JOIN team_members tm ON ut.team_code = tm.team_code
+                        JOIN users u_all ON tm.user_id = u_all.user_id
+                        GROUP BY ut.team_code, ut.team_name
+                        ORDER BY winrate DESC, total_coins DESC
+                        LIMIT 5
+                    """)
+
+                    for team in top_teams:
+                        members = await conn.fetch("SELECT user_id FROM team_members WHERE team_code = $1", team['team_code'])
+                        for m in members:
+                            await conn.execute("""
+                                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, 'gemstone', 1)
+                                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                            """, m['user_id'])
+                            try:
+                                await context.bot.send_message(
+                                    m['user_id'],
+                                    f"🎉 <b>ဂုဏ်ယူပါတယ်!</b> သင်၏ Team <b>{team['team_name']}</b> သည် Top 5 ဝင်ခဲ့သောကြောင့် Prize အဖြစ် <b>GemStone💎 ၁ တုံး</b> ရရှိပါပြီ။",
+                                    parse_mode="HTML"
+                                )
+                            except Exception:
+                                pass
+
+                    # Reset Users Wins and Total Games stats
+                    await conn.execute("UPDATE users SET wins = 0, total_games = 0")
+                    await conn.execute("UPDATE settings SET value = $1 WHERE key = 'last_team_reset'", str(now))
+        except Exception:
+            pass
 
 # Coin Box Command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,22 +465,43 @@ async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_
         leader_name = leader['name'] if leader else "Leader"
 
         members = await conn.fetch("""
-            SELECT u.user_id, u.name 
+            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games
             FROM team_members tm
             JOIN users u ON tm.user_id = u.user_id
             WHERE tm.team_code = $1
             ORDER BY u.user_id ASC
         """, team_code)
 
+        # Calculate Global Team Rank
+        all_teams_ranked = await conn.fetch("""
+            SELECT ut.team_code,
+                   COALESCE(SUM(u_all.coins), 0) AS total_coins,
+                   CASE WHEN SUM(u_all.total_games) > 0 
+                        THEN ROUND((SUM(u_all.wins)::NUMERIC / SUM(u_all.total_games)::NUMERIC) * 100, 1)
+                        ELSE 0.0 END AS winrate
+            FROM user_teams ut
+            JOIN team_members tm ON ut.team_code = tm.team_code
+            JOIN users u_all ON tm.user_id = u_all.user_id
+            GROUP BY ut.team_code
+            ORDER BY winrate DESC, total_coins DESC
+        """)
+
+        global_rank = "N/A"
+        for idx, tr in enumerate(all_teams_ranked, 1):
+            if tr['team_code'] == team_code:
+                global_rank = f"#{idx}"
+                break
+
     member_lines = []
     for m in members:
-        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])}")
+        wr = round((m['wins'] / m['total_games']) * 100, 1) if m['total_games'] > 0 else 0.0
+        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])} — 🩸{m['coins']} (Played: {m['total_games']} | WR: {wr}%)")
 
     members_str = "\n".join(member_lines)
 
     text = f"""TEAM - <b>{t_info['team_name']}</b>
-Code
-<code>{t_info['team_code']}</code>
+Code: <code>{t_info['team_code']}</code>
+🌐 Global No ▷ {global_rank}
 
  ▱ <i>Leader</i> : {get_mention(t_info['leader_id'], leader_name)}
 
@@ -1384,7 +1469,7 @@ def get_leaderboard_buttons():
         ]
     ])
 
-# Helper to render Top Team details with media paging
+# Helper to render Top Team details with media paging (Only Top 5)
 async def render_top_teams_view(query, page: int = 0):
     async with db_pool.acquire() as conn:
         teams = await conn.fetch("""
@@ -1392,23 +1477,26 @@ async def render_top_teams_view(query, page: int = 0):
                    u.name AS leader_name,
                    COALESCE(SUM(u_all.coins), 0) AS total_coins,
                    COALESCE(SUM(u_all.wins), 0) AS total_wins,
-                   COALESCE(SUM(u_all.total_games), 0) AS total_games
+                   COALESCE(SUM(u_all.total_games), 0) AS total_games,
+                   CASE WHEN SUM(u_all.total_games) > 0 
+                        THEN ROUND((SUM(u_all.wins)::NUMERIC / SUM(u_all.total_games)::NUMERIC) * 100, 1)
+                        ELSE 0.0 END AS winrate
             FROM user_teams ut
             JOIN users u ON ut.leader_id = u.user_id
             JOIN team_members tm ON ut.team_code = tm.team_code
             JOIN users u_all ON tm.user_id = u_all.user_id
             GROUP BY ut.team_code, ut.team_name, ut.leader_id, ut.member_limit, ut.logo_file_id, ut.logo_type, u.name
-            ORDER BY total_coins DESC, total_wins DESC
-            LIMIT 10
+            ORDER BY winrate DESC, total_coins DESC
+            LIMIT 5
         """)
 
     if not teams:
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
         try:
             if query.message.caption:
-                await query.edit_message_caption(caption="🌐 <b>GLOBAL TOP TEAMS</b>\n\n<i>အသင်းများ မရှိသေးပါခင်ဗျာ။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_caption(caption="🌐 <b>GLOBAL TOP TEAMS (TOP 5)</b>\n\n<i>အသင်းများ မရှိသေးပါခင်ဗျာ။</i>", parse_mode="HTML", reply_markup=back_markup)
             else:
-                await query.edit_message_text(text="🌐 <b>GLOBAL TOP TEAMS</b>\n\n<i>အသင်းများ မရှိသေးပါခင်ဗျာ။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_text(text="🌐 <b>GLOBAL TOP TEAMS (TOP 5)</b>\n\n<i>အသင်းများ မရှိသေးပါခင်ဗျာ။</i>", parse_mode="HTML", reply_markup=back_markup)
         except Exception:
             pass
         return
@@ -1419,15 +1507,19 @@ async def render_top_teams_view(query, page: int = 0):
 
     async with db_pool.acquire() as conn:
         members = await conn.fetch("""
-            SELECT u.user_id, u.name 
+            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games 
             FROM team_members tm
             JOIN users u ON tm.user_id = u.user_id
             WHERE tm.team_code = $1
             ORDER BY u.user_id ASC
         """, t['team_code'])
 
-    wr = round((t['total_wins'] / t['total_games']) * 100, 1) if t['total_games'] > 0 else 0.0
-    member_lines = [f"⇋ {get_mention(m['user_id'], m['name'])}" for m in members]
+    wr = t['winrate']
+    member_lines = []
+    for m in members:
+        m_wr = round((m['wins'] / m['total_games']) * 100, 1) if m['total_games'] > 0 else 0.0
+        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])} — 🩸{m['coins']} (Played: {m['total_games']} | WR: {m_wr}%)")
+
     members_str = "\n".join(member_lines)
 
     text = f"""🌐 <b>GLOBAL TOP TEAM (RANK #{page + 1}/{total_teams})</b>
@@ -1436,7 +1528,7 @@ TEAM - <b>{t['team_name']}</b>
 Code: <code>{t['team_code']}</code>
 
  ▱ <i>Leader</i> : {get_mention(t['leader_id'], t['leader_name'])}
- 🩸 Coins: <b>{t['total_coins']}</b> | 🎯 Winrate: <b>{wr}%</b>
+ 🩸 Total Coins: <b>{t['total_coins']}</b> | 🎯 Winrate: <b>{wr}%</b>
 
 <i>Team Members</i> ⊞ ({len(members)}/{t['member_limit']})
 
@@ -1599,7 +1691,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if already_in:
                 return await query.answer("❌ သင် အဖွဲ့တစ်ခုတွင် ဝင်ရောက်ပြီးသား ဖြစ်ပါသည်။", show_alert=True)
 
-        # Start state setup (Coin နှုတ်ယူခြင်းကို တည်ထောင်ခြင်း အပြည့်အဝ ပြီးစီးမှသာ လုပ်ဆောင်ပါမည်)
+        # Start state setup
         team_creation_state[user.id] = {"step": "name"}
 
         try:
@@ -1613,7 +1705,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
             await query.edit_message_text(f"✅ {get_mention(user.id, user.first_name)}၊ Team တည်ထောင်ရန် Bot DM သို့ သွားရောက်ပါ!", parse_mode="HTML")
         except Exception:
-            del team_creation_state[user.id]
+            if user.id in team_creation_state:
+                del team_creation_state[user.id]
             await query.answer("❌ Bot DM သို့ Message ပို့၍ မရပါ၊ Bot ကို /start လုပ်ထားပေးပါခင်ဗျာ။", show_alert=True)
 
         return
@@ -1994,7 +2087,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif lb_type == "global":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
             else:
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
@@ -2010,6 +2103,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(app: Application):
     await init_db()
+    asyncio.create_task(team_reset_checker(app))
 
 def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
