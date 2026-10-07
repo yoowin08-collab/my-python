@@ -409,24 +409,37 @@ async def show_user_team(update_or_context, chat_id, team_code, bot=None):
 
     members_str = "\n".join(member_lines)
 
-    text = f"""𝚃𝙴𝙰𝙼 - <b>{t_info['team_name']}</b>
+    text = f"""TEAM - <b>{t_info['team_name']}</b>
 Code
 <code>{t_info['team_code']}</code>
 
- ▱<i>𝘓𝘦𝘢𝘥𝘦𝘳</i> : {get_mention(t_info['leader_id'], leader_name)}
+ ▱ <i>Leader</i> : {get_mention(t_info['leader_id'], leader_name)}
 
-<i>𝘛𝘦𝘢𝘮 𝑀𝑒𝑚𝑏𝑒𝘳𝘴</i> ⊞ ({len(members)}/{t_info['member_limit']})
+<i>Team Members</i> ⊞ ({len(members)}/{t_info['member_limit']})
 
 {members_str}"""
 
-    target_bot = bot if bot else update_or_context.bot
+    target_bot = bot if bot else (update_or_context.bot if hasattr(update_or_context, 'bot') else None)
+
     try:
         if t_info['logo_type'] == 'photo':
-            await target_bot.send_photo(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
+            if hasattr(update_or_context, 'message') and update_or_context.message:
+                await update_or_context.message.reply_photo(t_info['logo_file_id'], caption=text, parse_mode="HTML")
+            elif target_bot:
+                await target_bot.send_photo(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
         else:
-            await target_bot.send_video(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
+            if hasattr(update_or_context, 'message') and update_or_context.message:
+                await update_or_context.message.reply_video(t_info['logo_file_id'], caption=text, parse_mode="HTML")
+            elif target_bot:
+                await target_bot.send_video(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
     except Exception:
-        await target_bot.send_message(chat_id, text, parse_mode="HTML")
+        try:
+            if hasattr(update_or_context, 'message') and update_or_context.message:
+                await update_or_context.message.reply_text(text, parse_mode="HTML")
+            elif target_bot:
+                await target_bot.send_message(chat_id, text, parse_mode="HTML")
+        except Exception:
+            pass
 
 # /team Command Implementation
 async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1382,13 +1395,13 @@ async def render_top_teams_view(query, page: int = 0):
 
     text = f"""🌐 <b>GLOBAL TOP TEAM (RANK #{page + 1}/{total_teams})</b>
 
-𝚃𝙴𝙰𝙼 - <b>{t['team_name']}</b>
+TEAM - <b>{t['team_name']}</b>
 Code: <code>{t['team_code']}</code>
 
- ▱<i>𝘓𝘦𝘢𝘥𝘦𝘳</i> : {get_mention(t['leader_id'], t['leader_name'])}
+ ▱ <i>Leader</i> : {get_mention(t['leader_id'], t['leader_name'])}
  🩸 Coins: <b>{t['total_coins']}</b> | 🎯 Winrate: <b>{wr}%</b>
 
-<i>𝘛𝘦𝘢𝘮 𝑀𝑒𝑚𝑏𝑒𝘳𝘴</i> ⊞ ({len(members)}/{t['member_limit']})
+<i>Team Members</i> ⊞ ({len(members)}/{t['member_limit']})
 
 {members_str}"""
 
