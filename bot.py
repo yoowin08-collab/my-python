@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import string
 import asyncpg
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -51,6 +52,8 @@ active_games = {}
 last_results = {}
 active_cboxes = {}  # Store active Coin Boxes
 pending_gifts = {}   # Store pending gifts for confirmation
+team_creation_state = {} # Setup memory for team creation {user_id: {"step": str, ...}}
+pending_joins = {} # Memory for join requests {msg_id: dict}
 game_media = None
 result_media = None
 global_default_threshold = 10
@@ -70,6 +73,8 @@ async def init_db():
                 user_id BIGINT PRIMARY KEY,
                 name TEXT,
                 coins BIGINT DEFAULT 0,
+                wins BIGINT DEFAULT 0,
+                total_games BIGINT DEFAULT 0,
                 selected_card_id TEXT
             );
             CREATE TABLE IF NOT EXISTS groups (
@@ -99,10 +104,25 @@ async def init_db():
                 amount INT DEFAULT 1,
                 PRIMARY KEY (user_id, card_id)
             );
+            CREATE TABLE IF NOT EXISTS user_teams (
+                team_code TEXT PRIMARY KEY,
+                team_name TEXT,
+                leader_id BIGINT,
+                member_limit INT,
+                logo_file_id TEXT,
+                logo_type TEXT
+            );
+            CREATE TABLE IF NOT EXISTS team_members (
+                team_code TEXT,
+                user_id BIGINT,
+                PRIMARY KEY (team_code, user_id)
+            );
         """)
 
         try:
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_card_id TEXT;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS wins BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_games BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
@@ -162,6 +182,9 @@ async def add_coins(user_id, amount):
 def get_mention(user_id, name):
     clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
+
+def generate_team_code():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 async def check_bot_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
     try:
@@ -310,6 +333,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
 
+🛡️ <b>Team System အသုံးပြုနည်းများ:</b>
+• <b>/team</b> - Team တည်ထောင်ရန် သို့မဟုတ် မိမိဝင်ထားသော Team Status ကို ကြည့်ရန်
+• <b>/join [CODE]</b> - အဖွဲ့ Code ကို သုံး၍ Team ထဲသို့ ဝင်ရောက်ရန် လျှောက်ထားရန်
+• <b>/out</b> - လက်ရှိ ဝင်ရောက်ထားသော Team မှ ထွက်ရန် (Member သီးသန့်)
+• <b>/out [user_id]</b> - Team Member တစ်ဦးအား အဖွဲ့မှ Kick ထုတ်ရန် (Leader သီးသန့်)
+
 🎁 <b>/kgift လက်ဆောင်ပေးပို့နည်း (Reply ထောက်၍ သုံးပါ):</b>
 • <b>Coin ပေးရန်:</b> ပေးပို့ချင်သူ၏ စာကို Reply ထောက်ပြီး <code>/kgift c100</code> (c နောက်တွင် အကြွေစေ့ပမာဏ ရိုက်ပါ)
 • <b>Card ပေးရန်:</b> ပေးပို့ချင်သူ၏ စာကို Reply ထောက်ပြီး <code>/kgift 1201</code> (ကဒ် ID ရိုက်ပါ)"""
@@ -329,19 +358,181 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 <b>အသုံးပြုနိုင်သော Admin Commands များ:</b>
 
-1. <b>/c [count]</b> - Group စာကြောင်းရေ သတ်မှတ်ရန် (DM Only)
-2. <b>/cbox [amount]</b> - Group အတွင်း Coin Box (Giveaway) ချပေးရန်
-3. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
-4. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
-5. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-6. <b>/del [card_id]</b> - Card ဖျက်ရန်
-7. <b>/cardlist</b> - ရှိသမျှ Card List များ ကြည့်ရန် (Admin Only)
-8. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
-9. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန်
-10. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
-11. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
+1. <b>/game</b> - Game ကို အချိန်မရွေး စတင်ခေါ်ယူရန်
+2. <b>/c [count]</b> - Group စာကြောင်းရေ သတ်မှတ်ရန် (DM Only)
+3. <b>/cbox [amount]</b> - Group အတွင်း Coin Box (Giveaway) ချပေးရန်
+4. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
+5. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
+6. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+7. <b>/del [card_id]</b> - Card ဖျက်ရန်
+8. <b>/cardlist</b> - ရှိသမျှ Card List များ ကြည့်ရန် (Admin Only)
+9. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
+10. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန်
+11. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
+12. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
 
     await update.message.reply_text(text, parse_mode="HTML")
+
+# /game Command (Admin Only)
+async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    chat_id = update.effective_chat.id
+    if chat_id in active_games:
+        return await update.message.reply_text("❌ လက်ရှိ Group တွင် Game ကစားနေဆဲဖြစ်ပါသည်။")
+    
+    asyncio.create_task(start_game(context, chat_id))
+
+# Helper to format Team Card display
+async def show_user_team(update_or_context, chat_id, team_code, bot=None):
+    async with db_pool.acquire() as conn:
+        t_info = await conn.fetchrow("SELECT * FROM user_teams WHERE team_code = $1", team_code)
+        if not t_info:
+            return
+
+        leader = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", t_info['leader_id'])
+        leader_name = leader['name'] if leader else "Leader"
+
+        members = await conn.fetch("""
+            SELECT u.user_id, u.name 
+            FROM team_members tm
+            JOIN users u ON tm.user_id = u.user_id
+            WHERE tm.team_code = $1
+            ORDER BY u.user_id ASC
+        """, team_code)
+
+    member_lines = []
+    for m in members:
+        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])}")
+
+    members_str = "\n".join(member_lines)
+
+    text = f"""𝚃𝙴𝙰𝙼 - <b>{t_info['team_name']}</b>
+Code
+<code>{t_info['team_code']}</code>
+
+ ▱<i>𝘓𝘦𝘢𝘥𝘦𝘳</i> : {get_mention(t_info['leader_id'], leader_name)}
+
+<i>𝘛𝘦𝘢𝘮 𝑀𝑒𝑚𝑏𝑒𝑟𝑠</i> ⊞ ({len(members)}/{t_info['member_limit']})
+
+{members_str}"""
+
+    target_bot = bot if bot else update_or_context.bot
+    try:
+        if t_info['logo_type'] == 'photo':
+            await target_bot.send_photo(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
+        else:
+            await target_bot.send_video(chat_id, t_info['logo_file_id'], caption=text, parse_mode="HTML")
+    except Exception:
+        await target_bot.send_message(chat_id, text, parse_mode="HTML")
+
+# /team Command Implementation
+async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat)
+
+    async with db_pool.acquire() as conn:
+        # Check if user is already in a team
+        user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
+
+    if user_team:
+        # If user is in a team, display their team card
+        await show_user_team(update, chat.id, user_team['team_code'])
+    else:
+        # User not in a team, offer to create one
+        bot_info = await context.bot.get_me()
+        text = "ကဲ အခုပဲ Legendary Team တစ်ခုတည်ထောင်ပြီး Top 1 ယူပြီး 𝗚𝗲𝗺𝗦𝘁𝗼𝗻𝗲🗽 ကိုရယူကြစို့"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Team ထောင်ရန်", callback_data=f"create_team_{user.id}")
+        ]])
+        await update.message.reply_text(text, reply_markup=keyboard)
+
+# /join [CODE] Command
+async def join_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat)
+
+    if not context.args:
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/join [TEAM_CODE]`", parse_mode="Markdown")
+
+    target_code = context.args[0].strip().upper()
+
+    async with db_pool.acquire() as conn:
+        already_in = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
+        if already_in:
+            return await update.message.reply_text("❌ သင် အဖွဲ့တစ်ခုတွင် ဝင်ရောက်ပြီးသား ဖြစ်ပါသည်။ ထပ်မံဝင်ရောက်၍ မရပါ။")
+
+        team = await conn.fetchrow("SELECT * FROM user_teams WHERE team_code = $1", target_code)
+        if not team:
+            return await update.message.reply_text("❌ အဖွဲ့ Code မှားယွင်းနေပါသည်။ သေချာစွာ ပြန်လည်စစ်ဆေးပါ။")
+
+        current_count = await conn.fetchval("SELECT COUNT(*) FROM team_members WHERE team_code = $1", target_code)
+        if current_count >= team['member_limit']:
+            return await update.message.reply_text("❌ အဆိုပါ Team တွင် Member Limit အပြည့် ရောက်ရှိနေပါပြီ။")
+
+    # Send Join Request to Leader's DM
+    leader_id = team['leader_id']
+    req_text = f"""📩 <b>Team Join Request!</b>
+
+{get_mention(user.id, user.first_name)} မှ သင့်အဖွဲ့ <b>{team['team_name']}</b> (Code: <code>{target_code}</code>) သို့ ဝင်ရောက်ရန် လျှောက်ထားလာပါသည်။
+
+လက်ခံမည်လား?"""
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ Cancel", callback_data=f"joinapp_no_{user.id}_{target_code}"),
+        InlineKeyboardButton("Confirm ✅", callback_data=f"joinapp_yes_{user.id}_{target_code}")
+    ]])
+
+    try:
+        sent = await context.bot.send_message(leader_id, req_text, parse_mode="HTML", reply_markup=keyboard)
+        pending_joins[sent.message_id] = {
+            "applicant_id": user.id,
+            "applicant_name": user.first_name,
+            "team_code": target_code
+        }
+        await update.message.reply_text("✅ Team Leader ထံသို့ ဝင်ရောက်ရန် လျှောက်ထားချက် ပို့ဆောင်လိုက်ပါပြီ! Leader အတည်ပြုတာကို စောင့်ဆိုင်းပေးပါ။")
+    except Exception:
+        await update.message.reply_text("❌ Team Leader ၏ DM သို့ သတင်းအချက်အလက် ပို့ရန် မအောင်မြင်ပါ။ Leader မှ Bot ကို /start မလုပ်ထားပါ သို့မဟုတ် Block ထားပါသည် structure။")
+
+# /out Command
+async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat)
+
+    async with db_pool.acquire() as conn:
+        in_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
+        if not in_team:
+            return await update.message.reply_text("❌ သင် မည်သည့် Team တွင်မျှ မရှိသေးပါ။")
+
+        team_code = in_team['team_code']
+        team = await conn.fetchrow("SELECT leader_id, team_name FROM user_teams WHERE team_code = $1", team_code)
+
+        # Leader kick out command (/out [user_id])
+        if context.args and user.id == team['leader_id']:
+            try:
+                target_kick_id = int(context.args[0])
+                if target_kick_id == user.id:
+                    return await update.message.reply_text("❌ မိမိကိုယ်ကို Kick ထုတ်၍ မရပါ။ Team ဖျက်လိုပါက Admin ဆီ ဆက်သွယ်ပါ။")
+
+                is_member = await conn.fetchrow("SELECT user_id FROM team_members WHERE team_code = $1 AND user_id = $2", team_code, target_kick_id)
+                if not is_member:
+                    return await update.message.reply_text("❌ အဆိုပါ အသုံးပြုသူသည် သင့် Team ထဲတွင် မရှိပါ။")
+
+                await conn.execute("DELETE FROM team_members WHERE team_code = $1 AND user_id = $2", team_code, target_kick_id)
+                return await update.message.reply_text(f"✅ User ID <code>{target_kick_id}</code> ကို သင့် Team ထဲမှ Kick ထုတ်လိုက်ပါပြီ။", parse_mode="HTML")
+            except ValueError:
+                return await update.message.reply_text("❌ Kick ထုတ်ရန် User ID ကို ကိန်းဂဏန်းဖြင့် ရိုက်ထည့်ပါ။")
+
+        # Normal member leave team (/out)
+        if user.id == team['leader_id']:
+            return await update.message.reply_text("❌ သင်သည် Team Leader ဖြစ်သောကြောင့် အဖွဲ့မှ ထွက်၍ မရပါ။ (Member များကို Kick ရန် `/out [user_id]` ဟု သုံးပါ)")
+
+        await conn.execute("DELETE FROM team_members WHERE team_code = $1 AND user_id = $2", team_code, user.id)
+
+    await update.message.reply_text(f"✅ သင်သည် <b>{team['team_name']}</b> Team မှ အောင်မြင်စွာ ထွက်ခွာလိုက်ပါပြီ။", parse_mode="HTML")
 
 # /c Command
 async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -985,22 +1176,77 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    if not chat or chat.type not in ["group", "supergroup"]:
+    if not chat:
         return
 
     await register_user_group(user, chat)
-    chat_id = chat.id
 
-    is_admin = await check_bot_admin(context, chat_id)
-    if not is_admin:
-        asyncio.create_task(handle_permission_wait(context, chat_id))
+    # DM Handling for Team Setup Flow
+    if chat.type == "private":
+        if user.id in team_creation_state:
+            state = team_creation_state[user.id]
+            step = state.get("step")
 
-    group_msg_count[chat_id] = group_msg_count.get(chat_id, 0) + 1
-    threshold = group_threshold.get(chat_id, global_default_threshold)
+            # Step 1: Receiving Team Name
+            if step == "name":
+                t_name = update.message.text.strip()
+                if len(t_name) > 30:
+                    return await update.message.reply_text("❌ Team Name သည် စာလုံးရေ 30 ထက် မပိုရပါ၊ ပြန်လည် ရိုက်ထည့်ပါ။")
 
-    if group_msg_count[chat_id] >= threshold and chat_id not in active_games:
-        group_msg_count[chat_id] = 0
-        asyncio.create_task(start_game(context, chat_id))
+                state["team_name"] = t_name
+                state["step"] = "limit"
+
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("1/7", callback_data=f"tlimit_7_{user.id}"), InlineKeyboardButton("1/9", callback_data=f"tlimit_9_{user.id}")],
+                    [InlineKeyboardButton("1/13", callback_data=f"tlimit_13_{user.id}"), InlineKeyboardButton("1/15", callback_data=f"tlimit_15_{user.id}")]
+                ])
+                await update.message.reply_text("✅ Team Name ရရှိပါပြီ!\n\nTeam Member Limit ရွေးပါ:", reply_markup=keyboard)
+                return
+
+            # Step 2: Receiving Team Logo (Photo or Video)
+            elif step == "logo":
+                if not update.message.photo and not update.message.video:
+                    return await update.message.reply_text("❌ ကျေးဇူးပြု၍ ပုံ (Photo) သို့မဟုတ် ဗီဒီယို (Video) ဖြင့်သာ Team Logo ပေးပို့ပါ။")
+
+                if update.message.photo:
+                    logo_file_id = update.message.photo[-1].file_id
+                    logo_type = "photo"
+                else:
+                    logo_file_id = update.message.video.file_id
+                    logo_type = "video"
+
+                t_name = state["team_name"]
+                t_limit = state["limit"]
+                code = generate_team_code()
+
+                async with db_pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO user_teams (team_code, team_name, leader_id, member_limit, logo_file_id, logo_type)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                    """, code, t_name, user.id, t_limit, logo_file_id, logo_type)
+
+                    await conn.execute("""
+                        INSERT INTO team_members (team_code, user_id) VALUES ($1, $2)
+                    """, code, user.id)
+
+                del team_creation_state[user.id]
+
+                await update.message.reply_text("✅ Team တည်ထောင်ခြင်း အောင်မြင်ပါပြီ!")
+                await show_user_team(update, chat.id, code)
+                return
+
+    if chat.type in ["group", "supergroup"]:
+        chat_id = chat.id
+        is_admin = await check_bot_admin(context, chat_id)
+        if not is_admin:
+            asyncio.create_task(handle_permission_wait(context, chat_id))
+
+        group_msg_count[chat_id] = group_msg_count.get(chat_id, 0) + 1
+        threshold = group_threshold.get(chat_id, global_default_threshold)
+
+        if group_msg_count[chat_id] >= threshold and chat_id not in active_games:
+            group_msg_count[chat_id] = 0
+            asyncio.create_task(start_game(context, chat_id))
 
 # UI & Buttons
 def build_game_ui(game):
@@ -1049,8 +1295,11 @@ def get_leaderboard_buttons():
         ],
         [
             InlineKeyboardButton("💎 Richest Card Owners", callback_data="lb_cards"),
-            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups")
+            InlineKeyboardButton("🌐 GLOBAL TEAM", callback_data="lb_teams")
         ],
+        [
+            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups")
+        ]
     ])
 
 # Game Flow
@@ -1113,14 +1362,18 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         win_choice, win_name = "draw", "Draw"
 
     winners, losers = [], []
-    for uid, choice in game_state["bets"].items():
-        uname = game_state["user_names"][uid]
-        if choice == win_choice:
-            reward = 30 if win_choice == "draw" else 10
-            await add_coins(uid, reward)
-            winners.append(f"{uname} (+{reward} 🩸)")
-        else:
-            losers.append(uname)
+    async with db_pool.acquire() as conn:
+        for uid, choice in game_state["bets"].items():
+            uname = game_state["user_names"][uid]
+            await conn.execute("UPDATE users SET total_games = total_games + 1 WHERE user_id = $1", uid)
+
+            if choice == win_choice:
+                reward = 30 if win_choice == "draw" else 10
+                await add_coins(uid, reward)
+                await conn.execute("UPDATE users SET wins = wins + 1 WHERE user_id = $1", uid)
+                winners.append(f"{uname} (+{reward} 🩸)")
+            else:
+                losers.append(uname)
 
     win_str = "\n".join(winners) if winners else "—"
     loss_str = "\n".join(losers) if losers else "—"
@@ -1147,7 +1400,6 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     else:
         sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
 
-    # Result Text ကို Memory ထဲတွင် သိမ်းဆည်းခြင်း
     last_results[sent_res.message_id] = res_text
     if chat_id in active_games:
         del active_games[chat_id]
@@ -1161,6 +1413,99 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat)
+
+    # Team Creation Initiation
+    if data.startswith("create_team_"):
+        allowed_user_id = int(data.split("_")[2])
+        if user.id != allowed_user_id:
+            return await query.answer("❌ သင် ခေါ်ယူထားသော /team မဟုတ်ပါ။", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
+            if coins < 800:
+                return await query.answer("❌ Team တည်ထောင်ရန် Kachi Coin 800 လိုအပ်ပါသည်!", show_alert=True)
+
+            already_in = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
+            if already_in:
+                return await query.answer("❌ သင် အဖွဲ့တစ်ခုတွင် ဝင်ရောက်ပြီးသား ဖြစ်ပါသည်။", show_alert=True)
+
+            # Deduct 800 coins
+            await conn.execute("UPDATE users SET coins = coins - 800 WHERE user_id = $1", user.id)
+
+        bot_info = await context.bot.get_me()
+        team_creation_state[user.id] = {"step": "name"}
+
+        try:
+            await context.bot.send_message(
+                user.id,
+                f"👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)}!\n\n"
+                "🏆 <b>Team တည်ထောင်ခြင်း စတင်ပါပြီ!</b>\n"
+                "ကျေးဇူးပြု၍ သင်ဖန်တီးလိုသော <b>Team Name</b> ကို ပို့ပေးပါ:",
+                parse_mode="HTML"
+            )
+            await query.answer()
+            await query.edit_message_text(f"✅ {get_mention(user.id, user.first_name)}၊ Team တည်ထောင်ရန် Bot DM သို့ သွားရောက်ပါ!", parse_mode="HTML")
+        except Exception:
+            await query.answer("❌ Bot DM သို့ Message ပို့၍ မရပါ၊ Bot ကို /start လုပ်ထားပေးပါခင်ဗျာ။", show_alert=True)
+
+        return
+
+    # Team Member Limit Selection
+    if data.startswith("tlimit_"):
+        parts = data.split("_")
+        limit_val = int(parts[1])
+        allowed_id = int(parts[2])
+
+        if user.id != allowed_id:
+            return await query.answer("❌ သင် အသုံးပြုခွင့် မရှိပါ။", show_alert=True)
+
+        if user.id in team_creation_state:
+            team_creation_state[user.id]["limit"] = limit_val
+            team_creation_state[user.id]["step"] = "logo"
+
+            await query.answer()
+            await query.edit_message_text(f"✅ Member Limit <b>1/{limit_val}</b> ရွေးချယ်ပြီးပါပြီ!\n\nနောက်တစ်ဆင့်အဖြစ် <b>Team Logo</b> (Photo သို့မဟုတ် Video) ပို့ပေးပါ:", parse_mode="HTML")
+        return
+
+    # Join Approval Actions
+    if data.startswith("joinapp_"):
+        parts = data.split("_")
+        action = parts[1]
+        applicant_id = int(parts[2])
+        team_code = parts[3]
+
+        async with db_pool.acquire() as conn:
+            team = await conn.fetchrow("SELECT leader_id, team_name, member_limit FROM user_teams WHERE team_code = $1", team_code)
+            if not team or user.id != team['leader_id']:
+                return await query.answer("❌ သင်သည် ဒီ Team ၏ Leader မဟုတ်ပါ။", show_alert=True)
+
+            if action == "no":
+                del pending_joins[msg_id]
+                await query.edit_message_text("❌ <b>Team ဝင်ရောက်ခွင့် လျှောက်ထားချက်ကို ငြင်းပယ်လိုက်ပါပြီ။</b>", parse_mode="HTML")
+                try:
+                    await context.bot.send_message(applicant_id, f"❌ သင့်ကို <b>{team['team_name']}</b> Team မှ Leader က ဝင်ရောက်ခွင့် ငြင်းပယ်လိုက်ပါသည်။", parse_mode="HTML")
+                except Exception:
+                    pass
+                return await query.answer()
+
+            elif action == "yes":
+                curr_cnt = await conn.fetchval("SELECT COUNT(*) FROM team_members WHERE team_code = $1", team_code)
+                if curr_cnt >= team['member_limit']:
+                    return await query.answer("❌ သင့် Team တွင် Member ပြည့်သွားပါပြီ။", show_alert=True)
+
+                app_in_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", applicant_id)
+                if app_in_team:
+                    return await query.answer("❌ အဆိုပါ အသုံးပြုသူသည် အခြား Team တစ်ခုသို့ ဝင်ရောက်သွားခဲ့ပြီး ဖြစ်ပါသည်။", show_alert=True)
+
+                await conn.execute("INSERT INTO team_members (team_code, user_id) VALUES ($1, $2)", team_code, applicant_id)
+                del pending_joins[msg_id]
+
+                await query.edit_message_text(f"✅ <b>Member အသစ် လက်ခံလိုက်ပါပြီ!</b>", parse_mode="HTML")
+                try:
+                    await context.bot.send_message(applicant_id, f"🎉 <b>Congratulations!</b> သင့်ကို <b>{team['team_name']}</b> Team ထဲသို့ Leader က လက်ခံလိုက်ပါပြီ။", parse_mode="HTML")
+                except Exception:
+                    pass
+                return await query.answer()
 
     # Gift Confirmation & Cancel Actions
     if data.startswith("gift_"):
@@ -1411,7 +1756,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # Leaderboard Actions (Richest Card Owners တွင် Name Mentions ပါဝင်အောင် ပြင်ဆင်ထားသည်)
+    # Leaderboard Actions
     if data.startswith("lb_"):
         lb_type = data.replace("lb_", "")
         async with db_pool.acquire() as conn:
@@ -1445,6 +1790,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     LIMIT 10
                 """)
                 title = "💎 <b>Richest Card Owners (Top 10)</b>"
+            elif lb_type == "teams":
+                rows = await conn.fetch("""
+                    SELECT ut.team_name, ut.leader_id, u.name AS leader_name,
+                           COALESCE(SUM(u_all.coins), 0) AS total_coins,
+                           COALESCE(SUM(u_all.wins), 0) AS total_wins,
+                           COALESCE(SUM(u_all.total_games), 0) AS total_games
+                    FROM user_teams ut
+                    JOIN users u ON ut.leader_id = u.user_id
+                    JOIN team_members tm ON ut.team_code = tm.team_code
+                    JOIN users u_all ON tm.user_id = u_all.user_id
+                    GROUP BY ut.team_code, ut.team_name, ut.leader_id, u.name
+                    ORDER BY total_coins DESC, total_wins DESC
+                    LIMIT 10
+                """)
+                title = "🌐 <b>GLOBAL TOP TEAMS</b>"
             elif lb_type == "groups":
                 rows = await conn.fetch("SELECT title FROM groups LIMIT 10")
                 title = "🏰 <b>Top Groups</b>"
@@ -1458,6 +1818,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
+            elif lb_type == "teams":
+                team_text_list = []
+                for i, r in enumerate(rows, 1):
+                    wr = round((r['total_wins'] / r['total_games']) * 100, 1) if r['total_games'] > 0 else 0.0
+                    team_text_list.append(
+                        f"{i}. <b>{r['team_name']}</b>\n"
+                        f"   👤 Leader: {get_mention(r['leader_id'], r['leader_name'])}\n"
+                        f"   🩸 Coins: <b>{r['total_coins']}</b> | 🎯 Winrate: <b>{wr}%</b>"
+                    )
+                text = f"{title}\n\n" + "\n\n".join(team_text_list)
             else:
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
@@ -1484,8 +1854,12 @@ def main():
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
+    app.add_handler(CommandHandler("team", team_cmd))
+    app.add_handler(CommandHandler("join", join_team_cmd))
+    app.add_handler(CommandHandler("out", out_team_cmd))
 
     # Admin Exclusive Commands
+    app.add_handler(CommandHandler("game", manual_game_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
@@ -1500,7 +1874,7 @@ def main():
     app.add_handler(CommandHandler("del", del_card_cmd))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
+    app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), message_handler))
 
     print("🤖 Python Game Bot Running...")
     app.run_polling()
