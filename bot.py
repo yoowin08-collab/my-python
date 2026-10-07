@@ -334,7 +334,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
 
 🛡️ <b>Team System အသုံးပြုနည်းများ:</b>
-• <b>/team</b> - Team တည်ထောင်ရန် သို့မဟုတ် မိမိဝင်ထားသော Team Status ကို ကြည့်ရန်
+• <b>/team</b> - Team တည်ထောင်ရန်
+• <b>/myteam</b> - မိမိဝင်ထားသော Team Status ကို ကြည့်ရန်
 • <b>/join [CODE]</b> - အဖွဲ့ Code ကို သုံး၍ Team ထဲသို့ ဝင်ရောက်ရန် လျှောက်ထားရန်
 • <b>/out</b> - လက်ရှိ ဝင်ရောက်ထားသော Team မှ ထွက်ရန် (Member သီးသန့်)
 • <b>/out [user_id]</b> - Team Member တစ်ဦးအား အဖွဲ့မှ Kick ထုတ်ရန် (Leader သီးသန့်)
@@ -437,13 +438,27 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
 
     if user_team:
-        await show_user_team(update, chat.id, user_team['team_code'])
+        await update.message.reply_text("❌ သင် Team သို့ ဝင်ရောက်ထားပြီး ဖြစ်ပါသည်။ အဖွဲ့အချက်အလက်များကို ကြည့်ရန် `/myteam` ဟု ရိုက်ပါ။", parse_mode="Markdown")
     else:
         text = "ကဲ အခုပဲ Legendary Team တစ်ခုတည်ထောင်ပြီး Top 1 ယူပြီး 𝗚𝗲𝗺𝗦𝘁𝗼𝗻𝗲🗽 ကိုရယူကြစို့"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("Team ထောင်ရန်", callback_data=f"create_team_{user.id}")
         ]])
         await update.message.reply_text(text, reply_markup=keyboard)
+
+# /myteam Command Implementation
+async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat)
+
+    async with db_pool.acquire() as conn:
+        user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
+
+    if user_team:
+        await show_user_team(update, chat.id, user_team['team_code'])
+    else:
+        await update.message.reply_text("❌ သင် မည်သည့် Team တွင်မျှ ဝင်ရောက်ထားခြင်း မရှိသေးပါ။ (/team ဖြင့် တည်ထောင်ပါ)")
 
 # /dele Command (Delete Team - Leader Only)
 async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1957,6 +1972,7 @@ def main():
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("team", team_cmd))
+    app.add_handler(CommandHandler("myteam", myteam_cmd))
     app.add_handler(CommandHandler("dele", delete_team_cmd))
     app.add_handler(CommandHandler("join", join_team_cmd))
     app.add_handler(CommandHandler("out", out_team_cmd))
