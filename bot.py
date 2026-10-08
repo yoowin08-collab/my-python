@@ -20,6 +20,7 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN", "8617814117:AAGbTDFaabbt2RUuHSPQDqT9S6WZqiNosvM")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")  # Card Add လျှင် Log ပို့မည့် Channel Username / Chat ID
 
 TEAMS = [
     {"name": "Arsenal", "stadium": "Emirates Stadium", "emoji": "🔴"},
@@ -647,7 +648,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ အသုံးပြုနည်း: `/k 1928382 200` သို့မဟုတ် `/k 1928382 -200`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-# /add Command
+# /add Command - With Channel Log Posting
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -684,6 +685,22 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (card_id) DO UPDATE SET name = EXCLUDED.name, type = EXCLUDED.type, file_id = EXCLUDED.file_id
             """, card_id, card_name, c_type, file_id)
+
+        # Log Message Formulation
+        log_text = f"""𝙉𝙚𝙬 𝘾𝙖𝙧𝙙 𝘼𝙙𝙙𝙚𝙙
+
+❀𝘊𝘢𝘳𝘥 𝘕𝘢𝘮𝘦 : {card_name}
+     ❝  𝙸𝙳 : {card_id}
+❀ 𝘛𝘺𝘱𝘦 : {c_type.capitalize()}"""
+
+        # Send Log to Channel
+        try:
+            if c_type == "photo":
+                await context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text)
+            else:
+                await context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text)
+        except Exception as log_err:
+            print(f"Log Error: {log_err}")
 
         await update.message.reply_text(f"✅ Card အသစ်ထည့်သွင်းပြီးပါပြီ!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Card Name: {card_name}", parse_mode="HTML", reply_to_message_id=msg_id)
     except Exception as e:
@@ -858,7 +875,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ /kc တွင် ပြသမည့် Card ကို <b>{has_card['name']}</b> သို့ ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /kbox Command
+# /kbox Command - Custom Button on Insufficient Balance
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -870,9 +887,14 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         coins = row['coins'] if row else 0
 
     if coins < 650:
+        # Hide spin button, show only card view button
+        insufficient_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎴 ကဒ်များကြည့်ရန်", url="https://t.me/beyondpoe")
+        ]])
         return await update.message.reply_text(
             f"❌ မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ Box လှည့်ရန် Kachi Coin 650 လိုအပ်ပါသည်။\nသင့်ထံတွင် {coins} Coin သာရှိပါသည်။",
             parse_mode="HTML",
+            reply_markup=insufficient_keyboard,
             reply_to_message_id=msg_id
         )
 
@@ -1021,7 +1043,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 ◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
 💎 𝙂𝙚𝙢𝙎𝙩𝙤𝙣𝙚⊖ {gem_count} တုံး
 🎟️ 𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨⊖ {tickets} စောင်
-         ◓𝙶𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
+         ◓𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
 
     if not user_card_rows:
         full_text = f"{text_header}\n\n🎴 <i>ပိုင်ဆိုင်ထားသော ကဒ် မရှိသေးပါ။</i>"
@@ -1371,7 +1393,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Broadcast ပို့ဆောင်ပြီးပါပြီ! (အောင်မြင်: {success}/{len(targets)})", reply_to_message_id=msg_id)
 
-# Message Handler
+# Message Handler - Counting messages ONLY when no active game is running
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -1446,12 +1468,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
-        group_msg_count[chat_id] = group_msg_count.get(chat_id, 0) + 1
-        threshold = group_threshold.get(chat_id, global_default_threshold)
+        
+        # Only count messages if NO active game is currently running in this chat
+        if chat_id not in active_games:
+            group_msg_count[chat_id] = group_msg_count.get(chat_id, 0) + 1
+            threshold = group_threshold.get(chat_id, global_default_threshold)
 
-        if group_msg_count[chat_id] >= threshold and chat_id not in active_games:
-            group_msg_count[chat_id] = 0
-            asyncio.create_task(start_game(context, chat_id))
+            if group_msg_count[chat_id] >= threshold:
+                group_msg_count[chat_id] = 0
+                asyncio.create_task(start_game(context, chat_id))
 
 # UI & Buttons
 def build_game_ui(game):
@@ -1799,6 +1824,8 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
 
     last_results[sent_res.message_id] = res_text
+    
+    # Remove active game state AFTER sending result
     if chat_id in active_games:
         del active_games[chat_id]
 
