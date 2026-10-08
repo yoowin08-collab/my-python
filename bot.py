@@ -58,14 +58,12 @@ pending_joins = {} # Memory for join requests {msg_id: dict}
 game_media = None
 result_media = None
 global_default_threshold = 10
-wait_time_seconds = 600  # Default: 10m
-permission_checking_groups = set()
 
 # Database Connection Pool
 db_pool = None
 
 async def init_db():
-    global db_pool, game_media, result_media, global_default_threshold, wait_time_seconds
+    global db_pool, game_media, result_media, global_default_threshold
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
     
     async with db_pool.acquire() as conn:
@@ -156,10 +154,6 @@ async def init_db():
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
 
-        wait_row = await conn.fetchrow("SELECT value FROM settings WHERE key='wait_time'")
-        if wait_row:
-            wait_time_seconds = int(wait_row['value'])
-
 async def register_user_group(user, chat):
     if not db_pool:
         return
@@ -200,53 +194,6 @@ def get_mention(user_id, name):
 
 def generate_team_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-
-async def check_bot_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
-    try:
-        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-        if bot_member.status in ["administrator", "creator"]:
-            return True
-    except Exception:
-        pass
-    return False
-
-async def handle_permission_wait(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    if chat_id in permission_checking_groups:
-        return
-    permission_checking_groups.add(chat_id)
-
-    try:
-        msg = await context.bot.send_message(
-            chat_id,
-            "⚠️ **Bot ကို Admin Permission လေးပေးပေးပါဦး။**\n"
-            "ဒါမှ Bot သုံးရတာ အဆင်ပြေမှာပါဗျ။ Permission မပေးထားပါက သတ်မှတ် Wait Time ပြည့်လျှင် Auto ထွက်ပါမည်။",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        msg = None
-
-    start_time = asyncio.get_event_loop().time()
-
-    while True:
-        await asyncio.sleep(15)
-        is_admin = await check_bot_admin(context, chat_id)
-        if is_admin:
-            try:
-                await context.bot.send_message(chat_id, "✅ **Admin Permission ရရှိပါပြီ!** ကျေးဇူးတင်ပါတယ်။ Bot ကို စတင်အလုပ်လုပ်ပါပြီ။", parse_mode="Markdown")
-            except Exception:
-                pass
-            break
-
-        elapsed = asyncio.get_event_loop().time() - start_time
-        if elapsed >= wait_time_seconds:
-            try:
-                await context.bot.send_message(chat_id, "❌ သတ်မှတ်ထားသော Wait Time အတွင်း Admin Permission မရရှိသောကြောင့် Bot Group မှ Auto ထွက်ခွာသွားပါသည်။")
-                await context.bot.leave_chat(chat_id)
-            except Exception:
-                pass
-            break
-
-    permission_checking_groups.discard(chat_id)
 
 # 3-Day Team Reset & Prize Distribution Task
 async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
@@ -339,39 +286,6 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claimed_users": {},
     }
 
-# Admin Command: Wait Time Set
-async def set_wait_time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global wait_time_seconds
-    msg_id = update.message.message_id
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    full_text = update.message.text.strip()
-    match = re.search(r"/wait\s+time\s+(\d+)([mh])", full_text, re.IGNORECASE)
-
-    if not match:
-        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/wait time 10m` သို့မဟုတ် `/wait time 1h`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    num = int(match.group(1))
-    unit = match.group(2).lower()
-
-    if unit == "m":
-        sec = num * 60
-        unit_str = f"{num} မိနစ်"
-    else:
-        sec = num * 3600
-        unit_str = f"{num} နာရီ"
-
-    wait_time_seconds = sec
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO settings (key, value) VALUES ('wait_time', $1)
-            ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-        """, str(sec))
-
-    await update.message.reply_text(f"✅ Bot ကို Admin Permission မပေးထားပါက စောင့်ဆိုင်းမည့် Wait Time ကို **{unit_str}** သို့ ပြောင်းလဲလိုက်ပါပြီ။", parse_mode="Markdown", reply_to_message_id=msg_id)
-
 # /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -432,15 +346,14 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. <b>/game</b> - Game ကို အချိန်မရွေး စတင်ခေါ်ယူရန်
 2. <b>/c [count]</b> - Group စာကြောင်းရေ သတ်မှတ်ရန် (DM Only)
 3. <b>/cbox [amount]</b> - Group အတွင်း Coin Box (Giveaway) ချပေးရန်
-4. <b>/wait time [10m/1h]</b> - Permission စောင့်မည့် Wait Time သတ်မှတ်ရန်
-5. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
-6. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
-7. <b>/del [card_id]</b> - Card ဖျက်ရန်
-8. <b>/cardlist</b> - ရှိသမျှ Card List များ ကြည့်ရန် (Admin Only)
-9. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
-10. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန်
-11. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
-12. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
+4. <b>/k [user_id] [amount]</b> - User ထံ Coin ထည့်/နှုတ်ရန်
+5. <b>/add [card_id].[card_name]</b> - Card အသစ်ထည့်ရန် (Photo/Video ကို Reply လုပ်ပါ)
+6. <b>/del [card_id]</b> - Card ဖျက်ရန်
+7. <b>/cardlist</b> - ရှိသမျှ Card List များ ကြည့်ရန် (Admin Only)
+8. <b>/glist</b> - Bot ရှိနေသော Group များ စာရင်းကြည့်ရန်
+9. <b>/g</b> (သို့) <b>/r</b> - Game Media သို့မဟုတ် Result Media သတ်မှတ်ရန်
+10. <b>/stats</b> - Bot Statistics စာရင်းကြည့်ရန်
+11. <b>/broadcast</b> - Group/User များထံ စာ/မီဒီယာများ Forward ပို့ရန်"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -966,7 +879,8 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"{get_mention(user.id, user.first_name)} Box ဖောက်နေပါပြီ၊ ဘယ်ဟာလေး ကံကောင်းသွားမလဲ မစောင့်နိုင်တော့ဘူး..."
     
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎰 စလှည့်ရန်", callback_data=f"spin_{user.id}")
+        InlineKeyboardButton("🎰 စလှည့်ရန်", callback_data=f"spin_{user.id}"),
+        InlineKeyboardButton("🎴 ကဒ်များကြည့်ရန်", url="https://t.me/beyondpoe")
     ]])
 
     await update.message.reply_text(
@@ -1532,10 +1446,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
-        is_admin = await check_bot_admin(context, chat_id)
-        if not is_admin:
-            asyncio.create_task(handle_permission_wait(context, chat_id))
-
         group_msg_count[chat_id] = group_msg_count.get(chat_id, 0) + 1
         threshold = group_threshold.get(chat_id, global_default_threshold)
 
@@ -2419,7 +2329,6 @@ def main():
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
     app.add_handler(CommandHandler("cbox", cbox_cmd))
-    app.add_handler(CommandHandler("wait", set_wait_time_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
     app.add_handler(CommandHandler(["g", "r"], media_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
