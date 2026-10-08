@@ -399,7 +399,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • /ksell [amount] - GemStone 💎 တစ်တုံးလျှင် 200 Coin ဖြင့် ရောင်းရန်
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
-• /vote - Popular စာရင်းတွင် ပါဝင်ရန် လျှောက်ထားရန် (2000 Coin)
+• /vote - Popular စာရင်းတွင် ပါဝင်ရန် သို့မဟုတ် မိမိ၏ Popular Post ကြည့်ရန် (2000 Coin)
 
 🛡️ <b>Team System အသုံးပြုနည်းများ:</b>
 • <b>/team</b> - Team တည်ထောင်ရန် (800 Coin)
@@ -842,13 +842,69 @@ async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /vote Command - Register for Popular Entry
+# Helper function to generate single Popular profile text & keyboard
+async def get_popular_profile_data(target_uid: int):
+    async with db_pool.acquire() as conn:
+        u_info = await conn.fetchrow("""
+            SELECT u.user_id, u.name, u.coins, u.selected_card_id, u.popular_votes,
+                   (SELECT COUNT(*) + 1 FROM users WHERE coins > u.coins) AS global_rank,
+                   (SELECT amount FROM user_cards WHERE user_id = u.user_id AND card_id = 'gemstone') AS gem_count,
+                   ut.team_name
+            FROM users u
+            LEFT JOIN team_members tm ON u.user_id = tm.user_id
+            LEFT JOIN user_teams ut ON tm.team_code = ut.team_code
+            WHERE u.user_id = $1
+        """, target_uid)
+
+    gems = u_info['gem_count'] or 0
+    team_str = u_info['team_name'] or "မရှိပါ"
+    card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
+
+    text = f"""🔥 <b>POPULAR MEMBER PROFILE</b>
+
+🌟 <b>Popular Votes:</b> <b>{u_info['popular_votes']}</b> Votes
+
+👤 <b>Name:</b> {get_mention(u_info['user_id'], u_info['name'])}
+🆔 <b>User ID:</b> <code>{u_info['user_id']}</code>
+🩸 <b>Kachi Coin:</b> <b>{u_info['coins']}</b>
+💎 <b>GemStone:</b> <b>{gems}</b> တုံး
+🎴 <b>Selected Card ID:</b> <code>{card_id_str}</code>
+🌐 <b>Global Rank:</b> #{u_info['global_rank']}
+🛡️ <b>Team:</b> <b>{team_str}</b>"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗳️ Vote Him (5 Tickets)", callback_data=f"pop_vote_{target_uid}_0")]
+    ])
+    return text, keyboard
+
+# /vote Command - Register or Show User's Own Popular Entry
 async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
     await register_user_group(user, chat)
 
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT is_popular FROM users WHERE user_id = $1", user.id)
+
+    # User is already popular -> Show user's popular post with TG Profile Photo
+    if user_row and user_row['is_popular']:
+        text, keyboard = await get_popular_profile_data(user.id)
+        photo_sent = False
+        try:
+            user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+            if user_photos.total_count > 0:
+                photo_file_id = user_photos.photos[0][-1].file_id
+                await update.message.reply_photo(photo=photo_file_id, caption=text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+                photo_sent = True
+        except Exception:
+            pass
+
+        if not photo_sent:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+        return
+
+    # User not popular -> Show registration prompt
     text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
 
 🌟 <b>Popular စာရင်းမှာ ပါဝင်ဖို့ Ready ပဲလား?</b>
@@ -1542,7 +1598,7 @@ def get_leaderboard_buttons():
         ]
     ])
 
-# Helper to render Popular Profile Random Display
+# Helper to render Popular Profile Random Display (Profile Photo Only)
 async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current_idx: int = 0):
     async with db_pool.acquire() as conn:
         popular_users = await conn.fetch("SELECT user_id FROM users WHERE is_popular = TRUE")
@@ -1579,11 +1635,6 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
             WHERE u.user_id = $1
         """, target_uid)
 
-        # Get active card info if selected
-        card_info = None
-        if u_info['selected_card_id']:
-            card_info = await conn.fetchrow("SELECT file_id, type FROM cards WHERE card_id = $1", u_info['selected_card_id'])
-
     gems = u_info['gem_count'] or 0
     team_str = u_info['team_name'] or "မရှိပါ"
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
@@ -1610,29 +1661,17 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     ]
     markup = InlineKeyboardMarkup(buttons)
 
-    # Media priority: Selected Card -> Profile Photo -> Text fallbacks
+    # Strictly use Telegram Profile Photo Only (No Card Media)
     media_sent = False
-    if card_info:
-        try:
-            if card_info['type'] == 'photo':
-                media = InputMediaPhoto(media=card_info['file_id'], caption=text, parse_mode="HTML")
-            else:
-                media = InputMediaVideo(media=card_info['file_id'], caption=text, parse_mode="HTML")
+    try:
+        user_photos = await context.bot.get_user_profile_photos(target_uid, limit=1)
+        if user_photos.total_count > 0:
+            photo_file_id = user_photos.photos[0][-1].file_id
+            media = InputMediaPhoto(media=photo_file_id, caption=text, parse_mode="HTML")
             await query.edit_message_media(media=media, reply_markup=markup)
             media_sent = True
-        except Exception:
-            pass
-
-    if not media_sent:
-        try:
-            user_photos = await context.bot.get_user_profile_photos(target_uid, limit=1)
-            if user_photos.total_count > 0:
-                photo_file_id = user_photos.photos[0][-1].file_id
-                media = InputMediaPhoto(media=photo_file_id, caption=text, parse_mode="HTML")
-                await query.edit_message_media(media=media, reply_markup=markup)
-                media_sent = True
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     if not media_sent:
         try:
@@ -1896,6 +1935,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_uid = int(parts[2])
         c_idx = int(parts[3])
 
+        # Self-vote restriction
+        if user.id == target_uid:
+            return await query.answer("❌ မိမိကိုယ်ကို ပြန်လည် Vote ပေး၍ မရပါခင်ဗျာ!", show_alert=True)
+
         async with db_pool.acquire() as conn:
             voter_row = await conn.fetchrow("SELECT vote_tickets FROM users WHERE user_id = $1", user.id)
             tickets = voter_row['vote_tickets'] if voter_row else 0
@@ -1903,11 +1946,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if tickets < 5:
                 return await query.answer("❌ Vote ပေးရန် Vote Tickets 5 စောင် မလုံလောက်ပါ! (Game အနိုင်ရပါက ရရှိနိုင်ပါသည်)", show_alert=True)
 
+            # Deduct 5 tickets from voter, add +1 popular vote & +20 Kachi Coins to target user
             await conn.execute("UPDATE users SET vote_tickets = vote_tickets - 5 WHERE user_id = $1", user.id)
-            await conn.execute("UPDATE users SET popular_votes = popular_votes + 1 WHERE user_id = $2", user.id, target_uid)
+            await conn.execute("UPDATE users SET popular_votes = popular_votes + 1, coins = coins + 20 WHERE user_id = $1", target_uid)
 
         await query.answer("🗳️ Vote 1 မဲ အောင်မြင်စွာ ပေးလိုက်ပါပြီ! (Tickets -5)", show_alert=True)
-        await render_popular_view(query, context, current_idx=c_idx)
+
+        # Update view depending on context (Leaderboard view or Direct /vote view)
+        if query.message.reply_markup and any("Next" in b.text or "Back" in b.text for row in query.message.reply_markup.inline_keyboard for b in row):
+            await render_popular_view(query, context, current_idx=c_idx)
+        else:
+            text, keyboard = await get_popular_profile_data(target_uid)
+            try:
+                if query.message.caption:
+                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
+                else:
+                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
         return
 
     # Team Creation Initiation
