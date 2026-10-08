@@ -393,13 +393,13 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📜 <b>အသုံးပြုနိုင်သော Commands များ:</b>
 • /kc - မိမိ Coin နှင့် ကဒ်များ စစ်ဆေးရန်
-• /kbox - 300 Coin သုံး၍ Card Box ဖောက်ရန်
+• /kbox - 650 Coin သုံး၍ Card Box ဖောက်ရန်
 • /ksell [amount] - GemStone 💎 တစ်တုံးလျှင် 200 Coin ဖြင့် ရောင်းရန်
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
 
 🛡️ <b>Team System အသုံးပြုနည်းများ:</b>
-• <b>/team</b> - Team တည်ထောင်ရန် (500 Coin)
+• <b>/team</b> - Team တည်ထောင်ရန် (800 Coin)
 • <b>/myteam</b> - မိမိဝင်ထားသော Team Status ကို ကြည့်ရန်
 • <b>/join [CODE]</b> - အဖွဲ့ Code ကို သုံး၍ Team ထဲသို့ ဝင်ရောက်ရန် လျှောက်ထားရန်
 • <b>/out</b> - လက်ရှိ ဝင်ရောက်ထားသော Team မှ ထွက်ရန် (Member သီးသန့်)
@@ -542,7 +542,7 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_team:
         await update.message.reply_text("❌ သင် Team သို့ ဝင်ရောက်ထားပြီး ဖြစ်ပါသည်။ အဖွဲ့အချက်အလက်များကို ကြည့်ရန် `/myteam` ဟု ရိုက်ပါ။", parse_mode="Markdown", reply_to_message_id=msg_id)
     else:
-        text = "ကဲ အခုပဲ Legendary Team တစ်ခုတည်ထောင်ပြီး Top 1 ယူပြီး 𝗚𝗲𝗺𝗦𝘁𝗼𝗻𝗲🗽 ကိုရယူကြစို့ (ကုန်ကျစရိတ်: 500 Coin)"
+        text = "ကဲ အခုပဲ Legendary Team တစ်ခုတည်ထောင်ပြီး Top 1 ယူပြီး 𝗚𝗲𝗺𝗦𝘁𝗼𝗻𝗲🗽 ကိုရယူကြစို့ (ကုန်ကျစရိတ်: 800 Coin)"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("Team ထောင်ရန်", callback_data=f"create_team_{user.id}")
         ]])
@@ -876,9 +876,9 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
         coins = row['coins'] if row else 0
 
-    if coins < 300:
+    if coins < 650:
         return await update.message.reply_text(
-            f"❌ မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ Box လှည့်ရန် Kachi Coin 300 လိုအပ်ပါသည်။\nသင့်ထံတွင် {coins} Coin သာရှိပါသည်။",
+            f"❌ မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ Box လှည့်ရန် Kachi Coin 650 လိုအပ်ပါသည်။\nသင့်ထံတွင် {coins} Coin သာရှိပါသည်။",
             parse_mode="HTML",
             reply_to_message_id=msg_id
         )
@@ -1426,12 +1426,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 async with db_pool.acquire() as conn:
                     # Final check for coins before creation
                     coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
-                    if not coins or coins < 500:
+                    if not coins or coins < 800:
                         del team_creation_state[user.id]
-                        return await msg.reply_text("❌ သင့်ထံတွင် Kachi Coin 500 မလုံလောက်တော့ပါသဖြင့် Team တည်ထောင်ခြင်းကို ဖျက်သိမ်းလိုက်ပါသည်။", reply_to_message_id=msg.message_id)
+                        return await msg.reply_text("❌ သင့်ထံတွင် Kachi Coin 800 မလုံလောက်တော့ပါသဖြင့် Team တည်ထောင်ခြင်းကို ဖျက်သိမ်းလိုက်ပါသည်။", reply_to_message_id=msg.message_id)
 
-                    # Deduct 500 coins upon successful completion
-                    await conn.execute("UPDATE users SET coins = coins - 500 WHERE user_id = $1", user.id)
+                    # Deduct 800 coins upon successful completion
+                    await conn.execute("UPDATE users SET coins = coins - 800 WHERE user_id = $1", user.id)
 
                     await conn.execute("""
                         INSERT INTO user_teams (team_code, team_name, leader_id, member_limit, logo_file_id, logo_type)
@@ -1444,7 +1444,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 del team_creation_state[user.id]
 
-                await msg.reply_text("✅ Team တည်ထောင်ခြင်း အောင်မြင်ပါပြီ! (500 Coin နှုတ်ယူပြီးပါပြီ)", reply_to_message_id=msg.message_id)
+                await msg.reply_text("✅ Team တည်ထောင်ခြင်း အောင်မြင်ပါပြီ! (800 Coin နှုတ်ယူပြီးပါပြီ)", reply_to_message_id=msg.message_id)
                 await show_user_team(update, chat.id, code, reply_to_msg_id=msg.message_id)
                 return
 
@@ -1743,8 +1743,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async with db_pool.acquire() as conn:
             coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
-            if not coins or coins < 500:
-                return await query.answer("❌ Team တည်ထောင်ရန် Kachi Coin 500 လိုအပ်ပါသည်!", show_alert=True)
+            if not coins or coins < 800:
+                return await query.answer("❌ Team တည်ထောင်ရန် Kachi Coin 800 လိုအပ်ပါသည်!", show_alert=True)
 
             already_in = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
             if already_in:
@@ -1977,15 +1977,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
             coins = row['coins'] if row else 0
 
-            if coins < 300:
-                return await query.answer("❌ Kachi Coin 300 မလုံလောက်ပါ။", show_alert=True)
+            if coins < 650:
+                return await query.answer("❌ Kachi Coin 650 မလုံလောက်ပါ။", show_alert=True)
 
             # Exclude GemStone from kbox pool
             cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
             if not cards:
                 return await query.answer("❌ Box အတွင်း Card များ မရှိသေးပါ၊ ခဏစောင့်ပါ။", show_alert=True)
 
-            await conn.execute("UPDATE users SET coins = coins - 300 WHERE user_id = $1", user.id)
+            await conn.execute("UPDATE users SET coins = coins - 650 WHERE user_id = $1", user.id)
 
         await query.answer("🎰 Box စတင်လှည့်နေပါပြီ...")
 
