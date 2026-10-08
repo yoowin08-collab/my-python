@@ -388,12 +388,13 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - မိမိနှစ်သက်ရာ အသင်း သို့မဟုတ် Draw ကို 1 မိနစ်အတွင်း ရွေးချယ်လောင်းကြေးထပ်နိုင်ပါသည်။
 
 ဆုကြေးများ / 𝙋𝙧𝙞𝙘𝙚
-- အသင်းနိုင်လျှင်: 10 🩸Kachi Coin
-- Draw နိုင်လျှင်: 30 🩸Kachi Coin
+- အသင်းနိုင်လျှင်: 70 🩸Kachi Coin
+- Draw နိုင်လျှင်: 100 🩸Kachi Coin
 
 📜 <b>အသုံးပြုနိုင်သော Commands များ:</b>
 • /kc - မိမိ Coin နှင့် ကဒ်များ စစ်ဆေးရန်
 • /kbox - 300 Coin သုံး၍ Card Box ဖောက်ရန်
+• /ksell [amount] - GemStone 💎 တစ်တုံးလျှင် 200 Coin ဖြင့် ရောင်းရန်
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
 
@@ -794,6 +795,50 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) ကို စနစ်နှင့် User များဆီမှ အပြီးတိုင် ဖျက်လိုက်ပါပြီ။", parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /ksell [amount] Command - Sell GemStone
+async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat)
+
+    if not context.args:
+        return await update.message.reply_text("❌ အသုံးပြုနည်း: `/ksell [ရောင်းမည့် ပမာဏ]` (ဥပမာ- `/ksell 1`)", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        sell_amount = int(context.args[0])
+        if sell_amount <= 0:
+            return await update.message.reply_text("❌ ပမာဏသည် 0 ထက် ကြီးရပါမည်။", reply_to_message_id=msg_id)
+    except ValueError:
+        return await update.message.reply_text("❌ ပမာဏကို ကိန်းဂဏန်းသီးသန့် ရိုက်ထည့်ပါ။", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        gem_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", user.id)
+        curr_gems = gem_row['amount'] if gem_row else 0
+
+        if curr_gems < sell_amount:
+            return await update.message.reply_text(f"❌ သင့်ထံတွင် GemStone💎 {sell_amount} တုံး မလုံလောက်ပါ။ (လက်ရှိ: {curr_gems} တုံး)", reply_to_message_id=msg_id)
+
+        coins_earned = sell_amount * 200
+
+        # Deduct GemStone
+        if curr_gems == sell_amount:
+            await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", user.id)
+        else:
+            await conn.execute("UPDATE user_cards SET amount = amount - $1 WHERE user_id = $2 AND card_id = 'gemstone'", sell_amount, user.id)
+
+        # Add Coins
+        await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", coins_earned, user.id)
+        rem_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
+
+    await update.message.reply_text(
+        f"✅ GemStone💎 <b>{sell_amount}</b> တုံးကို အောင်မြင်စွာ ရောင်းချလိုက်ပါပြီ!\n\n"
+        f"💰 ရရှိသော Kachi Coin: <b>+{coins_earned}</b> 🩸\n"
+        f"💳 လက်ရှိ Coin စုစုပေါင်း: <b>{rem_coins}</b> 🩸",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
 # /set Command
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -965,6 +1010,9 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         rank_row = await conn.fetchrow("SELECT COUNT(*) + 1 AS rank FROM users WHERE coins > $1", coins)
         rank = rank_row['rank']
 
+        gem_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", target_id)
+        gem_count = gem_row['amount'] if gem_row else 0
+
         user_card_rows = await conn.fetch("""
             SELECT c.card_id, c.name, c.type, c.file_id, uc.amount 
             FROM user_cards uc 
@@ -976,6 +1024,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     text_header = f"""◓𝙉𝘼𝙈𝙀〇 {get_mention(target_id, display_name)}
         ◒ 𝙸𝙳⊝ <code>{target_id}</code>
 ◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
+💎 𝙂𝙚𝙢𝙎𝙩𝙤𝙣𝙚⊖ {gem_count} တုံး
          ◓𝙶𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
 
     if not user_card_rows:
@@ -1621,18 +1670,31 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         win_choice, win_name = "draw", "Draw"
 
     winners, losers = [], []
+    all_participants = list(game_state["bets"].keys())
+
     async with db_pool.acquire() as conn:
         for uid, choice in game_state["bets"].items():
             uname = game_state["user_names"][uid]
             await conn.execute("UPDATE users SET total_games = total_games + 1 WHERE user_id = $1", uid)
 
             if choice == win_choice:
-                reward = 30 if win_choice == "draw" else 10
+                reward = 100 if win_choice == "draw" else 70
                 await add_coins(uid, reward)
                 await conn.execute("UPDATE users SET wins = wins + 1 WHERE user_id = $1", uid)
                 winners.append(f"{uname} (+{reward} 🩸)")
             else:
                 losers.append(uname)
+
+        # Random GemStone Reward if 4 or more participants
+        gemstone_winner_str = ""
+        if len(all_participants) >= 4:
+            random_gem_user = random.choice(all_participants)
+            gem_uname = game_state["user_names"][random_gem_user]
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, 'gemstone', 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, random_gem_user)
+            gemstone_winner_str = f"\n\n💎 <b>Random GemStone Winner:</b> {gem_uname} (+1 GemStone 💎)"
 
     win_str = "\n".join(winners) if winners else "—"
     loss_str = "\n".join(losers) if losers else "—"
@@ -1647,7 +1709,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 {win_str}
 
 🐸 <b>𝐋𝐨𝐬𝐬𝐞𝐫𝐬</b> -
-{loss_str}"""
+{loss_str}{gemstone_winner_str}"""
 
     leader_markup = get_leaderboard_buttons()
 
@@ -1918,7 +1980,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if coins < 300:
                 return await query.answer("❌ Kachi Coin 300 မလုံလောက်ပါ။", show_alert=True)
 
-            cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards")
+            # Exclude GemStone from kbox pool
+            cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
             if not cards:
                 return await query.answer("❌ Box အတွင်း Card များ မရှိသေးပါ၊ ခဏစောင့်ပါ။", show_alert=True)
 
@@ -2065,7 +2128,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     SELECT u.user_id, u.name, SUM(uc.amount) AS card_count
                     FROM user_cards uc
                     JOIN users u ON uc.user_id = u.user_id
-                    WHERE uc.amount > 0
+                    WHERE uc.amount > 0 AND uc.card_id != 'gemstone'
                     GROUP BY u.user_id, u.name
                     ORDER BY card_count DESC
                     LIMIT 10
@@ -2109,6 +2172,7 @@ def main():
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
+    app.add_handler(CommandHandler("ksell", ksell_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("team", team_cmd))
