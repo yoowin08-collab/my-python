@@ -76,7 +76,10 @@ async def init_db():
                 coins BIGINT DEFAULT 0,
                 wins BIGINT DEFAULT 0,
                 total_games BIGINT DEFAULT 0,
-                selected_card_id TEXT
+                selected_card_id TEXT,
+                vote_tickets BIGINT DEFAULT 0,
+                is_popular BOOLEAN DEFAULT FALSE,
+                popular_votes BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -124,18 +127,17 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_card_id TEXT;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS wins BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_games BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS vote_tickets BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_popular BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS popular_votes BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
         except Exception:
             pass
 
-        # Ensure GemStone Card Exists in Database
-        await conn.execute("""
-            INSERT INTO cards (card_id, name, type, file_id)
-            VALUES ('gemstone', 'GemStone 💎', 'photo', 'AgACAgUAAxkBAAIB')
-            ON CONFLICT (card_id) DO NOTHING
-        """)
+        # Clean GemStone from cards table (Kept only as a separate balance/item)
+        await conn.execute("DELETE FROM cards WHERE card_id = 'gemstone';")
 
         # Reset Timer Setup
         reset_row = await conn.fetchrow("SELECT value FROM settings WHERE key='last_team_reset'")
@@ -388,8 +390,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - မိမိနှစ်သက်ရာ အသင်း သို့မဟုတ် Draw ကို 1 မိနစ်အတွင်း ရွေးချယ်လောင်းကြေးထပ်နိုင်ပါသည်။
 
 ဆုကြေးများ / 𝙋𝙧𝙞𝙘𝙚
-- အသင်းနိုင်လျှင်: 70 🩸Kachi Coin
-- Draw နိုင်လျှင်: 100 🩸Kachi Coin
+- အသင်းနိုင်လျှင်: 70 🩸Kachi Coin + 10 🎟️ Vote Tickets
+- Draw နိုင်လျှင်: 100 🩸Kachi Coin + 10 🎟️ Vote Tickets
 
 📜 <b>အသုံးပြုနိုင်သော Commands များ:</b>
 • /kc - မိမိ Coin နှင့် ကဒ်များ စစ်ဆေးရန်
@@ -397,6 +399,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • /ksell [amount] - GemStone 💎 တစ်တုံးလျှင် 200 Coin ဖြင့် ရောင်းရန်
 • /card [card_id] - Card ပုံ/အချက်အလက်နှင့် Top Owners စစ်ဆေးရန်
 • /set [card_id] - /kc တွင် ပြသမည့် Card ပုံကို ပြောင်းရန်
+• /vote - Popular စာရင်းတွင် ပါဝင်ရန် လျှောက်ထားရန် (2000 Coin)
 
 🛡️ <b>Team System အသုံးပြုနည်းများ:</b>
 • <b>/team</b> - Team တည်ထောင်ရန် (800 Coin)
@@ -839,6 +842,27 @@ async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# /vote Command - Register for Popular Entry
+async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat)
+
+    text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
+
+🌟 <b>Popular စာရင်းမှာ ပါဝင်ဖို့ Ready ပဲလား?</b>
+
+Popular စာရင်းထဲ ပါဝင်ခွင့်လျှောက်ထားပြီး အခြားသူများ၏ Vote မဲများကို စုဆောင်းလိုက်ပါ!
+
+<i>(ပါဝင်ခွင့် လျှောက်ထားခစရိတ်: <b>2000 Kachi Coin</b> 🩸)</i>"""
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔥 Popular ဖြစ်ရန်", callback_data=f"reg_popular_{user.id}")
+    ]])
+
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
 # /set Command
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1002,8 +1026,9 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
 
     async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
+        user_row = await conn.fetchrow("SELECT coins, selected_card_id, name, vote_tickets FROM users WHERE user_id = $1", target_id)
         coins = user_row['coins'] if user_row else 0
+        tickets = user_row['vote_tickets'] if user_row else 0
         selected_card_id = user_row['selected_card_id'] if user_row else None
         display_name = user_row['name'] if user_row else user.first_name
 
@@ -1025,6 +1050,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         ◒ 𝙸𝙳⊝ <code>{target_id}</code>
 ◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
 💎 𝙂𝙚𝙢𝙎𝙩𝙤𝙣𝙚⊖ {gem_count} တုံး
+🎟️ 𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨⊖ {tickets} စောင်
          ◓𝙶𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
 
     if not user_card_rows:
@@ -1511,9 +1537,111 @@ def get_leaderboard_buttons():
             InlineKeyboardButton("🌐 GLOBAL TEAM", callback_data="lb_teams_page_0")
         ],
         [
-            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups")
+            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups"),
+            InlineKeyboardButton("🔥 Popular", callback_data="pop_view_0")
         ]
     ])
+
+# Helper to render Popular Profile Random Display
+async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current_idx: int = 0):
+    async with db_pool.acquire() as conn:
+        popular_users = await conn.fetch("SELECT user_id FROM users WHERE is_popular = TRUE")
+
+    if not popular_users:
+        back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption="🔥 <b>POPULAR LIST</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
+            else:
+                await query.edit_message_text(text="🔥 <b>POPULAR LIST</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
+        except Exception:
+            pass
+        return
+
+    # Random shuffle order for non-fixed navigation
+    pop_uids = [r['user_id'] for r in popular_users]
+    random.seed(int(time.time() // 10) + current_idx) # Controlled dynamic random shift
+    random.shuffle(pop_uids)
+
+    total_pop = len(pop_uids)
+    current_idx = current_idx % total_pop
+    target_uid = pop_uids[current_idx]
+
+    async with db_pool.acquire() as conn:
+        u_info = await conn.fetchrow("""
+            SELECT u.user_id, u.name, u.coins, u.selected_card_id, u.popular_votes,
+                   (SELECT COUNT(*) + 1 FROM users WHERE coins > u.coins) AS global_rank,
+                   (SELECT amount FROM user_cards WHERE user_id = u.user_id AND card_id = 'gemstone') AS gem_count,
+                   ut.team_name
+            FROM users u
+            LEFT JOIN team_members tm ON u.user_id = tm.user_id
+            LEFT JOIN user_teams ut ON tm.team_code = ut.team_code
+            WHERE u.user_id = $1
+        """, target_uid)
+
+        # Get active card info if selected
+        card_info = None
+        if u_info['selected_card_id']:
+            card_info = await conn.fetchrow("SELECT file_id, type FROM cards WHERE card_id = $1", u_info['selected_card_id'])
+
+    gems = u_info['gem_count'] or 0
+    team_str = u_info['team_name'] or "မရှိပါ"
+    card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
+
+    text = f"""🔥 <b>POPULAR MEMBER PROFILE</b> (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
+
+🌟 <b>Popular Votes:</b> <b>{u_info['popular_votes']}</b> Votes
+
+👤 <b>Name:</b> {get_mention(u_info['user_id'], u_info['name'])}
+🆔 <b>User ID:</b> <code>{u_info['user_id']}</code>
+🩸 <b>Kachi Coin:</b> <b>{u_info['coins']}</b>
+💎 <b>GemStone:</b> <b>{gems}</b> တုံး
+🎴 <b>Selected Card ID:</b> <code>{card_id_str}</code>
+🌐 <b>Global Rank:</b> #{u_info['global_rank']}
+🛡️ <b>Team:</b> <b>{team_str}</b>"""
+
+    buttons = [
+        [
+            InlineKeyboardButton("◀️ Back", callback_data=f"pop_view_{current_idx - 1}"),
+            InlineKeyboardButton("🗳️ Vote Him (5 Tickets)", callback_data=f"pop_vote_{target_uid}_{current_idx}"),
+            InlineKeyboardButton("Next ▶️", callback_data=f"pop_view_{current_idx + 1}")
+        ],
+        [InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]
+    ]
+    markup = InlineKeyboardMarkup(buttons)
+
+    # Media priority: Selected Card -> Profile Photo -> Text fallbacks
+    media_sent = False
+    if card_info:
+        try:
+            if card_info['type'] == 'photo':
+                media = InputMediaPhoto(media=card_info['file_id'], caption=text, parse_mode="HTML")
+            else:
+                media = InputMediaVideo(media=card_info['file_id'], caption=text, parse_mode="HTML")
+            await query.edit_message_media(media=media, reply_markup=markup)
+            media_sent = True
+        except Exception:
+            pass
+
+    if not media_sent:
+        try:
+            user_photos = await context.bot.get_user_profile_photos(target_uid, limit=1)
+            if user_photos.total_count > 0:
+                photo_file_id = user_photos.photos[0][-1].file_id
+                media = InputMediaPhoto(media=photo_file_id, caption=text, parse_mode="HTML")
+                await query.edit_message_media(media=media, reply_markup=markup)
+                media_sent = True
+        except Exception:
+            pass
+
+    if not media_sent:
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+            else:
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
 
 # Helper to render Top Team details with media paging (Top 5 Only)
 async def render_top_teams_view(query, page: int = 0):
@@ -1680,8 +1808,8 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             if choice == win_choice:
                 reward = 100 if win_choice == "draw" else 70
                 await add_coins(uid, reward)
-                await conn.execute("UPDATE users SET wins = wins + 1 WHERE user_id = $1", uid)
-                winners.append(f"{uname} (+{reward} 🩸)")
+                await conn.execute("UPDATE users SET wins = wins + 1, vote_tickets = vote_tickets + 10 WHERE user_id = $1", uid)
+                winners.append(f"{uname} (+{reward} 🩸 | +10 🎟️)")
             else:
                 losers.append(uname)
 
@@ -1734,6 +1862,53 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat)
+
+    # Register Popular Callback
+    if data.startswith("reg_popular_"):
+        allowed_uid = int(data.split("_")[2])
+        if user.id != allowed_uid:
+            return await query.answer("❌ သင် ခေါ်ယူထားသော /vote မဟုတ်ပါခင်ဗျာ။", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            user_row = await conn.fetchrow("SELECT coins, is_popular FROM users WHERE user_id = $1", user.id)
+            if user_row and user_row['is_popular']:
+                return await query.answer("❌ သင်သည် Popular စာရင်းတွင် ပါဝင်ပြီးသား ဖြစ်ပါသည်!", show_alert=True)
+
+            if not user_row or user_row['coins'] < 2000:
+                return await query.answer("❌ Popular စာရင်း ပါဝင်ရန် Kachi Coin 2000 မလုံလောက်ပါ!", show_alert=True)
+
+            await conn.execute("UPDATE users SET coins = coins - 2000, is_popular = TRUE WHERE user_id = $1", user.id)
+
+        await query.answer("🎉 Popular စာရင်းတွင် အောင်မြင်စွာ ပါဝင်လိုက်ပါပြီ!", show_alert=True)
+        await query.edit_message_text(f"🎉 ဂုဏ်ယူပါတယ် {get_mention(user.id, user.first_name)}!\n\nသင့်ကို Popular စာရင်းတွင် အောင်မြင်စွာ ထည့်သွင်းလိုက်ပါပြီ။", parse_mode="HTML")
+        return
+
+    # Popular View Action (Random display)
+    if data.startswith("pop_view_"):
+        idx = int(data.split("_")[2])
+        await render_popular_view(query, context, current_idx=idx)
+        await query.answer()
+        return
+
+    # Popular Vote Action
+    if data.startswith("pop_vote_"):
+        parts = data.split("_")
+        target_uid = int(parts[2])
+        c_idx = int(parts[3])
+
+        async with db_pool.acquire() as conn:
+            voter_row = await conn.fetchrow("SELECT vote_tickets FROM users WHERE user_id = $1", user.id)
+            tickets = voter_row['vote_tickets'] if voter_row else 0
+
+            if tickets < 5:
+                return await query.answer("❌ Vote ပေးရန် Vote Tickets 5 စောင် မလုံလောက်ပါ! (Game အနိုင်ရပါက ရရှိနိုင်ပါသည်)", show_alert=True)
+
+            await conn.execute("UPDATE users SET vote_tickets = vote_tickets - 5 WHERE user_id = $1", user.id)
+            await conn.execute("UPDATE users SET popular_votes = popular_votes + 1 WHERE user_id = $2", user.id, target_uid)
+
+        await query.answer("🗳️ Vote 1 မဲ အောင်မြင်စွာ ပေးလိုက်ပါပြီ! (Tickets -5)", show_alert=True)
+        await render_popular_view(query, context, current_idx=c_idx)
+        return
 
     # Team Creation Initiation
     if data.startswith("create_team_"):
@@ -1980,7 +2155,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if coins < 650:
                 return await query.answer("❌ Kachi Coin 650 မလုံလောက်ပါ။", show_alert=True)
 
-            # Exclude GemStone from kbox pool
+            # Strict Exclude GemStone from kbox pool
             cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
             if not cards:
                 return await query.answer("❌ Box အတွင်း Card များ မရှိသေးပါ၊ ခဏစောင့်ပါ။", show_alert=True)
@@ -2180,6 +2355,7 @@ def main():
     app.add_handler(CommandHandler("dele", delete_team_cmd))
     app.add_handler(CommandHandler("join", join_team_cmd))
     app.add_handler(CommandHandler("out", out_team_cmd))
+    app.add_handler(CommandHandler("vote", vote_cmd))
 
     # Admin Exclusive Commands
     app.add_handler(CommandHandler("game", manual_game_cmd))
