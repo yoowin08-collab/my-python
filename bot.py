@@ -1568,7 +1568,6 @@ def get_leaderboard_buttons():
             InlineKeyboardButton("🌐 GLOBAL TEAM", callback_data="lb_teams_page_0")
         ],
         [
-            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups"),
             InlineKeyboardButton("🔥 Popular", callback_data="pop_view_0")
         ]
     ])
@@ -1626,7 +1625,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
 🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
-   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝗹 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
+   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
     buttons = [
@@ -1768,15 +1767,13 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     drop_card = random.choice(cards)
 
-    drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮  𝙏𝙞𝙢𝙚 𝙏𝙤 𝘿𝙧𝙤𝙥 ❀
+    drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
 Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
 
  ကဒ်တစ်ကဒ်  Drop ပါမည် 
 
-💥𝙍𝙖𝙣𝙙𝙤𝙢 𝘾𝙖𝙧𝙙 𝘿𝙧𝙤𝙥 𝙏𝙞𝙢𝙚 
-
-𝙇𝙚𝙩'𝙨  𝙎𝙚𝙚 💦
+⏱️ 𝙏𝙞𝙢𝙚 : 00:30
 
 📋 <b>Live List:</b>
 <i>မည်သူမျှ မဝင်သေးပါ။</i>"""
@@ -1822,15 +1819,15 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         list_str = "\n".join(joined_lines) if joined_lines else "<i>မည်သူမျှ မဝင်သေးပါ။</i>"
 
         current_count = len(drop["joined_users"])
-        drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮  𝙏𝙞𝙢𝙚 𝙏𝙤 𝘿𝙧𝙤𝙥 ❀
+        timer_str = f"00:{drop['timer']:02d}"
+        
+        drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
 Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
 
  ကဒ်တစ်ကဒ်  Drop ပါမည် 
 
-💥𝙍𝙖𝙣𝙙𝙤𝙢 𝘾𝙖𝙧𝙙 𝘿𝙧𝙤𝙥 𝙏𝙞𝙢𝙚 
-
-𝙇𝙚𝙩'𝙨  𝙎𝙚𝙚 💦
+⏱️ 𝙏𝙞𝙢𝙚 : {timer_str}
 
 📋 <b>Live List:</b>
 {list_str}"""
@@ -1862,18 +1859,28 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
                 ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
             """, winner_id, card['card_id'])
 
-        drop_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations , You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b>\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )   𝘿𝙍𝙾𝙋 𝙏𝙄𝙈𝙀 - {drop_time}"
+        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations , You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b>\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )"
+        
+        # Send a NEW message when someone gets the card
+        try:
+            if card['type'] == 'photo':
+                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML")
+            else:
+                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML")
+        except Exception:
+            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
     else:
         win_msg = f"❌ မည်သူမျှ Join မသွားသောကြောင့် <b>{card['name']}</b> Card Drop ကို ပယ်ဖျက်လိုက်ပါပြီ။"
-
-    try:
-        await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=win_msg, parse_mode="HTML", reply_markup=None)
-    except Exception:
         try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=win_msg, parse_mode="HTML", reply_markup=None)
+            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
         except Exception:
             pass
+
+    # Delete or clean original drop message buttons
+    try:
+        await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=None)
+    except Exception:
+        pass
 
     if msg_id in active_card_drops:
         del active_card_drops[msg_id]
@@ -2039,15 +2046,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             list_str = "\n".join(joined_lines)
 
             current_count = len(drop["joined_users"])
-            drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮  𝙏𝙞𝙢𝙚 𝙏𝙤 𝘿𝙧𝙤𝙥 ❀
+            timer_str = f"00:{drop['timer']:02d}"
+
+            drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
 Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
 
  ကဒ်တစ်ကဒ်  Drop ပါမည် 
 
-💥𝙍𝙖𝙣𝙙𝙤𝙢 𝘾𝙖𝙧𝙙 𝘿𝙧𝙤𝙥 𝙏𝙞𝙢𝙚 
-
-𝙇𝙚𝙩'𝙨  𝙎𝙚𝙚 💦
+⏱️ 𝙏𝙞𝙢𝙚 : {timer_str}
 
 📋 <b>Live List:</b>
 {list_str}"""
@@ -2569,9 +2576,6 @@ Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယော�
                     LIMIT 10
                 """)
                 title = "💎 <b>Richest Card Owners (Top 10)</b>"
-            elif lb_type == "groups":
-                rows = await conn.fetch("SELECT title FROM groups LIMIT 10")
-                title = "🏰 <b>Top Groups</b>"
 
         if not rows:
             text = f"{title}\n\n<i>စာရင်းမရှိသေးပါ သို့မဟုတ် စာရင်းဝင်ရှိသူ မရှိသေးပါ။</i>"
@@ -2582,8 +2586,6 @@ Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယော�
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
-            else:
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
         try:
