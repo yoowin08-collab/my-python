@@ -9,6 +9,7 @@ import asyncpg
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResultMpeg4Gif,
     InlineQueryResultPhoto,
     InputMediaPhoto,
     InputMediaVideo,
@@ -829,7 +830,7 @@ async def get_popular_profile_data(target_uid: int):
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
     text = f"""📯 𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥        
-             𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ◁
+             𝗣𝗥𝗢𝗙𝗜🇱🇪 ◁
 
 🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
 🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙽𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
@@ -1117,12 +1118,10 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 
     cards_info_list = []
     for c in current_page_cards:
-        count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
-        cards_info_list.append(f"🍀 {c['name']} ( {c['card_id']} ){count_str}")
+        cards_info_list.append(f"🍀 <i>{c['name']}</i> ( {c['card_id']} )")
 
     cards_info = "\n\n".join(cards_info_list)
-    page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
-    full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသော ကဒ်များ{page_str}\n\n{cards_info}"
+    full_text = f"{text_header}\n\n❄️ <b>ပိုင်ဆိုင်ထားသော ကဒ်များ</b>\n\n{cards_info}"
 
     buttons = []
     page_buttons = []
@@ -1158,7 +1157,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
             except Exception:
                 pass
 
-# Inline Query Handler - Card Harem Grid Display
+# Inline Query Handler - Card Harem Grid Display (Photos & Videos)
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     q_text = query.query.strip()
@@ -1174,6 +1173,9 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         target_id = user_id
 
     async with db_pool.acquire() as conn:
+        owner_info = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+        owner_name = owner_info['name'] if owner_info else query.from_user.first_name
+
         user_cards = await conn.fetch("""
             SELECT c.card_id, c.name, c.file_id, c.type, uc.amount 
             FROM user_cards uc
@@ -1184,9 +1186,20 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     results = []
     for idx, card in enumerate(user_cards):
-        caption = f"🍀 <b>{card['name']}</b>\n🆔 Card ID: <code>{card['card_id']}</code>\n📦 Amount: {card['amount']}x"
+        async with db_pool.acquire() as conn:
+            global_drop = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card['card_id'])
+
+        # Requested Output Text Format
+        caption = f"""Harem ပိုင်ရှင် {owner_name}
+
+❄️<b>CARD NAME</b> : <i>{card['name']}</i>
+❄️<b>CARD ID</b> : <code>{card['card_id']}</code>
+❄️<b>AMOUNT</b> : {card['amount']}x
+❄️<b>GLOBAL DROP</b> : {global_drop}
+
+Use /card {card['card_id']} 💦"""
         
-        # Photogrid display
+        # Photogrid display (Photo & Video support)
         if card['type'] == 'photo':
             results.append(
                 InlineQueryResultPhoto(
@@ -1195,6 +1208,17 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     thumbnail_url=card['file_id'],
                     title=card['name'],
                     description=f"ID: {card['card_id']} | x{card['amount']}",
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            )
+        else:
+            results.append(
+                InlineQueryResultMpeg4Gif(
+                    id=f"{card['card_id']}_{idx}",
+                    mpeg4_url=card['file_id'],
+                    thumbnail_url=card['file_id'],
+                    title=card['name'],
                     caption=caption,
                     parse_mode="HTML"
                 )
@@ -1676,8 +1700,11 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥        
-             𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ◁ ({current_idx + 1}/{total_pop})
+    text = f"""📯 𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠🇪🇲🇧🇪🇷        
+             𝗣𝗥𝗢𝗙🇮🇱🇪 ◁ ({current_idx + 1}/{total_pop})
+
+🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
+          𝗣𝗥𝗢𝗙🇮🇱🇪 ◁ ({current_idx + 1}/{total_pop})
 
 🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
 🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙽𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
@@ -1909,7 +1936,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     win_str = "\n".join(winners) if winners else "—"
     loss_str = "\n".join(losers) if losers else "—"
 
-    res_text = f"""🎗️  𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁   🧶
+    res_text = f"""🎗️  𝗠𝒂𝒕𝒄𝒉 𝗥𝒆𝒔𝒖𝒍𝒕   🧶
 
 🏖️ <b>{home_team['name']}</b> {home_g} - {away_g} <b>{away_team['name']}</b> 🪂
 
@@ -2384,9 +2411,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("✅ လောင်းကြေးထပ်ပြီးပါပြီ!")
         return
 
-    # Leaderboard ပြန်ထွက်ရန် Back Action
+    # Leaderboard ပြန်ထွက်ရန် Back Action (Match Result မပျောက်စေရန် ပြင်ဆင်ထားသည်)
     if data == "lb_back":
-        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
+        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝒕𝒄𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
 
         if result_media:
