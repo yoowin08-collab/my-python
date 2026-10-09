@@ -56,6 +56,7 @@ active_cboxes = {}  # Store active Coin Boxes
 pending_gifts = {}   # Store pending gifts for confirmation
 team_creation_state = {} # Setup memory for team creation {user_id: {"step": str, ...}}
 pending_joins = {} # Memory for join requests {msg_id: dict}
+active_card_drops = {} # Store active card drop sessions {msg_id: dict}
 game_media = None
 result_media = None
 global_default_threshold = 10
@@ -392,7 +393,7 @@ async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in active_games:
         return await update.message.reply_text("❌ လက်ရှိ Group တွင် Game ကစားနေဆဲဖြစ်ပါသည်။", reply_to_message_id=msg_id)
     
-    asyncio.create_task(start_game(context, chat_id))
+    asyncio.create_task(start_game(context, chat_id, is_admin_triggered=True))
 
 # Helper to format Team Card display
 async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_to_msg_id=None):
@@ -1080,7 +1081,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
       💎 𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒 - <b>{gem_count}</b>
 🎟𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨 - <b>{tickets}</b>
         
-❀ ɢʟᴏʙᴀʟ ɴᴏ - #{rank}"""
+❀ ɢʟᴏʙ𝙖ʟ ɴᴏ - #{rank}"""
 
     if not user_card_rows:
         full_text = f"{text_header}\n\n❄ <b>ပိုင်ဆိုင်ထားသေား ကဒ်များ</b>\n<i>မရှိသေးပါ။</i>"
@@ -1515,7 +1516,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if group_msg_count[chat_id] >= threshold:
                 group_msg_count[chat_id] = 0
-                asyncio.create_task(start_game(context, chat_id))
+                asyncio.create_task(start_game(context, chat_id, is_admin_triggered=False))
 
 # UI & Buttons
 def build_game_ui(game):
@@ -1581,7 +1582,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
         try:
             if query.message.caption:
-                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨LR 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
             else:
                 await query.edit_message_text(text="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
         except Exception:
@@ -1625,7 +1626,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
 🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
-   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
+   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝗹 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
     buttons = [
@@ -1758,8 +1759,127 @@ Code: <code>{t['team_code']}</code>
         except Exception:
             pass
 
+# Helper to trigger Card Drop session after game result
+async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    async with db_pool.acquire() as conn:
+        cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
+    if not cards:
+        return
+
+    drop_card = random.choice(cards)
+
+    drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮  𝙏𝙞𝙢𝙚 𝙏𝙤 𝘿𝙧𝙤𝙥 ❀
+
+Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
+
+ ကဒ်တစ်ကဒ်  Drop ပါမည် 
+
+💥𝙍𝙖𝙣𝙙𝙤𝙢 𝘾𝙖𝙧𝙙 𝘿𝙧𝙤𝙥 𝙏𝙞𝙢𝙚 
+
+𝙇𝙚𝙩'𝙨  𝙎𝙚𝙚 💦
+
+📋 <b>Live List:</b>
+<i>မည်သူမျှ မဝင်သေးပါ။</i>"""
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Join (1/5)", callback_data="join_card_drop")
+    ]])
+
+    if drop_card['type'] == 'photo':
+        msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+
+    active_card_drops[msg.message_id] = {
+        "chat_id": chat_id,
+        "card": drop_card,
+        "joined_users": {},
+        "timer": 30,
+        "ended": False
+    }
+
+    asyncio.create_task(run_card_drop_timer(context, msg.message_id))
+
+async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
+    while msg_id in active_card_drops:
+        drop = active_card_drops[msg_id]
+        if drop["ended"]:
+            break
+
+        if drop["timer"] <= 0 or len(drop["joined_users"]) >= 5:
+            await finalize_card_drop(context, msg_id)
+            break
+
+        await asyncio.sleep(5)
+        drop["timer"] -= 5
+        if drop["ended"]:
+            break
+
+        # Update Live List
+        joined_lines = []
+        for uid, uname in drop["joined_users"].items():
+            joined_lines.append(f"• {get_mention(uid, uname)}")
+        list_str = "\n".join(joined_lines) if joined_lines else "<i>မည်သူမျှ မဝင်သေးပါ။</i>"
+
+        current_count = len(drop["joined_users"])
+        drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮  𝙏𝙞𝙢𝙚 𝙏𝙤 𝘿𝙧𝙤𝙥 ❀
+
+Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
+
+ ကဒ်တစ်ကဒ်  Drop ပါမည် 
+
+💥𝙍𝙖𝙣𝙙𝙤𝙢 𝘾𝙖𝙧𝙙 𝘿𝙧𝙤𝙥 𝙏𝙞𝙢𝙚 
+
+𝙇𝙚𝙩'𝙨  𝙎𝙚𝙚 💦
+
+📋 <b>Live List:</b>
+{list_str}"""
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"Join ({current_count}/5)", callback_data="join_card_drop")
+        ]])
+
+        try:
+            await context.bot.edit_message_caption(chat_id=drop["chat_id"], message_id=msg_id, caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
+
+async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
+    drop = active_card_drops.get(msg_id)
+    if not drop or drop["ended"]:
+        return
+    drop["ended"] = True
+
+    chat_id = drop["chat_id"]
+    card = drop["card"]
+    joined = drop["joined_users"]
+
+    if joined:
+        winner_id, winner_name = random.choice(list(joined.items()))
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, winner_id, card['card_id'])
+
+        drop_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations , You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b>\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )   𝘿𝙍𝙾𝙋 𝙏𝙄𝙈𝙀 - {drop_time}"
+    else:
+        win_msg = f"❌ မည်သူမျှ Join မသွားသောကြောင့် <b>{card['name']}</b> Card Drop ကို ပယ်ဖျက်လိုက်ပါပြီ။"
+
+    try:
+        await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=win_msg, parse_mode="HTML", reply_markup=None)
+    except Exception:
+        try:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=win_msg, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+
+    if msg_id in active_card_drops:
+        del active_card_drops[msg_id]
+
 # Game Flow
-async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_triggered: bool = False):
     home_team, away_team = random.sample(TEAMS, 2)
     game_state = {
         "home": home_team,
@@ -1871,6 +1991,16 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     last_results[sent_res.message_id] = res_text
     
+    # Check winners count >= 6 OR admin triggered
+    if len(winners) >= 6 or is_admin_triggered:
+        snail_msg = await context.bot.send_message(chat_id, "🐌")
+        await asyncio.sleep(4)
+        try:
+            await context.bot.delete_message(chat_id, snail_msg.message_id)
+        except Exception:
+            pass
+        asyncio.create_task(trigger_card_drop(context, chat_id))
+
     # Remove active game state AFTER sending result
     if chat_id in active_games:
         del active_games[chat_id]
@@ -1884,6 +2014,53 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat)
+
+    # Card Drop Join Action
+    if data == "join_card_drop":
+        drop = active_card_drops.get(msg_id)
+        if not drop or drop["ended"]:
+            return await query.answer("❌ ဒီ Card Drop စက်ရှင် ပြီးဆုံးသွားပါပြီ။", show_alert=True)
+
+        if user.id in drop["joined_users"]:
+            return await query.answer("❌ သင် Join ပြီးသား ဖြစ်ပါသည်!", show_alert=True)
+
+        if len(drop["joined_users"]) >= 5:
+            return await query.answer("❌ လူဦးရေ အပြည့် (5/5) ရောက်ရှိသွားပါပြီ!", show_alert=True)
+
+        drop["joined_users"][user.id] = user.first_name
+        await query.answer("✅ Card Drop သို့ အောင်မြင်စွာ Join လိုက်ပါပြီ!", show_alert=True)
+
+        if len(drop["joined_users"]) >= 5:
+            await finalize_card_drop(context, msg_id)
+        else:
+            joined_lines = []
+            for uid, uname in drop["joined_users"].items():
+                joined_lines.append(f"• {get_mention(uid, uname)}")
+            list_str = "\n".join(joined_lines)
+
+            current_count = len(drop["joined_users"])
+            drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮  𝙏𝙞𝙢𝙚 𝙏𝙤 𝘿𝙧𝙤𝙥 ❀
+
+Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
+
+ ကဒ်တစ်ကဒ်  Drop ပါမည် 
+
+💥𝙍𝙖𝙣𝙙𝙤𝙢 𝘾𝙖𝙧𝙙 𝘿𝙧𝙤𝙥 𝙏𝙞𝙢𝙚 
+
+𝙇𝙚𝙩'𝙨  𝙎𝙚𝙚 💦
+
+📋 <b>Live List:</b>
+{list_str}"""
+
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"Join ({current_count}/5)", callback_data="join_card_drop")
+            ]])
+
+            try:
+                await query.edit_message_caption(caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
+        return
 
     # Register Popular Callback
     if data.startswith("reg_popular_"):
