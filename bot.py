@@ -821,7 +821,7 @@ async def get_popular_profile_data(target_uid: int):
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
+    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠Ｂ𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
 🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
@@ -1581,9 +1581,9 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
         try:
             if query.message.caption:
-                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥＲＳ</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
             else:
-                await query.edit_message_text(text="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_text(text="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥＲＳ</b>\n\n<i>လက်ရှိတွင် Popular ပါဝင်သူ မရှိသေးပါခင်ဗျာ။ /vote ဖြင့် ပါဝင်နိုင်ပါသည်။</i>", parse_mode="HTML", reply_markup=back_markup)
         except Exception:
             pass
         return
@@ -1614,7 +1614,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
+    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥＲ</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
 🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
@@ -1769,7 +1769,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
-Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
+Game❄ မှာ အနိုင်ရသူ 5 ယောက် or 5 ယောက် အထက် ကျော်သွားလို့ 
 
  ကဒ်တစ်ကဒ်  Drop ပါမည် 
 
@@ -1823,7 +1823,7 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         
         drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
-Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
+Game❄ မှာ အနိုင်ရသူ 5 ယောက် or 5 ယောက် အထက် ကျော်သွားလို့ 
 
  ကဒ်တစ်ကဒ်  Drop ပါမည် 
 
@@ -1851,6 +1851,12 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     card = drop["card"]
     joined = drop["joined_users"]
 
+    # Delete the original join message first before sending card result
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+    except Exception:
+        pass
+
     if joined:
         winner_id, winner_name = random.choice(list(joined.items()))
         async with db_pool.acquire() as conn:
@@ -1875,12 +1881,6 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
             await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
         except Exception:
             pass
-
-    # Delete or clean original drop message buttons
-    try:
-        await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=None)
-    except Exception:
-        pass
 
     if msg_id in active_card_drops:
         del active_card_drops[msg_id]
@@ -1998,9 +1998,12 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     last_results[sent_res.message_id] = res_text
     
-    # Check winners count >= 6 OR admin triggered
-    if len(winners) >= 6 or is_admin_triggered:
+    # Check winners count >= 5 OR admin triggered
+    if len(winners) >= 5 or is_admin_triggered:
+        # Wait ~7 sec after result message
+        await asyncio.sleep(7)
         snail_msg = await context.bot.send_message(chat_id, "🐌")
+        # Show snail animation for 4 sec
         await asyncio.sleep(4)
         try:
             await context.bot.delete_message(chat_id, snail_msg.message_id)
@@ -2050,7 +2053,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
-Game❄ မှာ အနိုင်ရသူ 6 ယောက် or  6 ယောက် အထက် ကျော်သွားလို့ 
+Game❄ မှာ အနိုင်ရသူ 5 ယောက် or 5 ယောက် အထက် ကျော်သွားလို့ 
 
  ကဒ်တစ်ကဒ်  Drop ပါမည် 
 
