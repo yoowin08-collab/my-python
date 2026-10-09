@@ -820,18 +820,19 @@ async def get_popular_profile_data(target_uid: int):
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""🔥 <b>POPULAR MEMBER PROFILE</b>
+    text = f"""📯 𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥        
+             𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ◁
 
-🌟 <b>Popular Votes:</b> <b>{u_info['popular_votes']}</b> Votes
-💰 <b>Vote Total Earned Coins:</b> <b>{earned_coins}</b> 🩸
+🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
+🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
 
-👤 <b>Name:</b> {get_mention(u_info['user_id'], u_info['name'])}
-🆔 <b>User ID:</b> <code>{u_info['user_id']}</code>
-🩸 <b>Kachi Coin:</b> <b>{u_info['coins']}</b>
-💎 <b>GemStone:</b> <b>{gems}</b> တုံး
-🎴 <b>Selected Card ID:</b> <code>{card_id_str}</code>
-🌐 <b>Global Rank:</b> #{u_info['global_rank']}
-🛡️ <b>Team:</b> <b>{team_str}</b>"""
+🍀𝑁𝑎𝑚𝑒: {get_mention(u_info['user_id'], u_info['name'])}
+🍀   𝑈𝑆𝐸𝑅 𝐼𝐷: <code>{u_info['user_id']}</code>
+🩸𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛: {u_info['coins']}
+  💎  𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒: {gems}
+🍀𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷: <code>{card_id_str}</code>
+   🎖 𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘: #{u_info['global_rank']}
+〇𝑇𝑒𝑎𝑚: {team_str}"""
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -1073,15 +1074,16 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
             ORDER BY c.card_id ASC
         """, target_id)
 
-    text_header = f"""◓𝙉𝘼𝙈𝙀〇 {get_mention(target_id, display_name)}
-        ◒ 𝙸𝙳⊝ <code>{target_id}</code>
-◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
-💎 𝙂𝙚𝙢𝙎𝙩𝙤𝙣𝙚⊖ {gem_count} တုံး
-🎟️ 𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨⊖ {tickets} စောင်
-         ◓𝙶𝙻𝙾𝙱𝙰🇱 𝙽𝙾 ▷ #{rank}"""
+    text_header = f"""❀ 𝙉𝘼𝙈𝙀 : {get_mention(target_id, display_name)}
+        ⬤ 𝐼𝐷 : <code>{target_id}</code>
+🩸 𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣 : {coins}
+      💎 𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒 : {gem_count}
+🎟𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨 : {tickets}
+        
+❀ ɢʟᴏʙᴀʟ ɴᴏ : #{rank}"""
 
     if not user_card_rows:
-        full_text = f"{text_header}\n\n🎴 <i>ပိုင်ဆိုင်ထားသော ကဒ် မရှိသေးပါ။</i>"
+        full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသေား ကဒ်များ\n\n<i>မရှိသေးပါ။</i>"
         if isinstance(update_or_query, Update):
             return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_to_message_id=msg_id)
         else:
@@ -1105,11 +1107,11 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     cards_info_list = []
     for c in current_page_cards:
         count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
-        cards_info_list.append(f"• <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>){count_str}")
+        cards_info_list.append(f"🍀 {c['name']} ( {c['card_id']} ){count_str}")
 
-    cards_info = "\n".join(cards_info_list)
+    cards_info = "\n\n".join(cards_info_list)
     page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
-    full_text = f"{text_header}\n\n🎴 <b>ပိုင်ဆိုင်ထားသော ကဒ်များ{page_str}:</b>\n{cards_info}"
+    full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသေား ကဒ်များ{page_str}\n\n{cards_info}"
 
     buttons = []
     if total_pages > 1:
@@ -1232,20 +1234,22 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     owners_text_list = []
     if top_owners:
-        for idx, row in enumerate(top_owners, 1):
-            owners_text_list.append(f"{idx}. {get_mention(row['user_id'], row['name'])} — <b>{row['amount']}x</b>")
+        for row in top_owners:
+            owners_text_list.append(f"☛ {get_mention(row['user_id'], row['name'])} — {row['amount']}x")
         owners_str = "\n".join(owners_text_list)
     else:
-        owners_str = "<i>မည်သူမျှ ပိုင်ဆိုင်ထားခြင်း မရှိသေးပါ။</i>"
+        owners_str = "☛ <i>မည်သူမျှ မပိုင်ဆိုင်ထားသေးပါ။</i>"
 
-    caption_text = f"""🎴 <b>Card Info Details</b>
+    caption_text = f"""🎗️𝘾𝘼𝙍𝘿 𝙄𝙉𝙁𝙊𝙍𝙈𝘼𝙏𝙄𝙊𝙉 ♡
 
-🏷️ <b>Name:</b> {card['name']}
-🆔 <b>Card ID:</b> <code>{card['card_id']}</code>
-📂 <b>Type:</b> {card['type'].upper()}
-🌐 <b>Global Drop Count:</b> <b>{global_drop_count}</b> ကဒ်
+▰▰▱▱▰▰▱▱▰▰▱▱
+🍀 𝘝𝘈𝘔𝘌 : {card['name']}
+    🍀  𝘐𝘋 : <code>{card['card_id']}</code>
+🎬 𝘛𝘠𝘗𝘌 : {card['type'].upper()}
+   🐠𝘎𝘓𝘖𝘉𝘈𝘓 𝘋𝘙𝘖𝘜 𝘊𝘖𝘜𝘝𝘛 : {global_drop_count}
 
-👑 <b>Top Owners:</b>
+▱▱▰▰▱▱▰▰▱▱▰▰
+𝘛𝘖𝘜 𝘖𝘞𝘕𝘌𝘙𝘚 🐾
 {owners_str}"""
 
     is_video = (card['type'] == 'video') or (str(card['file_id']).startswith("BAA"))
@@ -1610,18 +1614,19 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""🔥 <b>POPULAR MEMBER PROFILE</b> (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
+    text = f"""📯 𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥        
+             𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ◁ ({current_idx + 1}/{total_pop})
 
-🌟 <b>Popular Votes:</b> <b>{u_info['popular_votes']}</b> Votes
-💰 <b>Vote Total Earned Coins:</b> <b>{earned_coins}</b> 🩸
+🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
+🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
 
-👤 <b>Name:</b> {get_mention(u_info['user_id'], u_info['name'])}
-🆔 <b>User ID:</b> <code>{u_info['user_id']}</code>
-🩸 <b>Kachi Coin:</b> <b>{u_info['coins']}</b>
-💎 <b>GemStone:</b> <b>{gems}</b> တုံး
-🎴 <b>Selected Card ID:</b> <code>{card_id_str}</code>
-🌐 <b>Global Rank:</b> #{u_info['global_rank']}
-🛡️ <b>Team:</b> <b>{team_str}</b>"""
+🍀𝑁𝑎𝑚𝑒: {get_mention(u_info['user_id'], u_info['name'])}
+🍀   𝑈𝑆𝐸𝑅 𝐼𝐷: <code>{u_info['user_id']}</code>
+🩸𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛: {u_info['coins']}
+  💎  𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒: {gems}
+🍀𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷: <code>{card_id_str}</code>
+   🎖 𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘: #{u_info['global_rank']}
+〇𝑇𝑒𝑎𝑚: {team_str}"""
 
     buttons = [
         [
