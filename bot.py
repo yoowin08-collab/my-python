@@ -196,6 +196,31 @@ def get_mention(user_id, name):
 def generate_team_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
+# Helper to fetch user active/last card media
+async def get_user_card_media(user_id: int):
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT selected_card_id FROM users WHERE user_id = $1", user_id)
+        selected_card_id = user_row['selected_card_id'] if user_row else None
+
+        user_cards = await conn.fetch("""
+            SELECT c.card_id, c.name, c.type, c.file_id 
+            FROM user_cards uc
+            JOIN cards c ON uc.card_id = c.card_id
+            WHERE uc.user_id = $1 AND uc.amount > 0 AND c.card_id != 'gemstone'
+            ORDER BY c.card_id ASC
+        """, user_id)
+
+    if not user_cards:
+        return None
+
+    card = None
+    if selected_card_id:
+        card = next((c for c in user_cards if c['card_id'] == selected_card_id), None)
+    if not card:
+        card = user_cards[-1]
+
+    return card
+
 # 3-Day Team Reset & Prize Distribution Task
 async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
     while True:
@@ -648,7 +673,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ အသုံးပြုနည်း: `/k 1928382 200` သို့မဟုတ် `/k 1928382 -200`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-# /add Command - With Channel Log Posting
+# /add Command - With Duplicate Check and Channel Log Posting
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -680,10 +705,14 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c_type = "video"
 
         async with db_pool.acquire() as conn:
+            # Check ID Duplicate or File ID Duplicate
+            existing_card = await conn.fetchrow("SELECT card_id, file_id FROM cards WHERE card_id = $1 OR file_id = $2", card_id, file_id)
+            if existing_card:
+                return await update.message.reply_text(f"⚠️ <b>သတိပေးချက်:</b> အဆိုပါ Card ID (<code>{card_id}</code>) သို့မဟုတ် ပုံ/Video သည် စနစ်ထဲတွင် ထည့်သွင်းပြီးသား ဖြစ်နေပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
+
             await conn.execute("""
                 INSERT INTO cards (card_id, name, type, file_id)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT (card_id) DO UPDATE SET name = EXCLUDED.name, type = EXCLUDED.type, file_id = EXCLUDED.file_id
             """, card_id, card_name, c_type, file_id)
 
         # Log Message Formulation
@@ -789,10 +818,12 @@ async def get_popular_profile_data(target_uid: int):
     gems = u_info['gem_count'] or 0
     team_str = u_info['team_name'] or "မရှိပါ"
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
+    earned_coins = (u_info['popular_votes'] or 0) * 20
 
     text = f"""🔥 <b>POPULAR MEMBER PROFILE</b>
 
 🌟 <b>Popular Votes:</b> <b>{u_info['popular_votes']}</b> Votes
+💰 <b>Vote Total Earned Coins:</b> <b>{earned_coins}</b> 🩸
 
 👤 <b>Name:</b> {get_mention(u_info['user_id'], u_info['name'])}
 🆔 <b>User ID:</b> <code>{u_info['user_id']}</code>
@@ -803,7 +834,10 @@ async def get_popular_profile_data(target_uid: int):
 🛡️ <b>Team:</b> <b>{team_str}</b>"""
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗳️ Vote Him (5 Tickets)", callback_data=f"pop_vote_{target_uid}_0")]
+        [
+            InlineKeyboardButton("🗳️ Vote Him (5 Tickets)", callback_data=f"pop_vote_{target_uid}_0"),
+            InlineKeyboardButton("💎 Gem Gift (1 Gem)", callback_data=f"pop_gemgift_{target_uid}_0")
+        ]
     ])
     return text, keyboard
 
@@ -817,21 +851,22 @@ async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT is_popular FROM users WHERE user_id = $1", user.id)
 
-    # User is already popular -> Show user's popular post with TG Profile Photo
+    # User is already popular -> Show user's popular post with Active/Last Card
     if user_row and user_row['is_popular']:
         text, keyboard = await get_popular_profile_data(user.id)
-        photo_sent = False
-        try:
-            user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
-            if user_photos.total_count > 0:
-                photo_file_id = user_photos.photos[0][-1].file_id
-                await update.message.reply_photo(photo=photo_file_id, caption=text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-                photo_sent = True
-        except Exception:
-            pass
+        card = await get_user_card_media(user.id)
+        
+        if card:
+            try:
+                if card['type'] == 'photo':
+                    await update.message.reply_photo(photo=card['file_id'], caption=text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+                else:
+                    await update.message.reply_video(video=card['file_id'], caption=text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+                return
+            except Exception:
+                pass
 
-        if not photo_sent:
-            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
         return
 
     # User not popular -> Show registration prompt
@@ -1043,7 +1078,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 ◓𝙆𝙖𝙘𝙝𝙞 𝘾𝙤𝙞𝙣⊖ {coins} 🩸
 💎 𝙂𝙚𝙢𝙎𝙩𝙤𝙣𝙚⊖ {gem_count} တုံး
 🎟️ 𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨⊖ {tickets} စောင်
-         ◓𝙻𝙾𝙱𝙰𝙻 𝙽𝙾 ▷ #{rank}"""
+         ◓𝙶𝙻𝙾𝙱𝙰🇱 𝙽𝙾 ▷ #{rank}"""
 
     if not user_card_rows:
         full_text = f"{text_header}\n\n🎴 <i>ပိုင်ဆိုင်ထားသော ကဒ် မရှိသေးပါ။</i>"
@@ -1533,7 +1568,7 @@ def get_leaderboard_buttons():
         ]
     ])
 
-# Helper to render Popular Profile Random Display (Profile Photo Only)
+# Helper to render Popular Profile Display (Card Media Only)
 async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current_idx: int = 0):
     async with db_pool.acquire() as conn:
         popular_users = await conn.fetch("SELECT user_id FROM users WHERE is_popular = TRUE")
@@ -1573,10 +1608,12 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     gems = u_info['gem_count'] or 0
     team_str = u_info['team_name'] or "မရှိပါ"
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ထားပါ"
+    earned_coins = (u_info['popular_votes'] or 0) * 20
 
     text = f"""🔥 <b>POPULAR MEMBER PROFILE</b> (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
 🌟 <b>Popular Votes:</b> <b>{u_info['popular_votes']}</b> Votes
+💰 <b>Vote Total Earned Coins:</b> <b>{earned_coins}</b> 🩸
 
 👤 <b>Name:</b> {get_mention(u_info['user_id'], u_info['name'])}
 🆔 <b>User ID:</b> <code>{u_info['user_id']}</code>
@@ -1589,24 +1626,28 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     buttons = [
         [
             InlineKeyboardButton("◀️ Back", callback_data=f"pop_view_{current_idx - 1}"),
-            InlineKeyboardButton("🗳️ Vote Him (5 Tickets)", callback_data=f"pop_vote_{target_uid}_{current_idx}"),
+            InlineKeyboardButton("🗳️ Vote (5 Tickets)", callback_data=f"pop_vote_{target_uid}_{current_idx}"),
             InlineKeyboardButton("Next ▶️", callback_data=f"pop_view_{current_idx + 1}")
         ],
+        [InlineKeyboardButton("💎 Gem Gift (1 Gem)", callback_data=f"pop_gemgift_{target_uid}_{current_idx}")],
         [InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]
     ]
     markup = InlineKeyboardMarkup(buttons)
 
-    # Strictly use Telegram Profile Photo Only (No Card Media)
+    # Use Active or Last Card Media Only
+    card = await get_user_card_media(target_uid)
     media_sent = False
-    try:
-        user_photos = await context.bot.get_user_profile_photos(target_uid, limit=1)
-        if user_photos.total_count > 0:
-            photo_file_id = user_photos.photos[0][-1].file_id
-            media = InputMediaPhoto(media=photo_file_id, caption=text, parse_mode="HTML")
+
+    if card:
+        try:
+            if card['type'] == 'photo':
+                media = InputMediaPhoto(media=card['file_id'], caption=text, parse_mode="HTML")
+            else:
+                media = InputMediaVideo(media=card['file_id'], caption=text, parse_mode="HTML")
             await query.edit_message_media(media=media, reply_markup=markup)
             media_sent = True
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     if not media_sent:
         try:
@@ -1864,6 +1905,50 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         idx = int(data.split("_")[2])
         await render_popular_view(query, context, current_idx=idx)
         await query.answer()
+        return
+
+    # Gem Gift Action in Popular / Vote
+    if data.startswith("pop_gemgift_"):
+        parts = data.split("_")
+        target_uid = int(parts[2])
+        c_idx = int(parts[3])
+
+        if user.id == target_uid:
+            return await query.answer("❌ မိမိကိုယ်ကို GemGift ပေး၍ မရပါခင်ဗျာ!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            sender_gem = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", user.id)
+            gems = sender_gem['amount'] if sender_gem else 0
+
+            if gems < 1:
+                return await query.answer("❌ သင့်ထံတွင် GemStone💎 ၁ တုံး မလုံလောက်ပါခင်ဗျာ!", show_alert=True)
+
+            # Deduct 1 Gem from sender
+            if gems == 1:
+                await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", user.id)
+            else:
+                await conn.execute("UPDATE user_cards SET amount = amount - 1 WHERE user_id = $1 AND card_id = 'gemstone'", user.id)
+
+            # Add 1 Gem to target user
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, 'gemstone', 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, target_uid)
+
+        await query.answer("💎 GemStone 1 တုံး အောင်မြင်စွာ လက်ဆောင်ပေးလိုက်ပါပြီ!", show_alert=True)
+
+        # Refresh Profile View
+        if query.message.reply_markup and any("Next" in b.text or "Back" in b.text for row in query.message.reply_markup.inline_keyboard for b in row):
+            await render_popular_view(query, context, current_idx=c_idx)
+        else:
+            text, keyboard = await get_popular_profile_data(target_uid)
+            try:
+                if query.message.caption:
+                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
+                else:
+                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
         return
 
     # Popular Vote Action
@@ -2234,7 +2319,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Leaderboard ပြန်ထွက်ရန် Back Action
     if data == "lb_back":
-        original_text = last_results.get(msg_id, "🎗️ 𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
+        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
 
         if result_media:
