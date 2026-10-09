@@ -6,12 +6,20 @@ import re
 import string
 import time
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultPhoto,
+    InputMediaPhoto,
+    InputMediaVideo,
+    Update,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    InlineQueryHandler,
     MessageHandler,
     filters,
 )
@@ -824,7 +832,7 @@ async def get_popular_profile_data(target_uid: int):
              𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ◁
 
 🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
-🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
+🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙽𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
 
 🍀𝑁𝑎𝑚𝑒: {get_mention(u_info['user_id'], u_info['name'])}
 🍀   𝑈𝑆𝐸𝑅 𝐼𝐷: <code>{u_info['user_id']}</code>
@@ -1083,11 +1091,14 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 ❀ ɢʟᴏʙᴀʟ ɴᴏ : #{rank}"""
 
     if not user_card_rows:
-        full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသေား ကဒ်များ\n\n<i>မရှိသေးပါ။</i>"
+        full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသော ကဒ်များ\n\n<i>မရှိသေးပါ။</i>"
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Harem ❄", switch_inline_query_current_chat=f"harem.{target_id}")
+        ]])
         if isinstance(update_or_query, Update):
-            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_to_message_id=msg_id)
+            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
         else:
-            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML")
+            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML", reply_markup=markup)
 
     active_card = None
     if selected_card_id:
@@ -1111,16 +1122,23 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 
     cards_info = "\n\n".join(cards_info_list)
     page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
-    full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသေား ကဒ်များ{page_str}\n\n{cards_info}"
+    full_text = f"{text_header}\n\n❄ ပိုင်ဆိုင်ထားသော ကဒ်များ{page_str}\n\n{cards_info}"
 
     buttons = []
+    page_buttons = []
     if total_pages > 1:
         if page > 0:
-            buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
+            page_buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
         if page < total_pages - 1:
-            buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
+            page_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
 
-    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+    if page_buttons:
+        buttons.append(page_buttons)
+
+    # Harem ❄ Inline Query Button ထည့်သွင်းခြင်း
+    buttons.append([InlineKeyboardButton("Harem ❄", switch_inline_query_current_chat=f"harem.{target_id}")])
+
+    markup = InlineKeyboardMarkup(buttons)
 
     if isinstance(update_or_query, Update):
         try:
@@ -1139,6 +1157,50 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
                 await query.edit_message_text(text=full_text, parse_mode="HTML", reply_markup=markup)
             except Exception:
                 pass
+
+# Inline Query Handler - Card Harem Grid Display
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query
+    q_text = query.query.strip()
+    user_id = query.from_user.id
+
+    # If queried with specific user ID format like "harem.123456"
+    if q_text.startswith("harem."):
+        try:
+            target_id = int(q_text.split(".")[1])
+        except ValueError:
+            target_id = user_id
+    else:
+        target_id = user_id
+
+    async with db_pool.acquire() as conn:
+        user_cards = await conn.fetch("""
+            SELECT c.card_id, c.name, c.file_id, c.type, uc.amount 
+            FROM user_cards uc
+            JOIN cards c ON uc.card_id = c.card_id
+            WHERE uc.user_id = $1 AND uc.amount > 0 AND c.card_id != 'gemstone'
+            ORDER BY c.card_id ASC
+        """, target_id)
+
+    results = []
+    for idx, card in enumerate(user_cards):
+        caption = f"🍀 <b>{card['name']}</b>\n🆔 Card ID: <code>{card['card_id']}</code>\n📦 Amount: {card['amount']}x"
+        
+        # Photogrid display
+        if card['type'] == 'photo':
+            results.append(
+                InlineQueryResultPhoto(
+                    id=f"{card['card_id']}_{idx}",
+                    photo_url=card['file_id'],
+                    thumbnail_url=card['file_id'],
+                    title=card['name'],
+                    description=f"ID: {card['card_id']} | x{card['amount']}",
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            )
+
+    await query.answer(results, cache_time=5, is_personal=True)
 
 # /kc Command Handler
 async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1557,6 +1619,7 @@ def build_game_buttons(game):
     ])
 
 def get_leaderboard_buttons():
+    # Top Groups Button ဖြုတ်ထားပါသည်
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🏆 Top In Gp", callback_data="lb_gp"),
@@ -1567,7 +1630,6 @@ def get_leaderboard_buttons():
             InlineKeyboardButton("🌐 GLOBAL TEAM", callback_data="lb_teams_page_0")
         ],
         [
-            InlineKeyboardButton("🏰 Top Groups", callback_data="lb_groups"),
             InlineKeyboardButton("🔥 Popular", callback_data="pop_view_0")
         ]
     ])
@@ -1618,7 +1680,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
              𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ◁ ({current_idx + 1}/{total_pop})
 
 🧸 𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴: {u_info['popular_votes']}
-🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
+🎐  𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙽𝙴𝙳 𝙲𝙾𝙸𝙽𝚂: {earned_coins}
 
 🍀𝑁𝑎𝑚𝑒: {get_mention(u_info['user_id'], u_info['name'])}
 🍀   𝑈𝑆𝐸𝑅 𝐼𝐷: <code>{u_info['user_id']}</code>
@@ -2392,9 +2454,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     LIMIT 10
                 """)
                 title = "💎 <b>Richest Card Owners (Top 10)</b>"
-            elif lb_type == "groups":
-                rows = await conn.fetch("SELECT title FROM groups LIMIT 10")
-                title = "🏰 <b>Top Groups</b>"
 
         if not rows:
             text = f"{title}\n\n<i>စာရင်းမရှိသေးပါ သို့မဟုတ် စာရင်းဝင်ရှိသူ မရှိသေးပါ။</i>"
@@ -2405,8 +2464,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
-            else:
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {r['title']}" for i, r in enumerate(rows)])
 
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
         try:
@@ -2453,6 +2510,9 @@ def main():
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
+
+    # Inline Query Handler (Harem Card Display)
+    app.add_handler(InlineQueryHandler(inline_query_handler))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), message_handler))
