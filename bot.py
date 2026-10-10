@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import random
-import re
 import string
 import time
 import asyncpg
@@ -57,6 +56,7 @@ pending_gifts = {}
 team_creation_state = {}
 pending_joins = {}
 active_card_drops = {}
+pending_card_adds = {}
 game_media = None
 result_media = None
 global_default_threshold = 10
@@ -101,7 +101,8 @@ async def init_db():
                 card_id TEXT PRIMARY KEY,
                 name TEXT,
                 type TEXT,
-                file_id TEXT
+                file_id TEXT,
+                rarity TEXT
             );
             CREATE TABLE IF NOT EXISTS user_cards (
                 user_id BIGINT,
@@ -135,8 +136,18 @@ async def init_db():
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
+            await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
         except Exception:
             pass
+
+        # Auto assign rarities to existing cards without rarity
+        existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL AND card_id != 'gemstone'")
+        for c in existing_cards:
+            if c['type'] == 'photo':
+                r = random.choice(["Hoshi", "Ten"])
+            else:
+                r = random.choice(["Kiwami", "Kami"])
+            await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
         await conn.execute("DELETE FROM cards WHERE card_id = 'gemstone';")
 
@@ -197,6 +208,28 @@ def get_mention(user_id, name):
 def generate_team_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
+# Weighted random card selector for Kbox and Card Drop (Kiwami & Kami are rarer)
+async def get_weighted_random_card(conn):
+    cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id != 'gemstone'")
+    if not cards:
+        return None
+    
+    weights = []
+    for c in cards:
+        r = c.get('rarity', 'Ten')
+        if r == 'Kiwami':
+            weights.append(1)
+        elif r == 'Kami':
+            weights.append(3)
+        elif r == 'Hoshi':
+            weights.append(15)
+        elif r == 'Ten':
+            weights.append(30)
+        else:
+            weights.append(15)
+            
+    return random.choices(cards, weights=weights, k=1)[0]
+
 # Force Join Check Helper
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
@@ -228,7 +261,7 @@ async def get_user_card_media(user_id: int):
         selected_card_id = user_row['selected_card_id'] if user_row else None
 
         user_cards = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id 
+            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity 
             FROM user_cards uc
             JOIN cards c ON uc.card_id = c.card_id
             WHERE uc.user_id = $1 AND uc.amount > 0 AND c.card_id != 'gemstone'
@@ -422,7 +455,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 3. <b>/cbox [amount]</b> - Drop Coin Box in group
 4. <b>/k [user_id] [amount]</b> - Add/Remove Coins
 5. <b>/addadmin [user_id]</b> - Grant Card Admin permission
-6. <b>/add [card_id].[card_name]</b> - Add new Card (Reply to photo/video)
+6. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
 7. <b>/del [card_id]</b> - Delete a Card
 8. <b>/cardlist</b> - View all Cards
 9. <b>/glist</b> - View active group list
@@ -726,7 +759,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Usage: `/k 1928382 200` or `/k 1928382 -200`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-# /add Command - Accessible by ADMIN or CARD_ADMIN (Gives 20 Coins to Card Admin)
+# /add Command - Supports /add name (auto random unused id) or /add id.name, then prompts for Rarity via inline buttons
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -740,62 +773,71 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = update.message.reply_to_message
     if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ Reply to a photo or video with `/add [card_id].[card_name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]` or `/add [id].[name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-    try:
-        full_text = update.message.text
-        raw_args = full_text.partition(" ")[2].strip()
+    raw_args = update.message.text.partition(" ")[2].strip()
+    if not raw_args:
+        return await update.message.reply_text("❌ Usage: Reply with `/add [name]` or `/add [id].[name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-        if "." not in raw_args:
-            return await update.message.reply_text("❌ Usage: Reply with `/add [card_id].[card_name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
-        
-        card_id, _, card_name = raw_args.partition(".")
-        card_id = card_id.strip()
-        card_name = card_name.strip()
+    card_id = None
+    card_name = None
 
-        if not card_id or not card_name:
-            return await update.message.reply_text("❌ Invalid Card ID or Card Name.", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-        if reply.photo:
-            file_id = reply.photo[-1].file_id
-            c_type = "photo"
-        else:
-            file_id = reply.video.file_id
-            c_type = "video"
-
+    if "." in raw_args:
+        part1, _, part2 = raw_args.partition(".")
+        part1 = part1.strip()
+        part2 = part2.strip()
+        card_id = part1
+        card_name = part2
+    else:
         async with db_pool.acquire() as conn:
-            existing_card = await conn.fetchrow("SELECT card_id, file_id FROM cards WHERE card_id = $1 OR file_id = $2", card_id, file_id)
-            if existing_card:
-                return await update.message.reply_text(f"⚠️ <b>Warning:</b> Card ID (<code>{card_id}</code>) or Media already exists in database.", parse_mode="HTML", reply_to_message_id=msg_id)
+            while True:
+                rand_id = str(random.randint(1000, 9999))
+                exists = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", rand_id)
+                if not exists:
+                    card_id = rand_id
+                    break
+        card_name = raw_args
 
-            await conn.execute("""
-                INSERT INTO cards (card_id, name, type, file_id)
-                VALUES ($1, $2, $3, $4)
-            """, card_id, card_name, c_type, file_id)
+    if reply.photo:
+        file_id = reply.photo[-1].file_id
+        c_type = "photo"
+    else:
+        file_id = reply.video.file_id
+        c_type = "video"
 
-            # Give 20 Coins reward if added by a Card Admin
-            if is_card_admin and user.id != ADMIN_ID:
-                await conn.execute("UPDATE users SET coins = coins + 20 WHERE user_id = $1", user.id)
+    async with db_pool.acquire() as conn:
+        existing_card = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1 OR file_id = $2", card_id, file_id)
+        if existing_card:
+            return await update.message.reply_text(f"⚠️ <b>Warning:</b> Card ID (<code>{card_id}</code>) or Media already exists in database.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-        log_text = f"""𝙉𝙚𝙬 𝘾𝙖𝙧𝙙 𝘼𝙙𝙙𝙚𝙙
+    pending_card_adds[user.id] = {
+        "card_id": card_id,
+        "card_name": card_name,
+        "type": c_type,
+        "file_id": file_id,
+        "is_card_admin": is_card_admin
+    }
 
-❀𝘊𝘢𝘳𝘥 𝘕𝘢𝘮𝘦 : {card_name}
-     ❝  𝙸𝙳 : {card_id}
-❀ 𝘛𝘺𝘱𝘦 : {c_type.capitalize()}
-👤 𝘼𝙙𝙙𝙚𝙙 𝘽𝙮 : {get_mention(user.id, user.first_name)}"""
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🪞 Kiwami", callback_data=f"addrarity_{user.id}_Kiwami"),
+            InlineKeyboardButton("✨ Kami", callback_data=f"addrarity_{user.id}_Kami")
+        ],
+        [
+            InlineKeyboardButton("⚜️ Hoshi", callback_data=f"addrarity_{user.id}_Hoshi"),
+            InlineKeyboardButton("💮 Ten", callback_data=f"addrarity_{user.id}_Ten")
+        ]
+    ])
 
-        try:
-            if c_type == "photo":
-                await context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML")
-            else:
-                await context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML")
-        except Exception as log_err:
-            print(f"Log Error: {log_err}")
-
-        reward_notice = "\n🎉 You received <b>+20 Kachi Coins</b> for adding a card!" if (is_card_admin and user.id != ADMIN_ID) else ""
-        await update.message.reply_text(f"✅ Card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Card Name: {card_name}{reward_notice}", parse_mode="HTML", reply_to_message_id=msg_id)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error while adding card: {e}", reply_to_message_id=msg_id)
+    await update.message.reply_text(
+        f"🎴 <b>Card Info Prepared:</b>\n"
+        f"🆔 ID: <code>{card_id}</code>\n"
+        f"🏷 Name: {card_name}\n\n"
+        f"Please select the <b>Rarity</b> for this card:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+        reply_to_message_id=msg_id
+    )
 
 # /del Command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -892,7 +934,7 @@ async def get_popular_profile_data(target_uid: int):
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
 🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
-   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
+   🎖 <b>𝐺𝑙𝑜𝑏𝘢𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
     keyboard = InlineKeyboardMarkup([
@@ -1130,7 +1172,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         gem_count = gem_row['amount'] if gem_row else 0
 
         user_card_rows = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id, uc.amount 
+            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
             FROM user_cards uc 
             JOIN cards c ON uc.card_id = c.card_id 
             WHERE uc.user_id = $1 AND uc.amount > 0
@@ -1170,7 +1212,8 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     cards_info_list = []
     for c in current_page_cards:
         count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
-        cards_info_list.append(f"🍀 {c['name']} ( <code>{c['card_id']}</code> ){count_str}")
+        rarity_emoji = "🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮"))
+        cards_info_list.append(f"{rarity_emoji} {c['name']} ( <code>{c['card_id']}</code> ){count_str}")
 
     cards_info = "\n".join(cards_info_list)
     page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
@@ -1192,7 +1235,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
             else:
                 await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
         except Exception:
-            await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+            await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup)
     else:
         query = update_or_query
         try:
@@ -1221,7 +1264,7 @@ async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
     async with db_pool.acquire() as conn:
-        cards = await conn.fetch("SELECT card_id, name, type FROM cards ORDER BY card_id ASC")
+        cards = await conn.fetch("SELECT card_id, name, type, rarity FROM cards ORDER BY card_id ASC")
 
     if not cards:
         text = "🎴 <b>Card List is empty.</b>"
@@ -1242,7 +1285,9 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     card_text_list = []
     for idx, c in enumerate(current_page_cards, start=start_idx + 1):
         type_emoji = "🖼" if c['type'] == 'photo' else "🎥"
-        card_text_list.append(f"{idx}. <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{type_emoji} {c['type'].upper()}]")
+        r = c.get('rarity', 'Ten')
+        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        card_text_list.append(f"{idx}. {r_emoji} <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{type_emoji} {c['type'].upper()}]")
 
     cards_str = "\n".join(card_text_list)
 
@@ -1268,7 +1313,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
-# /card [card_id] Command (Vame -> Name fixed)
+# /card [card_id] Command
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1283,7 +1328,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_card_id = context.args[0].strip()
 
     async with db_pool.acquire() as conn:
-        card = await conn.fetchrow("SELECT card_id, name, type, file_id FROM cards WHERE card_id = $1", target_card_id)
+        card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id = $1", target_card_id)
 
         if not card:
             return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
@@ -1307,12 +1352,16 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         owners_str = "☛ <i>No owners yet.</i>"
 
+    r = card.get('rarity', 'Ten')
+    r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+
     caption_text = f"""🎗𝘾𝘼𝙍𝘿 𝙄𝙉𝙁𝙊𝙍𝙈𝘼𝙏𝙄𝙊𝙉 ♡
 
 ▰▰▱▱▰▰▱▱▰▰▱▱
 🍀 𝘕𝘈𝘔𝘌 - {card['name']}
     🍀  𝘐𝘋 - <code>{card['card_id']}</code>
 🎬 𝘛𝘠𝘗𝘌 - {card['type'].upper()}
+🌟 𝘙𝘈𝘙𝘐𝘛𝘠 - {r_emoji} {r}
    🐠𝘎𝘓𝘖𝘉𝘈𝘓 𝘋𝘙𝘖𝘗 𝘊𝘖𝘜𝘕𝘛 - <b>{global_drop_count}</b>
 
 ▱▱▰▰▱▱▰▰▱▱▰▰
@@ -1468,7 +1517,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# Async Background Broadcast Task to Prevent Blocking Other Commands
 async def run_async_broadcast(bot, chat_id, reply_msg_id, targets, status_msg_id):
     success = 0
     for tid in targets:
@@ -1488,7 +1536,7 @@ async def run_async_broadcast(bot, chat_id, reply_msg_id, targets, status_msg_id
     except Exception:
         pass
 
-# /broadcast Command (Non-blocking background execution)
+# /broadcast Command
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1504,7 +1552,6 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     targets = list(set(users + groups))
     status_msg = await update.message.reply_text(f"🚀 Broadcast started in background... (Targets: {len(targets)})", reply_to_message_id=msg_id)
 
-    # Launch background broadcast task
     asyncio.create_task(run_async_broadcast(
         context.bot,
         update.effective_chat.id,
@@ -1827,14 +1874,12 @@ Code: <code>{t['team_code']}</code>
         except Exception:
             pass
 
-# Helper to trigger Card Drop session
+# Helper to trigger Card Drop session with weighted random card
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     async with db_pool.acquire() as conn:
-        cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
-    if not cards:
+        drop_card = await get_weighted_random_card(conn)
+    if not drop_card:
         return
-
-    drop_card = random.choice(cards)
 
     drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
@@ -1932,7 +1977,9 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
                 ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
             """, winner_id, card['card_id'])
 
-        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations, You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b>\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )"
+        r = card.get('rarity', 'Ten')
+        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations, You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b> ({r_emoji} {r})\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )"
         
         try:
             if card['type'] == 'photo':
@@ -2077,7 +2124,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
     if chat_id in active_games:
         del active_games[chat_id]
 
-# Background task for spinning box to prevent blocking other commands
+# Background task for spinning box with weighted random card
 async def run_spin_animation(bot, chat_id, user, query_message):
     try:
         frames = ["🔄 [▰▱▱▱▱▱▱▱▱▱] Loading 10%...", "🔄 [▰▰▰▰▱▱▱▱▱▱] Loading 40%...", "🔄 [▰▰▰▰▰▰▰▱▱▱] Loading 70%...", "🔄 [▰▰▰▰▰▰▰▰▰▰] Complete!"]
@@ -2089,11 +2136,10 @@ async def run_spin_animation(bot, chat_id, user, query_message):
             await asyncio.sleep(1)
 
         async with db_pool.acquire() as conn:
-            cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
-            if not cards:
+            won_card = await get_weighted_random_card(conn)
+            if not won_card:
                 return
 
-            won_card = random.choice(cards)
             await conn.execute("""
                 INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
                 ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
@@ -2108,6 +2154,8 @@ async def run_spin_animation(bot, chat_id, user, query_message):
             pass
 
         amount_notice = f"\n📦 <b>Total Owned:</b> {new_amount}x" if new_amount > 1 else ""
+        r = won_card.get('rarity', 'Ten')
+        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
         win_text = f"""🎉 <b>Congratulations {get_mention(user.id, user.first_name)}!</b>
 
@@ -2116,6 +2164,7 @@ async def run_spin_animation(bot, chat_id, user, query_message):
 
 🎴 <b>Card Won:</b>
 🏷 <b>Name:</b> {won_card['name']}
+🌟 <b>Rarity:</b> {r_emoji} {r}
 🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
 
         if won_card['type'] == 'photo':
@@ -2134,6 +2183,60 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat)
+
+    if data.startswith("addrarity_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[1])
+        rarity = parts[2]
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ Not meant for you.", show_alert=True)
+
+        card_info = pending_card_adds.get(user.id)
+        if not card_info:
+            return await query.answer("❌ Card addition session expired.", show_alert=True)
+
+        card_id = card_info["card_id"]
+        card_name = card_info["card_name"]
+        c_type = card_info["type"]
+        file_id = card_info["file_id"]
+        is_card_admin = card_info["is_card_admin"]
+
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO cards (card_id, name, type, file_id, rarity)
+                VALUES ($1, $2, $3, $4, $5)
+            """, card_id, card_name, c_type, file_id, rarity)
+
+            if is_card_admin and user.id != ADMIN_ID:
+                await conn.execute("UPDATE users SET coins = coins + 20 WHERE user_id = $1", user.id)
+
+        del pending_card_adds[user.id]
+
+        r_emoji = "🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮"))
+        log_text = f"""𝙉𝙚𝙬 𝘾𝙖𝙧𝙙 𝘼𝙙𝙙𝙚𝙙
+
+❀𝘊𝘢𝘳𝘥 𝘕𝘢𝘮𝘦 : {card_name}
+     ❝  𝙸𝙳 : {card_id}
+❀ 𝘛𝘺𝘱𝘦 : {c_type.capitalize()}
+🌟 𝘙𝘢𝘳𝘪𝘵𝘺 : {r_emoji} {rarity}
+👤 𝘼𝙙𝙙𝙚𝙙 𝘽𝙮 : {get_mention(user.id, user.first_name)}"""
+
+        try:
+            if c_type == "photo":
+                await context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML")
+            else:
+                await context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML")
+        except Exception:
+            pass
+
+        reward_notice = "\n🎉 You received <b>+20 Kachi Coins</b> for adding a card!" if (is_card_admin and user.id != ADMIN_ID) else ""
+        await query.message.edit_text(
+            f"✅ Card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Card Name: {card_name}\n🌟 Rarity: {r_emoji} {rarity}{reward_notice}",
+            parse_mode="HTML"
+        )
+        await query.answer("✅ Card added successfully!")
+        return
 
     if data.startswith("check_join_"):
         target_uid = int(data.split("_")[2])
@@ -2539,15 +2642,13 @@ A Card will drop now!
             if coins < 650:
                 return await query.answer("❌ Not enough Kachi Coins (650 required).", show_alert=True)
 
-            cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
+            cards = await conn.fetch("SELECT card_id FROM cards WHERE card_id != 'gemstone'")
             if not cards:
                 return await query.answer("❌ No cards in box yet, please wait.", show_alert=True)
 
             await conn.execute("UPDATE users SET coins = coins - 650 WHERE user_id = $1", user.id)
 
         await query.answer("🎰 Spinning Card Box...")
-        
-        # Run spin animation in background task so it doesn't block other commands/users
         asyncio.create_task(run_spin_animation(context.bot, chat_id, user, query.message))
         return
 
@@ -2584,7 +2685,7 @@ A Card will drop now!
         return
 
     if data == "lb_back":
-        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝒕𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
+        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
 
         if result_media:
