@@ -840,7 +840,7 @@ async def get_popular_profile_data(target_uid: int):
     card_id_str = u_info['selected_card_id'] or "Not Set"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥ𝗥</b>        
+    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
 🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
@@ -1601,9 +1601,9 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="lb_back")]])
         try:
             if query.message.caption:
-                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥ𝗥Ｓ</b>\n\n<i>No popular members registered yet. Use /vote to apply.</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>No popular members registered yet. Use /vote to apply.</i>", parse_mode="HTML", reply_markup=back_markup)
             else:
-                await query.edit_message_text(text="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥ𝗥Ｓ</b>\n\n<i>No popular members registered yet. Use /vote to apply.</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_text(text="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>No popular members registered yet. Use /vote to apply.</i>", parse_mode="HTML", reply_markup=back_markup)
         except Exception:
             pass
         return
@@ -1633,8 +1633,8 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     card_id_str = u_info['selected_card_id'] or "Not Set"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠ＥＭＢＥ𝗥</b>        
-             <b>𝗣𝗥𝗢𝗙𝗜🇱𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
+    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
+             <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
 🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
@@ -1785,7 +1785,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
-4 or more players won in Game❄! 
+4 or more winners or 4+ goals scored in Game❄! 
 
 A Card will drop now!
 
@@ -1838,7 +1838,7 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         
         drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
-4 or more players won in Game❄! 
+4 or more winners or 4+ goals scored in Game❄! 
 
 A Card will drop now!
 
@@ -2010,8 +2010,9 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     last_results[sent_res.message_id] = res_text
     
-    # Updated condition: Check winners count >= 4 (4 or 4+ winners) OR admin triggered
-    if len(winners) >= 4 or is_admin_triggered:
+    # Updated Condition: Winners count >= 4 OR Total goals (home_g + away_g) >= 4 OR admin triggered
+    total_goals = home_g + away_g
+    if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
         await asyncio.sleep(7)
         snail_msg = await context.bot.send_message(chat_id, "🐌")
         await asyncio.sleep(4)
@@ -2061,7 +2062,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
 
-4 or more players won in Game❄! 
+4 or more winners or 4+ goals scored in Game❄! 
 
 A Card will drop now!
 
@@ -2498,7 +2499,7 @@ A Card will drop now!
         return
 
     if data == "lb_back":
-        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝒕𝒄𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
+        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝒕𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
 
         if result_media:
