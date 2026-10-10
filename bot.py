@@ -197,6 +197,31 @@ def get_mention(user_id, name):
 def generate_team_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
+# Force Join Check Helper
+async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    if not user or user.is_bot:
+        return True
+    if user.id == ADMIN_ID:
+        return True
+    
+    try:
+        member = await context.bot.get_chat_member(chat_id="@beyondpoe", user_id=user.id)
+        if member.status in ['left', 'kicked']:
+            raise Exception("Not joined")
+        return True
+    except Exception:
+        text = f"🐠 Hello {get_mention(user.id, user.first_name)} Please Join For Using The Command \nကဒ်အလှတွေနဲ့ Game Updates လေးတွေသိရအောင် Joinပေးပါနော် 🩸"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Join Channel 📢", url="https://t.me/beyondpoe")],
+            [InlineKeyboardButton("Now Using ✅", callback_data=f"check_join_{user.id}")]
+        ])
+        if update.message:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=update.message.message_id)
+        elif update.callback_query:
+            await update.callback_query.answer("❌ Please join the channel first!", show_alert=True)
+        return False
+
 async def get_user_card_media(user_id: int):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT selected_card_id FROM users WHERE user_id = $1", user_id)
@@ -268,6 +293,8 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
 
 # Coin Box Command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     chat = update.effective_chat
     user = update.effective_user
     msg_id = update.message.message_id
@@ -311,6 +338,8 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -491,6 +520,8 @@ Code: <code>{t_info['team_code']}</code>
 
 # /team Command
 async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -510,6 +541,8 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /myteam Command
 async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -525,6 +558,8 @@ async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /dele Command
 async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -545,6 +580,8 @@ async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /join [CODE] Command
 async def join_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -593,6 +630,8 @@ Accept request?"""
 
 # /out Command
 async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -782,6 +821,8 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /ksell [amount] Command
 async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -864,6 +905,8 @@ async def get_popular_profile_data(target_uid: int):
 
 # /vote Command
 async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -905,6 +948,8 @@ Apply for Popular list and collect votes from other users!
 
 # /set Command
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -931,6 +976,8 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /kbox Command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -967,6 +1014,8 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /kgift Command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     sender = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -1156,6 +1205,8 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 
 # /kc Command Handler
 async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     await register_user_group(user, chat)
@@ -1217,8 +1268,10 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
-# /card [card_id] Command
+# /card [card_id] Command (Vame -> Name fixed)
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
@@ -1257,7 +1310,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption_text = f"""🎗𝘾𝘼𝙍𝘿 𝙄𝙉𝙁𝙊𝙍𝙈𝘼𝙏𝙄𝙊𝙉 ♡
 
 ▰▰▱▱▰▰▱▱▰▰▱▱
-🍀 𝘝𝘈𝘔𝘌 - {card['name']}
+🍀 𝘕𝘈𝘔𝘌 - {card['name']}
     🍀  𝘐𝘋 - <code>{card['card_id']}</code>
 🎬 𝘛𝘠𝘗𝘌 - {card['type'].upper()}
    🐠𝘎𝘓𝘖𝘉𝘈𝘓 𝘋𝘙𝘖𝘗 𝘊𝘖𝘜𝘕𝘛 - <b>{global_drop_count}</b>
@@ -2010,7 +2063,6 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     last_results[sent_res.message_id] = res_text
     
-    # Updated Condition: Winners count >= 4 OR Total goals (home_g + away_g) >= 4 OR admin triggered
     total_goals = home_g + away_g
     if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
         await asyncio.sleep(7)
@@ -2025,6 +2077,54 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
     if chat_id in active_games:
         del active_games[chat_id]
 
+# Background task for spinning box to prevent blocking other commands
+async def run_spin_animation(bot, chat_id, user, query_message):
+    try:
+        frames = ["🔄 [▰▱▱▱▱▱▱▱▱▱] Loading 10%...", "🔄 [▰▰▰▰▱▱▱▱▱▱] Loading 40%...", "🔄 [▰▰▰▰▰▰▰▱▱▱] Loading 70%...", "🔄 [▰▰▰▰▰▰▰▰▰▰] Complete!"]
+        for frame in frames:
+            try:
+                await query_message.edit_text(f"🎁 Hello {get_mention(user.id, user.first_name)}!\n\n{frame}", parse_mode="HTML")
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+
+        async with db_pool.acquire() as conn:
+            cards = await conn.fetch("SELECT card_id, name, type, file_id FROM cards WHERE card_id != 'gemstone'")
+            if not cards:
+                return
+
+            won_card = random.choice(cards)
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, user.id, won_card['card_id'])
+
+            rem_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
+            new_amount = await conn.fetchval("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, won_card['card_id'])
+
+        try:
+            await query_message.delete()
+        except Exception:
+            pass
+
+        amount_notice = f"\n📦 <b>Total Owned:</b> {new_amount}x" if new_amount > 1 else ""
+
+        win_text = f"""🎉 <b>Congratulations {get_mention(user.id, user.first_name)}!</b>
+
+🆔 <b>User ID:</b> <code>{user.id}</code>
+💰 <b>Remaining Coins:</b> {rem_coins} 🩸
+
+🎴 <b>Card Won:</b>
+🏷 <b>Name:</b> {won_card['name']}
+🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
+
+        if won_card['type'] == 'photo':
+            await bot.send_photo(chat_id=chat_id, photo=won_card['file_id'], caption=win_text, parse_mode="HTML")
+        else:
+            await bot.send_video(chat_id=chat_id, video=won_card['file_id'], caption=win_text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Spin Error: {e}")
+
 # Callback Query Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2034,6 +2134,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat)
+
+    if data.startswith("check_join_"):
+        target_uid = int(data.split("_")[2])
+        if user.id != target_uid:
+            return await query.answer("❌ Not meant for you.", show_alert=True)
+        try:
+            member = await context.bot.get_chat_member(chat_id="@beyondpoe", user_id=user.id)
+            if member.status in ['left', 'kicked']:
+                return await query.answer("❌ You have not joined the channel yet! Please join first.", show_alert=True)
+            else:
+                await query.answer("✅ Thank you for joining! You can now use commands.", show_alert=True)
+                try:
+                    await query.message.edit_text("✅ Verified! You can now use all commands.", parse_mode="HTML")
+                except Exception:
+                    pass
+        except Exception:
+            await query.answer("✅ Verified! You can now use commands.", show_alert=True)
+            try:
+                await query.message.edit_text("✅ Verified! You can now use all commands.", parse_mode="HTML")
+            except Exception:
+                pass
+        return
 
     if data == "join_card_drop":
         drop = active_card_drops.get(msg_id)
@@ -2424,46 +2546,9 @@ A Card will drop now!
             await conn.execute("UPDATE users SET coins = coins - 650 WHERE user_id = $1", user.id)
 
         await query.answer("🎰 Spinning Card Box...")
-
-        frames = ["🔄 [▰▱▱▱▱▱▱▱▱▱] Loading 10%...", "🔄 [▰▰▰▰▱▱▱▱▱▱] Loading 40%...", "🔄 [▰▰▰▰▰▰▰▱▱▱] Loading 70%...", "🔄 [▰▰▰▰▰▰▰▰▰▰] Complete!"]
-        for frame in frames:
-            try:
-                await query.edit_message_text(f"🎁 Hello {get_mention(user.id, user.first_name)}!\n\n{frame}", parse_mode="HTML")
-            except Exception:
-                pass
-            await asyncio.sleep(1)
-
-        won_card = random.choice(cards)
-
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, user.id, won_card['card_id'])
-
-            rem_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
-            new_amount = await conn.fetchval("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, won_card['card_id'])
-
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-
-        amount_notice = f"\n📦 <b>Total Owned:</b> {new_amount}x" if new_amount > 1 else ""
-
-        win_text = f"""🎉 <b>Congratulations {get_mention(user.id, user.first_name)}!</b>
-
-🆔 <b>User ID:</b> <code>{user.id}</code>
-💰 <b>Remaining Coins:</b> {rem_coins} 🩸
-
-🎴 <b>Card Won:</b>
-🏷 <b>Name:</b> {won_card['name']}
-🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
-
-        if won_card['type'] == 'photo':
-            await context.bot.send_photo(chat_id=chat_id, photo=won_card['file_id'], caption=win_text, parse_mode="HTML")
-        else:
-            await context.bot.send_video(chat_id=chat_id, video=won_card['file_id'], caption=win_text, parse_mode="HTML")
+        
+        # Run spin animation in background task so it doesn't block other commands/users
+        asyncio.create_task(run_spin_animation(context.bot, chat_id, user, query.message))
         return
 
     if data.startswith("glist_"):
