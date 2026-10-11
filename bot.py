@@ -4,8 +4,9 @@ import os
 import random
 import string
 import time
+import uuid
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -13,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    InlineQueryHandler,
 )
 
 # Environment Variables
@@ -926,7 +928,7 @@ async def get_popular_profile_data(target_uid: int):
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
@@ -1219,14 +1221,18 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
     full_text = f"{text_header}\n\n❄ <b>Owned Cards{page_str}</b>\n\n{cards_info}"
 
-    buttons = []
+    keyboard_rows = []
     if total_pages > 1:
+        nav_row = []
         if page > 0:
-            buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
+            nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
         if page < total_pages - 1:
-            buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
+            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
+        if nav_row:
+            keyboard_rows.append(nav_row)
 
-    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+    keyboard_rows.append([InlineKeyboardButton("Harem 🎴", switch_inline_query_current_chat=f"harem.{target_id}")])
+    markup = InlineKeyboardMarkup(keyboard_rows)
 
     if isinstance(update_or_query, Update):
         try:
@@ -1254,6 +1260,60 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await register_user_group(user, chat)
     await render_kc_view(update, context, page=0, owner_id=user.id)
+
+# Inline Query Handler for Harem View
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query
+    text = query.query.strip()
+    user_id = query.from_user.id
+
+    if text.startswith("harem."):
+        try:
+            target_id = int(text.split(".")[1])
+        except Exception:
+            target_id = user_id
+    else:
+        target_id = user_id
+
+    async with db_pool.acquire() as conn:
+        user_cards = await conn.fetch("""
+            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
+            FROM user_cards uc
+            JOIN cards c ON uc.card_id = c.card_id 
+            WHERE uc.user_id = $1 AND uc.amount > 0 AND c.card_id != 'gemstone'
+            ORDER BY c.card_id ASC
+        """, target_id)
+
+    results = []
+    for c in user_cards:
+        r = c.get('rarity', 'Ten')
+        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        title = f"{c['name']} ({c['card_id']})"
+        amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
+        caption = f"🎴 <b>{c['name']}</b>{amount_str}\n🆔 ID: <code>{c['card_id']}</code>\n🌟 Rarity: {r_emoji} {r}"
+        
+        if c['type'] == 'photo':
+            results.append(
+                InlineQueryResultCachedPhoto(
+                    id=str(uuid.uuid4()),
+                    photo_file_id=c['file_id'],
+                    title=title,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            )
+        else:
+            results.append(
+                InlineQueryResultCachedVideo(
+                    id=str(uuid.uuid4()),
+                    video_file_id=c['file_id'],
+                    title=title,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            )
+
+    await query.answer(results, cache_time=1)
 
 # /cardlist Command
 async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2810,6 +2870,7 @@ def main():
     app.add_handler(CommandHandler("del", del_card_cmd))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), message_handler))
 
     print("🤖 Python Game Bot Running...")
