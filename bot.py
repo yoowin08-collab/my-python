@@ -188,6 +188,19 @@ async def init_db():
                 stadium TEXT,
                 emoji TEXT
             );
+            CREATE TABLE IF NOT EXISTS sup_cards (
+                name TEXT PRIMARY KEY,
+                type TEXT,
+                file_id TEXT,
+                price INT,
+                performance TEXT
+            );
+            CREATE TABLE IF NOT EXISTS user_sup_cards (
+                user_id BIGINT,
+                sup_name TEXT,
+                amount INT DEFAULT 1,
+                PRIMARY KEY (user_id, sup_name)
+            );
         """)
 
         try:
@@ -239,7 +252,7 @@ async def init_db():
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
 
-async def register_user_group(user, chat):
+async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = None):
     if not db_pool:
         return
     async with db_pool.acquire() as conn:
@@ -263,17 +276,34 @@ async def register_user_group(user, chat):
                     added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
             """, chat.id, chat.title or "Group", added_id, added_name)
 
-            if not is_new:
-                # Send log to LOG_CHANNEL_ID (like glist format)
+            if not is_new and context:
                 try:
-                    member_count = await context_bot_get_member_count(added_id, chat.id) # handled safely
-                    adder_text = get_mention(added_id, added_name or "User") if added_id else "—"
-                    log_text = f"""🏰 <b>New Group Added</b>
+                    member_count = await context.bot.get_chat_member_count(chat.id)
+                except Exception:
+                    member_count = "N/A"
 
-🔹 <b>Group Name:</b> {chat.title or 'Group'}
-🆔 <b>Group ID:</b> <code>{chat.id}</code>
-👤 <b>Added By:</b> {adder_text}"""
-                    # We can send via global app if needed or bot instance inside context if available. Handled in handlers.
+                invite_link = "Not available"
+                try:
+                    chat_obj = await context.bot.get_chat(chat.id)
+                    if chat_obj.invite_link:
+                        invite_link = chat_obj.invite_link
+                    elif chat_obj.username:
+                        invite_link = f"https://t.me/{chat_obj.username}"
+                    else:
+                        invite_link = await context.bot.export_chat_invite_link(chat.id)
+                except Exception:
+                    pass
+
+                adder_text = get_mention(added_id, added_name or "User") if added_id else "—"
+                log_text = f"""🏰 <b>New Group Added</b>
+
+🔹 <b>Gp name:</b> {chat.title or 'Group'}
+👥 <b>Gp member:</b> {member_count}
+🆔 <b>Gp id:</b> <code>{chat.id}</code>
+🔗 <b>Gp link:</b> {invite_link}
+👤 <b>Addသူ name:</b> {adder_text}"""
+                try:
+                    await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
                 except Exception:
                     pass
 
@@ -465,7 +495,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     bot_info = await context.bot.get_me()
     text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
@@ -483,6 +513,7 @@ Rewards / 𝙋𝙧𝙞𝙘𝙚
 
 📜 <b>Available Commands:</b>
 • /kc - Check your coins and cards
+• /kshop - View and Trade Sup Cards
 • /kbox - Spin Card Box (650 Coins)
 • /ksell [amount] - Sell 1 GemStone 💎 for 200 Coins
 • /card [card_id] - Check Card details and Top Owners
@@ -529,6 +560,150 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
+# /sup Command
+async def sup_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+    async with db_pool.acquire() as conn:
+        u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+        is_card_admin = u_info['is_card_admin'] if u_info else False
+
+    if user.id != ADMIN_ID and not is_card_admin:
+        return
+
+    reply = update.message.reply_to_message
+    if not reply or (not reply.photo and not reply.video):
+        return await update.message.reply_text("❌ Reply to a photo or video with `/sup [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    name = " ".join(context.args).strip()
+    if not name:
+        return await update.message.reply_text("❌ Usage: `/sup [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    if reply.photo:
+        file_id = reply.photo[-1].file_id
+        c_type = "photo"
+    else:
+        file_id = reply.video.file_id
+        c_type = "video"
+
+    price = random.randint(5000, 7000)
+    performance = random.choice([
+        "Bullish 📈 (+15% Trading Power)",
+        "Stable ⚖️ (Neutral Trading Power)",
+        "Volatile ⚡ (High Risk / High Reward)",
+        "Bearish 📉 (-10% Trading Power)"
+    ])
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO sup_cards (name, type, file_id, price, performance)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (name) DO UPDATE SET type = EXCLUDED.type, file_id = EXCLUDED.file_id, price = EXCLUDED.price, performance = EXCLUDED.performance
+        """, name, c_type, file_id, price, performance)
+
+    await update.message.reply_text(
+        f"✅ Sup Card <b>{name}</b> added successfully!\n\n"
+        f"💰 Random Price: <b>{price}</b> Kachi Coins\n"
+        f"⚡ Performance: {performance}",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
+# /delsup Command
+async def delsup_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+    async with db_pool.acquire() as conn:
+        u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+        is_card_admin = u_info['is_card_admin'] if u_info else False
+
+    if user.id != ADMIN_ID and not is_card_admin:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: `/delsup [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    name = " ".join(context.args).strip()
+    async with db_pool.acquire() as conn:
+        card = await conn.fetchrow("SELECT name FROM sup_cards WHERE LOWER(name) = LOWER($1)", name)
+        if not card:
+            return await update.message.reply_text(f"❌ Sup Card '<b>{name}</b>' not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+        await conn.execute("DELETE FROM user_sup_cards WHERE LOWER(sup_name) = LOWER($1)", name)
+        await conn.execute("DELETE FROM sup_cards WHERE LOWER(name) = LOWER($1)", name)
+
+    await update.message.reply_text(f"✅ Sup Card <b>{name}</b> has been deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+# /kshop Command
+async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat, context)
+    await render_kshop_page(update, context, page=0, owner_id=user.id)
+
+async def render_kshop_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
+    user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
+    target_uid = owner_id if owner_id else user.id
+    msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
+
+    async with db_pool.acquire() as conn:
+        sup_cards = await conn.fetch("SELECT name, type, file_id, price, performance FROM sup_cards ORDER BY name ASC")
+
+    if not sup_cards:
+        text = "🛍 <b>K-Shop is currently empty. No Sup cards available.</b>"
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+        else:
+            return await update_or_query.edit_message_caption(caption=text, parse_mode="HTML")
+
+    page = max(0, min(page, len(sup_cards) - 1))
+    card = sup_cards[page]
+
+    async with db_pool.acquire() as conn:
+        user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", target_uid)
+        owned_count = await conn.fetchval("SELECT amount FROM user_sup_cards WHERE user_id = $1 AND sup_name = $2", target_uid, card['name'])
+        owned_str = f" (Owned: {owned_count}x)" if owned_count and owned_count > 0 else ""
+
+    text = f"""🛒 <b>SUP CARD TRADING SHOP</b> (Page {page + 1}/{len(sup_cards)})
+
+🃏 <b>Name:</b> {card['name']}{owned_str}
+💰 <b>Trading Price:</b> <b>{card['price']}</b> 🩸 Kachi Coins
+⚡ <b>Performance / Trading Power:</b> {card['performance']}
+💳 Your Coins: <b>{user_coins or 0}</b> 🩸"""
+
+    buttons = []
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kshop_{page - 1}_{target_uid}"))
+    if page < len(sup_cards) - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kshop_{page + 1}_{target_uid}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton("🛒 Buy Card", callback_data=f"kshopbuy_{page}_{target_uid}")])
+    markup = InlineKeyboardMarkup(buttons)
+
+    if isinstance(update_or_query, Update):
+        try:
+            if card['type'] == 'photo':
+                await update_or_query.message.reply_photo(photo=card['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+            else:
+                await update_or_query.message.reply_video(video=card['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+        except Exception:
+            await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+    else:
+        query = update_or_query
+        try:
+            media = InputMediaPhoto(media=card['file_id'], caption=text, parse_mode="HTML") if card['type'] == 'photo' else InputMediaVideo(media=card['file_id'], caption=text, parse_mode="HTML")
+            await query.edit_message_media(media=media, reply_markup=markup)
+        except Exception:
+            try:
+                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
+
 # /addteam Command (Bot Admin Only)
 async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -570,7 +745,6 @@ async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             return await update.message.reply_text(f"❌ Error adding team to database: {e}", reply_to_message_id=msg_id)
 
-    # Update global TEAMS list in memory
     global TEAMS
     existing = next((t for t in TEAMS if t['name'].lower() == team_name.lower()), None)
     if existing:
@@ -654,13 +828,15 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. <b>/addadmin [user_id]</b> - Grant Card Admin permission
 6. <b>/addteam [name.emoji]</b> - Add new football team for matches
 7. <b>/delteam [name/no]</b> - Delete a custom team
-8. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
-9. <b>/del [card_id]</b> - Delete a Card
-10. <b>/cardlist</b> - View all Cards
-11. <b>/glist</b> - View active group list
-12. <b>/g</b> or <b>/r</b> - Set Game/Result Media
-13. <b>/stats</b> - View Bot Statistics
-14. <b>/broadcast</b> - Broadcast message (Forward reply)"""
+8. <b>/sup [name]</b> - Add Sup card (Reply to photo/video)
+9. <b>/delsup [name]</b> - Delete Sup card
+10. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
+11. <b>/del [card_id]</b> - Delete a Card
+12. <b>/cardlist</b> - View all Cards
+13. <b>/glist</b> - View active group list
+14. <b>/g</b> or <b>/r</b> - Set Game/Result Media
+15. <b>/stats</b> - View Bot Statistics
+16. <b>/broadcast</b> - Broadcast message (Forward reply)"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -757,7 +933,7 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     async with db_pool.acquire() as conn:
         user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
@@ -778,7 +954,7 @@ async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     async with db_pool.acquire() as conn:
         user_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
@@ -795,7 +971,7 @@ async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     async with db_pool.acquire() as conn:
         team = await conn.fetchrow("SELECT team_code, team_name FROM user_teams WHERE leader_id = $1", user.id)
@@ -817,7 +993,7 @@ async def join_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     if not context.args:
         return await update.message.reply_text("❌ Usage: `/join [TEAM_CODE]`", parse_mode="Markdown", reply_to_message_id=msg_id)
@@ -867,7 +1043,7 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     async with db_pool.acquire() as conn:
         in_team = await conn.fetchrow("SELECT team_code FROM team_members WHERE user_id = $1", user.id)
@@ -1067,7 +1243,7 @@ async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     if not context.args:
         return await update.message.reply_text("❌ Usage: `/ksell [amount]` (e.g., `/ksell 1`)", parse_mode="Markdown", reply_to_message_id=msg_id)
@@ -1151,7 +1327,7 @@ async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT is_popular FROM users WHERE user_id = $1", user.id)
@@ -1194,7 +1370,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     if not context.args:
         return await update.message.reply_text("❌ Usage: `/set [Card_ID]`", parse_mode="Markdown", reply_to_message_id=msg_id)
@@ -1222,7 +1398,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
@@ -1269,8 +1445,8 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sender.id == receiver.id:
         return await update.message.reply_text("❌ You cannot send a gift to yourself.", reply_to_message_id=msg_id)
 
-    await register_user_group(sender, chat)
-    await register_user_group(receiver, chat)
+    await register_user_group(sender, chat, context)
+    await register_user_group(receiver, chat, context)
 
     if not context.args:
         return await update.message.reply_text("❌ Usage:\n• Send Card: Reply with `/kgift [card_id]`\n• Send Coins: Reply with `/kgift c[amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
@@ -1455,7 +1631,7 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user = update.effective_user
     chat = update.effective_chat
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
     await render_kc_view(update, context, page=0, owner_id=user.id)
 
 # Inline Query Handler for Harem View
@@ -1591,7 +1767,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     if not context.args:
         return await update.message.reply_text("❌ Usage: `/card [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
@@ -1626,7 +1802,6 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = card.get('rarity', 'Ten')
     r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-    # Determine Kachi Coin Value based on Rarity
     if r == 'Hoshi':
         coin_value = "500-950"
     elif r == 'Ten':
@@ -1736,13 +1911,6 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True, reply_to_message_id=msg_id)
     else:
         await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-
-# Helper function to get member count safely for logs
-async def context_bot_get_member_count(bot, chat_id):
-    try:
-        return await bot.get_chat_member_count(chat_id)
-    except Exception:
-        return "N/A"
 
 # Media Commands (/g, /r)
 async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1860,30 +2028,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat or not msg:
         return
 
-    # Check if group is newly added and send logs
-    if chat.type in ["group", "supergroup"]:
-        async with db_pool.acquire() as conn:
-            exists = await conn.fetchrow("SELECT chat_id FROM groups WHERE chat_id = $1", chat.id)
-            if not exists and user and not user.is_bot:
-                member_count = "N/A"
-                try:
-                    member_count = await context.bot.get_chat_member_count(chat.id)
-                except Exception:
-                    pass
-                
-                adder_text = get_mention(user.id, user.first_name) if user else "—"
-                log_text = f"""🏰 <b>New Group Added</b>
-
-🔹 <b>Group Name:</b> {chat.title or 'Group'}
-🆔 <b>Group ID:</b> <code>{chat.id}</code>
-👥 <b>Members:</b> {member_count}
-👤 <b>Added By:</b> {adder_text}"""
-                try:
-                    await context.bot.send_message(LOG_CHANNEL_ID, log_text, parse_mode="HTML")
-                except Exception:
-                    pass
-
-    await register_user_group(user, chat)
+    await register_user_group(user, chat, context)
 
     if chat.type == "private":
         if user.id in team_creation_state:
@@ -2058,7 +2203,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
 🍀   <b>𝑈𝑆𝐸𝑅 𝐼𝐷</b> - <code>{u_info['user_id']}</code>
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
-🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
+🍀 <b>𝑆𝑒𝑙𝑒𝑐𝘁𝚎𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
    🎖 <b>𝐺𝑙𝑜𝑏𝘢𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
@@ -2425,6 +2570,9 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     last_results[sent_res.message_id] = res_text
     
+    # 30-second delay post-game for Sup card trading updates
+    asyncio.create_task(run_sup_trading_update(context, chat_id))
+
     total_goals = home_g + away_g
     if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
         await asyncio.sleep(7)
@@ -2438,6 +2586,32 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     if chat_id in active_games:
         del active_games[chat_id]
+
+async def run_sup_trading_update(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    await asyncio.sleep(30)
+    async with db_pool.acquire() as conn:
+        sup_holders = await conn.fetch("""
+            SELECT usc.user_id, usc.sup_name, usc.amount, sc.price, u.name, u.coins
+            FROM user_sup_cards usc
+            JOIN sup_cards sc ON usc.sup_name = sc.name
+            JOIN users u ON usc.user_id = u.user_id
+            WHERE usc.amount > 0
+        """)
+
+    if sup_holders:
+        trade_lines = []
+        for sh in sup_holders:
+            fluctuation = random.randint(-150, 300) * sh['amount']
+            async with db_pool.acquire() as conn:
+                await conn.execute("UPDATE users SET coins = GREATEST(0, coins + $1) WHERE user_id = $2", fluctuation, sh['user_id'])
+            sign = "+" if fluctuation >= 0 else ""
+            trade_lines.append(f"📈 {get_mention(sh['user_id'], sh['name'])} (<b>{sh['sup_name']}</b>) ➔ <b>{sign}{fluctuation}</b> 🩸 Coins")
+
+        trade_text = f"""📊 <b>SUP Card Trading Update (Sec 30)</b>\n\n""" + "\n".join(trade_lines)
+        try:
+            await context.bot.send_message(chat_id, trade_text, parse_mode="HTML")
+        except Exception:
+            pass
 
 # Background task for spinning box with weighted random card
 async def run_spin_animation(bot, chat_id, user, query_message):
@@ -2497,7 +2671,50 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     data = query.data
 
-    await register_user_group(user, query.message.chat)
+    await register_user_group(user, query.message.chat, context)
+
+    if data.startswith("kshop_"):
+        parts = data.split("_")
+        page = int(parts[1])
+        target_id = int(parts[2])
+
+        if user.id != target_id:
+            return await query.answer("❌ Not your /kshop view!", show_alert=True)
+
+        await render_kshop_page(query, context, page=page, owner_id=target_id)
+        await query.answer()
+        return
+
+    if data.startswith("kshopbuy_"):
+        parts = data.split("_")
+        page = int(parts[1])
+        target_id = int(parts[2])
+
+        if user.id != target_id:
+            return await query.answer("❌ Only the person who called /kshop can buy this card!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            sup_cards = await conn.fetch("SELECT name, price FROM sup_cards ORDER BY name ASC")
+            if not sup_cards or page >= len(sup_cards):
+                return await query.answer("❌ Card not available.", show_alert=True)
+
+            card = sup_cards[page]
+            c_name = card['name']
+            c_price = card['price']
+
+            user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
+            if not user_coins or user_coins < c_price:
+                return await query.answer(f"❌ Not enough Kachi Coins! You need {c_price} coins.", show_alert=True)
+
+            await conn.execute("UPDATE users SET coins = coins - $1 WHERE user_id = $2", c_price, user.id)
+            await conn.execute("""
+                INSERT INTO user_sup_cards (user_id, sup_name, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, sup_name) DO UPDATE SET amount = user_sup_cards.amount + 1
+            """, user.id, c_name)
+
+        await query.answer(f"✅ Successfully bought Sup Card '{c_name}' for {c_price} Coins!", show_alert=True)
+        await render_kshop_page(query, context, page=page, owner_id=target_id)
+        return
 
     if data.startswith("addrarity_"):
         parts = data.split("_")
@@ -3100,6 +3317,7 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
+    app.add_handler(CommandHandler("kshop", kshop_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("ksell", ksell_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
@@ -3125,6 +3343,8 @@ def main():
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("addteam", addteam_cmd))
     app.add_handler(CommandHandler("delteam", delteam_cmd))
+    app.add_handler(CommandHandler("sup", sup_card_cmd))
+    app.add_handler(CommandHandler("delsup", delsup_card_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
 
