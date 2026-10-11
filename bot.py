@@ -649,7 +649,53 @@ async def render_kshop_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
 
     async with db_pool.acquire() as conn:
+        owned_sup = await conn.fetchrow("""
+            SELECT usc.sup_name, sc.type, sc.file_id, sc.price, sc.performance
+            FROM user_sup_cards usc
+            JOIN sup_cards sc ON usc.sup_name = sc.name
+            WHERE usc.user_id = $1 AND usc.amount > 0
+            LIMIT 1
+        """, target_uid)
+
+    if owned_sup:
+        async with db_pool.acquire() as conn:
+            user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", target_uid)
+
+        text = f"""🛒 <b>YOUR OWNED SUP CARD</b>
+
+🃏 <b>Name:</b> {owned_sup['sup_name']}
+💰 <b>Original Price:</b> <b>{owned_sup['price']}</b> 🩸 Kachi Coins
+⚡ <b>Performance:</b> {owned_sup['performance']}
+💳 <b>Your Coins:</b> <b>{user_coins or 0}</b> 🩸
+
+💡 <i>တစ်ယောက်ကို တစ်ကဒ်ပဲ ဝယ်ယူခွင့်ရှိပါသည်။ ကဒ်ပြန်ရောင်းရန် အောက်ပါခလုတ်ကို နှိပ်ပါ (ရောင်းစျေး: 1,000 Coins)။</i>"""
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💰 Sell Card (1,000 Coins)", callback_data=f"kshopsell_{target_uid}")
+        ]])
+
+        if isinstance(update_or_query, Update):
+            try:
+                if owned_sup['type'] == 'photo':
+                    await update_or_query.message.reply_photo(photo=owned_sup['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+                else:
+                    await update_or_query.message.reply_video(video=owned_sup['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+            except Exception:
+                await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            query = update_or_query
+            try:
+                media = InputMediaPhoto(media=owned_sup['file_id'], caption=text, parse_mode="HTML") if owned_sup['type'] == 'photo' else InputMediaVideo(media=owned_sup['file_id'], caption=text, parse_mode="HTML")
+                await query.edit_message_media(media=media, reply_markup=markup)
+            except Exception:
+                try:
+                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+                except Exception:
+                    pass
+        return
+
+    async with db_pool.acquire() as conn:
         sup_cards = await conn.fetch("SELECT name, type, file_id, price, performance FROM sup_cards ORDER BY name ASC")
+        user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", target_uid)
 
     if not sup_cards:
         text = "🛍 <b>K-Shop is currently empty. No Sup cards available.</b>"
@@ -661,17 +707,14 @@ async def render_kshop_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
     page = max(0, min(page, len(sup_cards) - 1))
     card = sup_cards[page]
 
-    async with db_pool.acquire() as conn:
-        user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", target_uid)
-        owned_count = await conn.fetchval("SELECT amount FROM user_sup_cards WHERE user_id = $1 AND sup_name = $2", target_uid, card['name'])
-        owned_str = f" (Owned: {owned_count}x)" if owned_count and owned_count > 0 else ""
-
     text = f"""🛒 <b>SUP CARD TRADING SHOP</b> (Page {page + 1}/{len(sup_cards)})
 
-🃏 <b>Name:</b> {card['name']}{owned_str}
+🃏 <b>Name:</b> {card['name']}
 💰 <b>Trading Price:</b> <b>{card['price']}</b> 🩸 Kachi Coins
 ⚡ <b>Performance / Trading Power:</b> {card['performance']}
-💳 Your Coins: <b>{user_coins or 0}</b> 🩸"""
+💳 Your Coins: <b>{user_coins or 0}</b> 🩸
+
+💡 <i>တစ်ယောက်ကို တစ်ကဒ်သာ ဝယ်ယူခွင့်ရှိပါသည်။</i>"""
 
     buttons = []
     nav_row = []
@@ -692,7 +735,7 @@ async def render_kshop_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
             else:
                 await update_or_query.message.reply_video(video=card['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
         except Exception:
-            await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+            await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     else:
         query = update_or_query
         try:
@@ -2570,8 +2613,8 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     last_results[sent_res.message_id] = res_text
     
-    # 30-second delay post-game for Sup card trading updates
-    asyncio.create_task(run_sup_trading_update(context, chat_id))
+    # 10-second delay post-game for Sup card trading updates (only for game participants who own a sup card)
+    asyncio.create_task(run_sup_trading_update(context, chat_id, game_state["bets"]))
 
     total_goals = home_g + away_g
     if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
@@ -2587,29 +2630,84 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
     if chat_id in active_games:
         del active_games[chat_id]
 
-async def run_sup_trading_update(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    await asyncio.sleep(30)
+async def run_sup_trading_update(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game_bets: dict):
+    await asyncio.sleep(10)
     async with db_pool.acquire() as conn:
-        sup_holders = await conn.fetch("""
-            SELECT usc.user_id, usc.sup_name, usc.amount, sc.price, u.name, u.coins
+        participant_uids = list(game_bets.keys())
+        if not participant_uids:
+            return
+
+        holders = await conn.fetch("""
+            SELECT usc.user_id, usc.sup_name, sc.type, sc.file_id, sc.price, sc.performance, u.name
             FROM user_sup_cards usc
             JOIN sup_cards sc ON usc.sup_name = sc.name
             JOIN users u ON usc.user_id = u.user_id
-            WHERE usc.amount > 0
-        """)
+            WHERE usc.user_id = ANY($1::bigint[]) AND usc.amount > 0
+        """, participant_uids)
 
-    if sup_holders:
-        trade_lines = []
-        for sh in sup_holders:
-            fluctuation = random.randint(-150, 300) * sh['amount']
-            async with db_pool.acquire() as conn:
-                await conn.execute("UPDATE users SET coins = GREATEST(0, coins + $1) WHERE user_id = $2", fluctuation, sh['user_id'])
-            sign = "+" if fluctuation >= 0 else ""
-            trade_lines.append(f"📈 {get_mention(sh['user_id'], sh['name'])} (<b>{sh['sup_name']}</b>) ➔ <b>{sign}{fluctuation}</b> 🩸 Coins")
+    if not holders:
+        return
 
-        trade_text = f"""📊 <b>SUP Card Trading Update (Sec 30)</b>\n\n""" + "\n".join(trade_lines)
+    for h in holders:
+        uid = h['user_id']
+        uname = h['name']
+        c_name = h['sup_name']
+        file_id = h['file_id']
+        c_type = h['type']
+
+        fluctuation = random.randint(-150, 300)
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET coins = GREATEST(0, coins + $1) WHERE user_id = $2", fluctuation, uid)
+            new_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", uid)
+
+        sign = "+" if fluctuation >= 0 else ""
+
+        # Step 1: Initialize trading session message with card photo/video
+        init_caption = f"""📈 <b>SUP CARD TRADING SESSION (10s)</b>
+
+👤 <b>Trader:</b> {get_mention(uid, uname)}
+🎴 <b>Card:</b> {c_name}
+⚡ <b>Status:</b> <i>Connecting to Market API & Order Book... 🔄</i>"""
+
         try:
-            await context.bot.send_message(chat_id, trade_text, parse_mode="HTML")
+            if c_type == 'photo':
+                msg = await context.bot.send_photo(chat_id, photo=file_id, caption=init_caption, parse_mode="HTML")
+            else:
+                msg = await context.bot.send_video(chat_id, video=file_id, caption=init_caption, parse_mode="HTML")
+        except Exception:
+            continue
+
+        await asyncio.sleep(2)
+        step2_caption = f"""📈 <b>SUP CARD TRADING SESSION (10s)</b>
+
+👤 <b>Trader:</b> {get_mention(uid, uname)}
+🎴 <b>Card:</b> {c_name}
+⚡ <b>Status:</b> <i>Analyzing Candlestick & Price Volatility... 📊</i>"""
+        try:
+            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg.message_id, caption=step2_caption, parse_mode="HTML")
+        except Exception:
+            pass
+
+        await asyncio.sleep(2)
+        step3_caption = f"""📈 <b>SUP CARD TRADING SESSION (10s)</b>
+
+👤 <b>Trader:</b> {get_mention(uid, uname)}
+🎴 <b>Card:</b> {c_name}
+⚡ <b>Status:</b> <i>Executing Buy/Sell Position... 💹</i>"""
+        try:
+            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg.message_id, caption=step3_caption, parse_mode="HTML")
+        except Exception:
+            pass
+
+        await asyncio.sleep(2)
+        final_caption = f"""📈 <b>SUP CARD TRADING COMPLETED!</b> ✅
+
+👤 <b>Trader:</b> {get_mention(uid, uname)}
+🎴 <b>Card:</b> {c_name}
+💰 <b>Trading Result:</b> <b>{sign}{fluctuation}</b> 🩸 Coins
+💳 <b>Updated Balance:</b> <b>{new_coins}</b> 🩸 Kachi Coins"""
+        try:
+            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg.message_id, caption=final_caption, parse_mode="HTML")
         except Exception:
             pass
 
@@ -2694,6 +2792,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.answer("❌ Only the person who called /kshop can buy this card!", show_alert=True)
 
         async with db_pool.acquire() as conn:
+            existing_sup = await conn.fetchrow("SELECT sup_name FROM user_sup_cards WHERE user_id = $1 AND amount > 0 LIMIT 1", user.id)
+            if existing_sup:
+                return await query.answer("❌ You already own a Sup card! You can only hold 1 card at a time. Sell your current card first.", show_alert=True)
+
             sup_cards = await conn.fetch("SELECT name, price FROM sup_cards ORDER BY name ASC")
             if not sup_cards or page >= len(sup_cards):
                 return await query.answer("❌ Card not available.", show_alert=True)
@@ -2714,6 +2816,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.answer(f"✅ Successfully bought Sup Card '{c_name}' for {c_price} Coins!", show_alert=True)
         await render_kshop_page(query, context, page=page, owner_id=target_id)
+        return
+
+    if data.startswith("kshopsell_"):
+        target_id = int(data.split("_")[1])
+        if user.id != target_id:
+            return await query.answer("❌ Not your action!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            owned = await conn.fetchrow("SELECT sup_name FROM user_sup_cards WHERE user_id = $1 AND amount > 0 LIMIT 1", user.id)
+            if not owned:
+                return await query.answer("❌ You do not own any Sup card to sell.", show_alert=True)
+
+            c_name = owned['sup_name']
+            await conn.execute("DELETE FROM user_sup_cards WHERE user_id = $1 AND sup_name = $2", user.id, c_name)
+            await conn.execute("UPDATE users SET coins = coins + 1000 WHERE user_id = $1", user.id)
+
+        await query.answer("✅ Successfully sold your Sup Card for 1,000 Coins!", show_alert=True)
+        await render_kshop_page(query, context, page=0, owner_id=target_id)
         return
 
     if data.startswith("addrarity_"):
