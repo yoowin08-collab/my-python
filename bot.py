@@ -140,6 +140,7 @@ async def init_db():
         except Exception:
             pass
 
+        # Auto assign rarities to existing cards without rarity
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL AND card_id != 'gemstone'")
         for c in existing_cards:
             if c['type'] == 'photo':
@@ -207,6 +208,7 @@ def get_mention(user_id, name):
 def generate_team_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
+# Weighted random card selector for Kbox and Card Drop (Kiwami & Kami are rarer)
 async def get_weighted_random_card(conn):
     cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id != 'gemstone'")
     if not cards:
@@ -228,6 +230,7 @@ async def get_weighted_random_card(conn):
             
     return random.choices(cards, weights=weights, k=1)[0]
 
+# Force Join Check Helper
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
     if not user or user.is_bot:
@@ -321,6 +324,7 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+# Coin Box Command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -365,6 +369,7 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claimed_users": {},
     }
 
+# /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -413,6 +418,7 @@ Rewards / 𝙋𝙧𝙞𝙘𝙚
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
+# /addadmin Command (Admin Only)
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -434,6 +440,7 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
+# /admin Command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -458,6 +465,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /game Command
 async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -543,6 +551,7 @@ Code: <code>{t_info['team_code']}</code>
         except Exception:
             pass
 
+# /team Command
 async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -563,6 +572,7 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         await update.message.reply_text(text, reply_markup=keyboard, reply_to_message_id=msg_id)
 
+# /myteam Command
 async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -579,6 +589,7 @@ async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ You are not in any team. (Use /team to create one)", reply_to_message_id=msg_id)
 
+# /dele Command
 async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -600,6 +611,7 @@ async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Your team <b>{team_name}</b> has been deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /join [CODE] Command
 async def join_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -649,6 +661,7 @@ Accept request?"""
     except Exception:
         await update.message.reply_text("❌ Failed to send request to Team Leader's DM. The leader must /start the bot.", reply_to_message_id=msg_id)
 
+# /out Command
 async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -687,6 +700,7 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ You have left <b>{team['team_name']}</b> team.", parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /c Command
 async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global global_default_threshold
     msg_id = update.message.message_id
@@ -717,6 +731,7 @@ async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Usage: `/c 6`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
+# Admin Coin Command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -744,6 +759,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Usage: `/k 1928382 200` or `/k 1928382 -200`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
+# /add Command - Supports /add name (auto random unused id) or /add id.name, then prompts for Rarity via inline buttons
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -823,6 +839,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# /del Command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -844,6 +861,7 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) permanently deleted.", parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /ksell [amount] Command
 async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -927,6 +945,7 @@ async def get_popular_profile_data(target_uid: int):
     ])
     return text, keyboard
 
+# /vote Command
 async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -969,6 +988,7 @@ Apply for Popular list and collect votes from other users!
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
+# /set Command
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -996,6 +1016,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Selected card for /kc changed to <b>{has_card['name']}</b>.", parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /kbox Command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1033,6 +1054,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# /kgift Command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1163,15 +1185,14 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
       💎 𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒 - <b>{gem_count}</b>
 🎟𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨 - <b>{tickets}</b>
         
-❀ ɢʟᴏʙ𝙖𝙡 ɴᴏ - #{rank}"""
+❀ ɢʟᴏʙ𝙖ʟ ɴᴏ - #{rank}"""
 
     if not user_card_rows:
         full_text = f"{text_header}\n\n❄ <b>Owned Cards</b>\n<i>No cards owned yet.</i>"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("Harem", callback_data=f"harem_grid_{target_id}_0")]])
         if isinstance(update_or_query, Update):
-            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_to_message_id=msg_id)
         else:
-            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML", reply_markup=markup)
+            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML")
 
     active_card = None
     if selected_card_id:
@@ -1199,26 +1220,20 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     full_text = f"{text_header}\n\n❄ <b>Owned Cards{page_str}</b>\n\n{cards_info}"
 
     buttons = []
-    nav_row = []
     if total_pages > 1:
         if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
+            buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
         if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
-        if nav_row:
-            buttons.append(nav_row)
+            buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
 
-    # Added Harem inline button as requested
-    buttons.append([InlineKeyboardButton("Harem", callback_data=f"harem_grid_{target_id}_0")])
-
-    markup = InlineKeyboardMarkup(buttons)
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
     if isinstance(update_or_query, Update):
         try:
             if active_card['type'] == 'photo':
                 await update_or_query.message.reply_photo(photo=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
             else:
-                await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup)
+                await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
         except Exception:
             await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup)
     else:
@@ -1231,6 +1246,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
             except Exception:
                 pass
 
+# /kc Command Handler
 async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1239,6 +1255,7 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat)
     await render_kc_view(update, context, page=0, owner_id=user.id)
 
+# /cardlist Command
 async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1296,6 +1313,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
+# /card [card_id] Command
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1337,9 +1355,9 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = card.get('rarity', 'Ten')
     r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-    # Updated card info layout as requested
-    caption_text = f"""🎗𝐇𝐚𝐫𝐞𝐦 𝐎𝐰𝐧𝐞𝐫 𝐧𝐚𝐦𝐞 𝐦𝐭 ✜
+    caption_text = f"""🎗𝘾𝘼𝙍𝘿 𝙄𝙉𝙁𝙊𝙍𝙈𝘼𝙏𝙄𝙊𝙉 ♡
 
+▰▰▱▱▰▰▱▱▰▰▱▱
 🍀 𝘕𝘈𝘔𝘌 - {card['name']}
     🍀  𝘐𝘋 - <code>{card['card_id']}</code>
 🎬 𝘛𝘠𝘗𝘌 - {card['type'].upper()}
@@ -1369,6 +1387,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 await update.message.reply_text(caption_text, parse_mode="HTML", reply_to_message_id=msg_id)
 
+# /glist Command
 async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1433,6 +1452,7 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
     else:
         await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
+# Media Commands (/g, /r)
 async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1481,6 +1501,7 @@ async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ {'Game' if target == 'g' else 'Result'} Media updated.", reply_to_message_id=msg_id)
 
+# /stats Command
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1515,6 +1536,7 @@ async def run_async_broadcast(bot, chat_id, reply_msg_id, targets, status_msg_id
     except Exception:
         pass
 
+# /broadcast Command
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1538,6 +1560,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
+# Message Handler
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -1616,6 +1639,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 group_msg_count[chat_id] = 0
                 asyncio.create_task(start_game(context, chat_id, is_admin_triggered=False))
 
+# UI & Buttons
 def build_game_ui(game):
     home_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "home"]
     away_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "away"]
@@ -1720,7 +1744,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
 🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
-   🎖 <b>𝐺𝑙𝑜𝑏𝘢𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
+   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
     buttons = [
@@ -1850,6 +1874,7 @@ Code: <code>{t['team_code']}</code>
         except Exception:
             pass
 
+# Helper to trigger Card Drop session with weighted random card
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     async with db_pool.acquire() as conn:
         drop_card = await get_weighted_random_card(conn)
@@ -1973,6 +1998,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     if msg_id in active_card_drops:
         del active_card_drops[msg_id]
 
+# Game Flow
 async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_triggered: bool = False):
     home_team, away_team = random.sample(TEAMS, 2)
     game_state = {
@@ -2098,6 +2124,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
     if chat_id in active_games:
         del active_games[chat_id]
 
+# Background task for spinning box with weighted random card
 async def run_spin_animation(bot, chat_id, user, query_message):
     try:
         frames = ["🔄 [▰▱▱▱▱▱▱▱▱▱] Loading 10%...", "🔄 [▰▰▰▰▱▱▱▱▱▱] Loading 40%...", "🔄 [▰▰▰▰▰▰▰▱▱▱] Loading 70%...", "🔄 [▰▰▰▰▰▰▰▰▰▰] Complete!"]
@@ -2147,74 +2174,7 @@ async def run_spin_animation(bot, chat_id, user, query_message):
     except Exception as e:
         print(f"Spin Error: {e}")
 
-async def render_harem_grid_view(query, context: ContextTypes.DEFAULT_TYPE, target_id: int, page: int = 0):
-    async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
-        display_name = user_row['name'] if user_row else "User"
-
-        user_cards = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
-            FROM user_cards uc 
-            JOIN cards c ON uc.card_id = c.card_id 
-            WHERE uc.user_id = $1 AND uc.amount > 0 AND c.card_id != 'gemstone'
-            ORDER BY c.card_id ASC
-        """, target_id)
-
-    if not user_cards:
-        text = f"🎴 <b>{display_name}'s Harem</b>\n\n<i>No cards owned yet.</i>"
-        back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back to /kc", callback_data=f"kcpage_0_{target_id}")]])
-        try:
-            if query.message.caption:
-                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=back_markup)
-            else:
-                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=back_markup)
-        except Exception:
-            pass
-        return
-
-    per_page = 8
-    total_cards = len(user_cards)
-    total_pages = (total_cards + per_page - 1) // per_page
-    page = max(0, min(page, total_pages - 1))
-
-    start_idx = page * per_page
-    end_idx = start_idx + per_page
-    current_page_cards = user_cards[start_idx:end_idx]
-
-    text = f"🎴 <b>{display_name}'s Harem Gallery (Page {page + 1}/{total_pages})</b>\n\n👇 Click a card to view details:"
-
-    buttons = []
-    row = []
-    for idx, c in enumerate(current_page_cards, 1):
-        r = c.get('rarity', 'Ten')
-        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
-        btn_text = f"{r_emoji} {c['name'][:10]}"
-        row.append(InlineKeyboardButton(btn_text, callback_data=f"harem_card_{target_id}_{c['card_id']}_{page}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-
-    nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"harem_grid_{target_id}_{page - 1}"))
-    if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"harem_grid_{target_id}_{page + 1}"))
-    if nav_row:
-        buttons.append(nav_row)
-
-    buttons.append([InlineKeyboardButton("🔙 Back to /kc", callback_data=f"kcpage_0_{target_id}")])
-    markup = InlineKeyboardMarkup(buttons)
-
-    try:
-        if query.message.caption:
-            await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
-        else:
-            await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
-    except Exception:
-        pass
-
+# Callback Query Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -2223,58 +2183,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat)
-
-    if data.startswith("harem_grid_"):
-        parts = data.split("_")
-        target_id = int(parts[2])
-        page = int(parts[3])
-        if user.id != target_id:
-            return await query.answer("❌ Not your Harem view!", show_alert=True)
-        await render_harem_grid_view(query, context, target_id, page=page)
-        await query.answer()
-        return
-
-    if data.startswith("harem_card_"):
-        parts = data.split("_")
-        target_id = int(parts[2])
-        card_id = parts[3]
-        grid_page = int(parts[4])
-
-        if user.id != target_id:
-            return await query.answer("❌ Not your Harem view!", show_alert=True)
-
-        async with db_pool.acquire() as conn:
-            card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id = $1", card_id)
-            if not card:
-                return await query.answer("❌ Card not found.", show_alert=True)
-            global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card_id)
-
-        r = card.get('rarity', 'Ten')
-        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
-
-        caption_text = f"""🎗𝐇𝐚𝐫𝐞𝐦 𝐎𝐰𝐧𝐞𝐫 𝐧𝐚𝐦𝐞 𝐦𝐭 ✜
-
-🍀 𝘕𝘈𝘔𝘌 - {card['name']}
-    🍀  𝘐𝘋 - <code>{card['card_id']}</code>
-🎬 𝘛𝘠𝘗𝘌 - {card['type'].upper()}
-🌟 𝘙𝘈𝘙𝘐𝘛𝘠 - {r_emoji} {r}
-   🐠𝘎𝘓𝘖𝘉𝘈𝘓 𝘋𝘙𝘖𝘗 𝘊𝘖𝘜𝘕𝘛 - <b>{global_drop_count}</b>"""
-
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Harem", callback_data=f"harem_grid_{target_id}_{grid_page}")]])
-
-        try:
-            if card['type'] == 'photo':
-                media = InputMediaPhoto(media=card['file_id'], caption=caption_text, parse_mode="HTML")
-            else:
-                media = InputMediaVideo(media=card['file_id'], caption=caption_text, parse_mode="HTML")
-            await query.edit_message_media(media=media, reply_markup=markup)
-        except Exception:
-            try:
-                await query.edit_message_caption(caption=caption_text, parse_mode="HTML", reply_markup=markup)
-            except Exception:
-                pass
-        await query.answer()
-        return
 
     if data.startswith("addrarity_"):
         parts = data.split("_")
@@ -2871,6 +2779,7 @@ async def post_init(app: Application):
 def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
+    # Public User Commands
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
@@ -2885,6 +2794,7 @@ def main():
     app.add_handler(CommandHandler("out", out_team_cmd))
     app.add_handler(CommandHandler("vote", vote_cmd))
 
+    # Admin & Card Admin Commands
     app.add_handler(CommandHandler("game", manual_game_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
