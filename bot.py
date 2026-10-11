@@ -1127,7 +1127,7 @@ async def get_popular_profile_data(target_uid: int):
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
@@ -2022,7 +2022,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
@@ -2479,12 +2479,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Bet on Home, Away, or Draw within 1 minute.
 - Earn Kachi Coins and Vote Tickets on win!
 - Spin /kbox for cards, use /kc to check harem, /vote for popular profile.
+- /ksell [amount] - Sell GemStones for Kachi Coins.
+- /vote - Access/register popular profile & vote.
+- /card [card_id] - View card details and top owners.
+- /set [card_id] - Set your active profile card displayed in /kc.
 
 🇲🇲 <b>မြန်မာဘာသာ:</b>
 - Bot ကို Group ထဲထည့်ပြီး စကားပြောခြင်းဖြင့် ဘောလုံးပွဲများကို စတင်နိုင်ပါတယ်။
 - ၁ မိနစ်အတွင်း အသင်းနိုင် သို့မဟုတ် သရေ (Draw) ကို ရွေးချယ်ပါ။
 - အနိုင်ရပါက Kachi Coins နှင့် Vote Tickets များ ရရှိမည်။
-- /kbox ဖြင့် ကဒ်ပေါက်နိုင်ပြီး /kc ဖြင့် ကိုယ်ပိုင်ကဒ်များကို ကြည့်ရှုနိုင်ပါသည်။"""
+- /kbox ဖြင့် ကဒ်ပေါက်နိုင်ပြီး /kc ဖြင့် ကိုယ်ပိုင်ကဒ်များကို ကြည့်ရှုနိုင်ပါသည်။
+- /ksell [amount] - GemStone များကို Kachi Coins ဖြင့် လဲလှယ်ရန်။
+- /vote - Popular စာရင်းဝင်ရန် သို့မဟုတ် မဲပေးရန်။
+- /card [card_id] - ကဒ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
+- /set [card_id] - /kc တွင်ပြမည့် ကိုယ်ပိုင် ಪ್ರೊಫೈಲ್ ကဒ်ကို သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=markup)
         await query.answer()
