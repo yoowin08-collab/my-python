@@ -139,7 +139,8 @@ async def init_db():
                 vote_tickets BIGINT DEFAULT 0,
                 is_popular BOOLEAN DEFAULT FALSE,
                 popular_votes BIGINT DEFAULT 0,
-                is_card_admin BOOLEAN DEFAULT FALSE
+                is_card_admin BOOLEAN DEFAULT FALSE,
+                started_in_pm BOOLEAN DEFAULT FALSE
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -188,19 +189,6 @@ async def init_db():
                 stadium TEXT,
                 emoji TEXT
             );
-            CREATE TABLE IF NOT EXISTS sup_cards (
-                name TEXT PRIMARY KEY,
-                type TEXT,
-                file_id TEXT,
-                price INT,
-                performance TEXT
-            );
-            CREATE TABLE IF NOT EXISTS user_sup_cards (
-                user_id BIGINT,
-                sup_name TEXT,
-                amount INT DEFAULT 1,
-                PRIMARY KEY (user_id, sup_name)
-            );
         """)
 
         try:
@@ -211,6 +199,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_popular BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS popular_votes BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_admin BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS started_in_pm BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
@@ -349,8 +338,40 @@ async def get_weighted_random_card(conn):
             
     return random.choices(cards, weights=weights, k=1)[0]
 
+# Bot DM Start Enforcement Check Helper
+async def check_pm_started(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    if not user or user.is_bot:
+        return True
+    if user.id == ADMIN_ID:
+        return True
+
+    chat = update.effective_chat
+    if chat and chat.type == "private" and update.message and update.message.text and update.message.text.startswith("/start"):
+        return True
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT started_in_pm FROM users WHERE user_id = $1", user.id)
+        if row and row['started_in_pm']:
+            return True
+
+    bot_info = await context.bot.get_me()
+    text = f"❌ Hello {get_mention(user.id, user.first_name)}, please start the bot in DM first before using commands or buttons! 🩸"
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Start Bot in DM 🤖", url=f"https://t.me/{bot_info.username}?start=true")
+    ]])
+
+    if update.message:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=update.message.message_id)
+    elif update.callback_query:
+        await update.callback_query.answer("❌ Please start the bot in DM first!", show_alert=True)
+    return False
+
 # Force Join Check Helper
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not await check_pm_started(update, context):
+        return False
+
     user = update.effective_user
     if not user or user.is_bot:
         return True
@@ -490,12 +511,17 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
     user = update.effective_user
     chat = update.effective_chat
     msg_id = update.message.message_id
     await register_user_group(user, chat, context)
+
+    if chat.type == "private":
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET started_in_pm = TRUE WHERE user_id = $1", user.id)
+
+    if not await check_force_join(update, context):
+        return
 
     bot_info = await context.bot.get_me()
     text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
@@ -508,12 +534,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Choose your team or Draw within 1 minute.
 
 Rewards / 𝙋𝙧𝙞𝙘𝙚
-- Team Win: 70 🩸Kachi Coin + 10 🎟️ Vote Tickets
-- Draw Win: 100 🩸Kachi Coin + 10 🎟️ Vote Tickets
+- Team Win: 70 🩸 Kachi Coin + 10 🎟️ Vote Tickets
+- Draw Win: 100 🩸 Kachi Coin + 10 🎟️ Vote Tickets
 
 📜 <b>Available Commands:</b>
 • /kc - Check your coins and cards
-• /kshop - View and Trade Sup Cards
 • /kbox - Spin Card Box (650 Coins)
 • /ksell [amount] - Sell 1 GemStone 💎 for 200 Coins
 • /card [card_id] - Check Card details and Top Owners
@@ -559,193 +584,6 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ User <code>{target_id}</code> is now a Card Admin! (Can add cards with /add)", parse_mode="HTML", reply_to_message_id=msg_id)
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
-
-# /sup Command
-async def sup_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    user = update.effective_user
-    async with db_pool.acquire() as conn:
-        u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
-        is_card_admin = u_info['is_card_admin'] if u_info else False
-
-    if user.id != ADMIN_ID and not is_card_admin:
-        return
-
-    reply = update.message.reply_to_message
-    if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ Reply to a photo or video with `/sup [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    name = " ".join(context.args).strip()
-    if not name:
-        return await update.message.reply_text("❌ Usage: `/sup [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    if reply.photo:
-        file_id = reply.photo[-1].file_id
-        c_type = "photo"
-    else:
-        file_id = reply.video.file_id
-        c_type = "video"
-
-    price = random.randint(5000, 7000)
-    performance = random.choice([
-        "Bullish 📈 (+15% Trading Power)",
-        "Stable ⚖️ (Neutral Trading Power)",
-        "Volatile ⚡ (High Risk / High Reward)",
-        "Bearish 📉 (-10% Trading Power)"
-    ])
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO sup_cards (name, type, file_id, price, performance)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (name) DO UPDATE SET type = EXCLUDED.type, file_id = EXCLUDED.file_id, price = EXCLUDED.price, performance = EXCLUDED.performance
-        """, name, c_type, file_id, price, performance)
-
-    await update.message.reply_text(
-        f"✅ Sup Card <b>{name}</b> added successfully!\n\n"
-        f"💰 Random Price: <b>{price}</b> Kachi Coins\n"
-        f"⚡ Performance: {performance}",
-        parse_mode="HTML",
-        reply_to_message_id=msg_id
-    )
-
-# /delsup Command
-async def delsup_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    user = update.effective_user
-    async with db_pool.acquire() as conn:
-        u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
-        is_card_admin = u_info['is_card_admin'] if u_info else False
-
-    if user.id != ADMIN_ID and not is_card_admin:
-        return
-
-    if not context.args:
-        return await update.message.reply_text("❌ Usage: `/delsup [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    name = " ".join(context.args).strip()
-    async with db_pool.acquire() as conn:
-        card = await conn.fetchrow("SELECT name FROM sup_cards WHERE LOWER(name) = LOWER($1)", name)
-        if not card:
-            return await update.message.reply_text(f"❌ Sup Card '<b>{name}</b>' not found.", parse_mode="HTML", reply_to_message_id=msg_id)
-
-        await conn.execute("DELETE FROM user_sup_cards WHERE LOWER(sup_name) = LOWER($1)", name)
-        await conn.execute("DELETE FROM sup_cards WHERE LOWER(name) = LOWER($1)", name)
-
-    await update.message.reply_text(f"✅ Sup Card <b>{name}</b> has been deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
-
-# /kshop Command
-async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
-    user = update.effective_user
-    chat = update.effective_chat
-    await register_user_group(user, chat, context)
-    await render_kshop_page(update, context, page=0, owner_id=user.id)
-
-async def render_kshop_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
-    user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
-    target_uid = owner_id if owner_id else user.id
-    msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
-
-    async with db_pool.acquire() as conn:
-        owned_sup = await conn.fetchrow("""
-            SELECT usc.sup_name, sc.type, sc.file_id, sc.price, sc.performance
-            FROM user_sup_cards usc
-            JOIN sup_cards sc ON usc.sup_name = sc.name
-            WHERE usc.user_id = $1 AND usc.amount > 0
-            LIMIT 1
-        """, target_uid)
-
-    if owned_sup:
-        async with db_pool.acquire() as conn:
-            user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", target_uid)
-
-        text = f"""🛒 <b>YOUR OWNED SUP CARD</b>
-
-🃏 <b>Name:</b> {owned_sup['sup_name']}
-💰 <b>Original Price:</b> <b>{owned_sup['price']}</b> 🩸 Kachi Coins
-⚡ <b>Performance:</b> {owned_sup['performance']}
-💳 <b>Your Coins:</b> <b>{user_coins or 0}</b> 🩸
-
-💡 <i>တစ်ယောက်ကို တစ်ကဒ်ပဲ ဝယ်ယူခွင့်ရှိပါသည်။ ကဒ်ပြန်ရောင်းရန် အောက်ပါခလုတ်ကို နှိပ်ပါ (ရောင်းစျေး: 1,000 Coins)။</i>"""
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("💰 Sell Card (1,000 Coins)", callback_data=f"kshopsell_{target_uid}")
-        ]])
-
-        if isinstance(update_or_query, Update):
-            try:
-                if owned_sup['type'] == 'photo':
-                    await update_or_query.message.reply_photo(photo=owned_sup['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
-                else:
-                    await update_or_query.message.reply_video(video=owned_sup['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
-            except Exception:
-                await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
-        else:
-            query = update_or_query
-            try:
-                media = InputMediaPhoto(media=owned_sup['file_id'], caption=text, parse_mode="HTML") if owned_sup['type'] == 'photo' else InputMediaVideo(media=owned_sup['file_id'], caption=text, parse_mode="HTML")
-                await query.edit_message_media(media=media, reply_markup=markup)
-            except Exception:
-                try:
-                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
-                except Exception:
-                    pass
-        return
-
-    async with db_pool.acquire() as conn:
-        sup_cards = await conn.fetch("SELECT name, type, file_id, price, performance FROM sup_cards ORDER BY name ASC")
-        user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", target_uid)
-
-    if not sup_cards:
-        text = "🛍 <b>K-Shop is currently empty. No Sup cards available.</b>"
-        if isinstance(update_or_query, Update):
-            return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
-        else:
-            return await update_or_query.edit_message_caption(caption=text, parse_mode="HTML")
-
-    page = max(0, min(page, len(sup_cards) - 1))
-    card = sup_cards[page]
-
-    text = f"""🛒 <b>SUP CARD TRADING SHOP</b> (Page {page + 1}/{len(sup_cards)})
-
-🃏 <b>Name:</b> {card['name']}
-💰 <b>Trading Price:</b> <b>{card['price']}</b> 🩸 Kachi Coins
-⚡ <b>Performance / Trading Power:</b> {card['performance']}
-💳 Your Coins: <b>{user_coins or 0}</b> 🩸
-
-💡 <i>တစ်ယောက်ကို တစ်ကဒ်သာ ဝယ်ယူခွင့်ရှိပါသည်။</i>"""
-
-    buttons = []
-    nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kshop_{page - 1}_{target_uid}"))
-    if page < len(sup_cards) - 1:
-        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kshop_{page + 1}_{target_uid}"))
-    if nav_row:
-        buttons.append(nav_row)
-
-    buttons.append([InlineKeyboardButton("🛒 Buy Card", callback_data=f"kshopbuy_{page}_{target_uid}")])
-    markup = InlineKeyboardMarkup(buttons)
-
-    if isinstance(update_or_query, Update):
-        try:
-            if card['type'] == 'photo':
-                await update_or_query.message.reply_photo(photo=card['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
-            else:
-                await update_or_query.message.reply_video(video=card['file_id'], caption=text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
-        except Exception:
-            await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
-    else:
-        query = update_or_query
-        try:
-            media = InputMediaPhoto(media=card['file_id'], caption=text, parse_mode="HTML") if card['type'] == 'photo' else InputMediaVideo(media=card['file_id'], caption=text, parse_mode="HTML")
-            await query.edit_message_media(media=media, reply_markup=markup)
-        except Exception:
-            try:
-                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
-            except Exception:
-                pass
 
 # /addteam Command (Bot Admin Only)
 async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -871,15 +709,13 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. <b>/addadmin [user_id]</b> - Grant Card Admin permission
 6. <b>/addteam [name.emoji]</b> - Add new football team for matches
 7. <b>/delteam [name/no]</b> - Delete a custom team
-8. <b>/sup [name]</b> - Add Sup card (Reply to photo/video)
-9. <b>/delsup [name]</b> - Delete Sup card
-10. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
-11. <b>/del [card_id]</b> - Delete a Card
-12. <b>/cardlist</b> - View all Cards
-13. <b>/glist</b> - View active group list
-14. <b>/g</b> or <b>/r</b> - Set Game/Result Media
-15. <b>/stats</b> - View Bot Statistics
-16. <b>/broadcast</b> - Broadcast message (Forward reply)"""
+8. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
+9. <b>/del [card_id]</b> - Delete a Card
+10. <b>/cardlist</b> - View all Cards
+11. <b>/glist</b> - View active group list
+12. <b>/g</b> or <b>/r</b> - Set Game/Result Media
+13. <b>/stats</b> - View Bot Statistics
+14. <b>/broadcast</b> - Broadcast message (Forward reply)"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -933,7 +769,7 @@ async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_
     member_lines = []
     for m in members:
         wr = round((m['wins'] / m['total_games']) * 100, 1) if m['total_games'] > 0 else 0.0
-        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])} — 🩸{m['coins']} (Played: {m['total_games']} | WR: {wr}%)")
+        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])} — 🩸 {m['coins']} (Played: {m['total_games']} | WR: {wr}%)")
 
     members_str = "\n".join(member_lines)
 
@@ -1344,8 +1180,8 @@ async def get_popular_profile_data(target_uid: int):
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
 🍀   <b>𝑈𝑆𝐸𝑅 𝐼𝐷</b> - <code>{u_info['user_id']}</code>
@@ -1680,6 +1516,13 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Inline Query Handler for Harem View
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
+    user = query.from_user
+    if user and user.id != ADMIN_ID:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT started_in_pm FROM users WHERE user_id = $1", user.id)
+            if not row or not row['started_in_pm']:
+                return
+
     text = query.query.strip()
     user_id = query.from_user.id
     user_name = query.from_user.first_name
@@ -1867,7 +1710,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
    🐠𝘎𝘓𝘖𝘉𝘈𝘓 𝘋𝘙𝘖𝘗 𝘊𝘖𝘜𝘕𝘛 - <b>{global_drop_count}</b>
 
 ▱▱▰▰▱▱▰▰▱▱▰▰
-𝘛𝘖𝘗 𝘖𝘞𝘕𝘌𝘙𝘛 🐾
+𝘛𝘖𝘗 𝘖𝘞𝘕𝘌𝘙𝘚 🐾
 {owners_str}"""
 
     is_video = (card['type'] == 'video') or (str(card['file_id']).startswith("BAA"))
@@ -2074,6 +1917,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     if chat.type == "private":
+        if user and user.id != ADMIN_ID:
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT started_in_pm FROM users WHERE user_id = $1", user.id)
+                if not row or not row['started_in_pm']:
+                    if msg.text and not msg.text.startswith("/start"):
+                        bot_info = await context.bot.get_me()
+                        await msg.reply_text(f"❌ Please start the bot first by clicking /start or using the button below 🩸", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot 🤖", url=f"https://t.me/{bot_info.username}?start=true")]]))
+                        return
+
         if user.id in team_creation_state:
             state = team_creation_state[user.id]
             step = state.get("step")
@@ -2239,8 +2091,8 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
 🍀   <b>𝑈𝑆𝐸𝑅 𝐼𝐷</b> - <code>{u_info['user_id']}</code>
@@ -2332,7 +2184,7 @@ async def render_top_teams_view(query, page: int = 0):
     member_lines = []
     for m in members:
         m_wr = round((m['wins'] / m['total_games']) * 100, 1) if m['total_games'] > 0 else 0.0
-        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])} — 🩸{m['coins']} (Played: {m['total_games']} | WR: {m_wr}%)")
+        member_lines.append(f"⇋ {get_mention(m['user_id'], m['name'])} — 🩸 {m['coins']} (Played: {m['total_games']} | WR: {m_wr}%)")
 
     members_str = "\n".join(member_lines)
 
@@ -2612,9 +2464,6 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
         sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
 
     last_results[sent_res.message_id] = res_text
-    
-    # 10-second delay post-game for Sup card trading updates (only for game participants who own a sup card)
-    asyncio.create_task(run_sup_trading_update(context, chat_id, game_state["bets"]))
 
     total_goals = home_g + away_g
     if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
@@ -2629,87 +2478,6 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     if chat_id in active_games:
         del active_games[chat_id]
-
-async def run_sup_trading_update(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game_bets: dict):
-    await asyncio.sleep(10)
-    async with db_pool.acquire() as conn:
-        participant_uids = list(game_bets.keys())
-        if not participant_uids:
-            return
-
-        holders = await conn.fetch("""
-            SELECT usc.user_id, usc.sup_name, sc.type, sc.file_id, sc.price, sc.performance, u.name
-            FROM user_sup_cards usc
-            JOIN sup_cards sc ON usc.sup_name = sc.name
-            JOIN users u ON usc.user_id = u.user_id
-            WHERE usc.user_id = ANY($1::bigint[]) AND usc.amount > 0
-        """, participant_uids)
-
-    if not holders:
-        return
-
-    for h in holders:
-        uid = h['user_id']
-        uname = h['name']
-        c_name = h['sup_name']
-        file_id = h['file_id']
-        c_type = h['type']
-
-        fluctuation = random.randint(-150, 300)
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET coins = GREATEST(0, coins + $1) WHERE user_id = $2", fluctuation, uid)
-            new_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", uid)
-
-        sign = "+" if fluctuation >= 0 else ""
-
-        # Step 1: Initialize trading session message with card photo/video
-        init_caption = f"""📈 <b>SUP CARD TRADING SESSION (10s)</b>
-
-👤 <b>Trader:</b> {get_mention(uid, uname)}
-🎴 <b>Card:</b> {c_name}
-⚡ <b>Status:</b> <i>Connecting to Market API & Order Book... 🔄</i>"""
-
-        try:
-            if c_type == 'photo':
-                msg = await context.bot.send_photo(chat_id, photo=file_id, caption=init_caption, parse_mode="HTML")
-            else:
-                msg = await context.bot.send_video(chat_id, video=file_id, caption=init_caption, parse_mode="HTML")
-        except Exception:
-            continue
-
-        await asyncio.sleep(2)
-        step2_caption = f"""📈 <b>SUP CARD TRADING SESSION (10s)</b>
-
-👤 <b>Trader:</b> {get_mention(uid, uname)}
-🎴 <b>Card:</b> {c_name}
-⚡ <b>Status:</b> <i>Analyzing Candlestick & Price Volatility... 📊</i>"""
-        try:
-            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg.message_id, caption=step2_caption, parse_mode="HTML")
-        except Exception:
-            pass
-
-        await asyncio.sleep(2)
-        step3_caption = f"""📈 <b>SUP CARD TRADING SESSION (10s)</b>
-
-👤 <b>Trader:</b> {get_mention(uid, uname)}
-🎴 <b>Card:</b> {c_name}
-⚡ <b>Status:</b> <i>Executing Buy/Sell Position... 💹</i>"""
-        try:
-            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg.message_id, caption=step3_caption, parse_mode="HTML")
-        except Exception:
-            pass
-
-        await asyncio.sleep(2)
-        final_caption = f"""📈 <b>SUP CARD TRADING COMPLETED!</b> ✅
-
-👤 <b>Trader:</b> {get_mention(uid, uname)}
-🎴 <b>Card:</b> {c_name}
-💰 <b>Trading Result:</b> <b>{sign}{fluctuation}</b> 🩸 Coins
-💳 <b>Updated Balance:</b> <b>{new_coins}</b> 🩸 Kachi Coins"""
-        try:
-            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg.message_id, caption=final_caption, parse_mode="HTML")
-        except Exception:
-            pass
 
 # Background task for spinning box with weighted random card
 async def run_spin_animation(bot, chat_id, user, query_message):
@@ -2764,77 +2532,15 @@ async def run_spin_animation(bot, chat_id, user, query_message):
 # Callback Query Handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = query.from_user
+    if not await check_pm_started(update, context):
+        return
+
     chat_id = query.message.chat_id
     msg_id = query.message.message_id
-    user = query.from_user
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
-
-    if data.startswith("kshop_"):
-        parts = data.split("_")
-        page = int(parts[1])
-        target_id = int(parts[2])
-
-        if user.id != target_id:
-            return await query.answer("❌ Not your /kshop view!", show_alert=True)
-
-        await render_kshop_page(query, context, page=page, owner_id=target_id)
-        await query.answer()
-        return
-
-    if data.startswith("kshopbuy_"):
-        parts = data.split("_")
-        page = int(parts[1])
-        target_id = int(parts[2])
-
-        if user.id != target_id:
-            return await query.answer("❌ Only the person who called /kshop can buy this card!", show_alert=True)
-
-        async with db_pool.acquire() as conn:
-            existing_sup = await conn.fetchrow("SELECT sup_name FROM user_sup_cards WHERE user_id = $1 AND amount > 0 LIMIT 1", user.id)
-            if existing_sup:
-                return await query.answer("❌ You already own a Sup card! You can only hold 1 card at a time. Sell your current card first.", show_alert=True)
-
-            sup_cards = await conn.fetch("SELECT name, price FROM sup_cards ORDER BY name ASC")
-            if not sup_cards or page >= len(sup_cards):
-                return await query.answer("❌ Card not available.", show_alert=True)
-
-            card = sup_cards[page]
-            c_name = card['name']
-            c_price = card['price']
-
-            user_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
-            if not user_coins or user_coins < c_price:
-                return await query.answer(f"❌ Not enough Kachi Coins! You need {c_price} coins.", show_alert=True)
-
-            await conn.execute("UPDATE users SET coins = coins - $1 WHERE user_id = $2", c_price, user.id)
-            await conn.execute("""
-                INSERT INTO user_sup_cards (user_id, sup_name, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, sup_name) DO UPDATE SET amount = user_sup_cards.amount + 1
-            """, user.id, c_name)
-
-        await query.answer(f"✅ Successfully bought Sup Card '{c_name}' for {c_price} Coins!", show_alert=True)
-        await render_kshop_page(query, context, page=page, owner_id=target_id)
-        return
-
-    if data.startswith("kshopsell_"):
-        target_id = int(data.split("_")[1])
-        if user.id != target_id:
-            return await query.answer("❌ Not your action!", show_alert=True)
-
-        async with db_pool.acquire() as conn:
-            owned = await conn.fetchrow("SELECT sup_name FROM user_sup_cards WHERE user_id = $1 AND amount > 0 LIMIT 1", user.id)
-            if not owned:
-                return await query.answer("❌ You do not own any Sup card to sell.", show_alert=True)
-
-            c_name = owned['sup_name']
-            await conn.execute("DELETE FROM user_sup_cards WHERE user_id = $1 AND sup_name = $2", user.id, c_name)
-            await conn.execute("UPDATE users SET coins = coins + 1000 WHERE user_id = $1", user.id)
-
-        await query.answer("✅ Successfully sold your Sup Card for 1,000 Coins!", show_alert=True)
-        await render_kshop_page(query, context, page=0, owner_id=target_id)
-        return
 
     if data.startswith("addrarity_"):
         parts = data.split("_")
@@ -3410,9 +3116,9 @@ A Card will drop now!
             text = f"{title}\n\n<i>No data available yet.</i>"
         else:
             if lb_type == "gp":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin ({r['total_cards']} Cards)" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸 Kachi Coin ({r['total_cards']} Cards)" for i, r in enumerate(rows)])
             elif lb_type == "global":
-                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸Kachi Coin" for i, r in enumerate(rows)])
+                text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — {r['coins']} 🩸 Kachi Coin" for i, r in enumerate(rows)])
             elif lb_type == "cards":
                 text = f"{title}\n\n" + "\n".join([f"{i+1}. {get_mention(r['user_id'], r['name'])} — <b>{r['card_count']}</b> Cards" for i, r in enumerate(rows)])
 
@@ -3437,7 +3143,6 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
-    app.add_handler(CommandHandler("kshop", kshop_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("ksell", ksell_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
@@ -3463,8 +3168,6 @@ def main():
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("addteam", addteam_cmd))
     app.add_handler(CommandHandler("delteam", delteam_cmd))
-    app.add_handler(CommandHandler("sup", sup_card_cmd))
-    app.add_handler(CommandHandler("delsup", delsup_card_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
 
