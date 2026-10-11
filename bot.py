@@ -24,6 +24,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
 TEAMS = [
+    # Premier League
     {"name": "Arsenal", "stadium": "Emirates Stadium", "emoji": "🔴"},
     {"name": "Aston Villa", "stadium": "Villa Park", "emoji": "🦁"},
     {"name": "Bournemouth", "stadium": "Vitality Stadium", "emoji": "🍒"},
@@ -41,11 +42,67 @@ TEAMS = [
     {"name": "Tottenham Hotspur", "stadium": "Tottenham Hotspur Stadium", "emoji": "⚪"},
     {"name": "West Ham United", "stadium": "London Stadium", "emoji": "⚒️"},
     {"name": "Wolves", "stadium": "Molineux Stadium", "emoji": "🐺"},
+    {"name": "Burnley", "stadium": "Turf Moor", "emoji": "🟣"},
+    {"name": "Sheffield United", "stadium": "Bramall Lane", "emoji": "🔴"},
+    {"name": "Luton Town", "stadium": "Kenilworth Road", "emoji": "🟠"},
+    
+    # La Liga
     {"name": "Real Madrid", "stadium": "Santiago Bernabéu", "emoji": "👑"},
     {"name": "Barcelona", "stadium": "Camp Nou", "emoji": "🔵🔴"},
-    {"name": "Bayern Munich", "stadium": "Allianz Arena", "emoji": "🔴"},
-    {"name": "PSG", "stadium": "Parc des Princes", "emoji": "🔵🔴"},
+    {"name": "Atletico Madrid", "stadium": "Metropolitano Stadium", "emoji": "🔴⚪"},
+    {"name": "Real Sociedad", "stadium": "Reale Arena", "emoji": "🔵⚪"},
+    {"name": "Athletic Bilbao", "stadium": "San Mamés", "emoji": "🔴⚪"},
+    {"name": "Real Betis", "stadium": "Benito Villamarín", "emoji": "💚"},
+    {"name": "Villarreal", "stadium": "Estadio de la Cerámica", "emoji": "🟡"},
+    {"name": "Sevilla", "stadium": "Ramón Sánchez Pizjuán", "emoji": "🔴"},
+    {"name": "Valencia", "stadium": "Mestalla", "emoji": "🦇"},
+    {"name": "Girona", "stadium": "Montilivi", "emoji": "🔴⚪"},
+
+    # Serie A
     {"name": "Inter Milan", "stadium": "San Siro", "emoji": "🔵⚫"},
+    {"name": "AC Milan", "stadium": "San Siro", "emoji": "🔴⚫"},
+    {"name": "Juventus", "stadium": "Allianz Stadium", "emoji": "🏳️"},
+    {"name": "Napoli", "stadium": "Stadio Diego Armando Maradona", "emoji": "🔵"},
+    {"name": "AS Roma", "stadium": "Stadio Olimpico", "emoji": "🟡🔴"},
+    {"name": "Lazio", "stadium": "Stadio Olimpico", "emoji": "🦅"},
+    {"name": "Atalanta", "stadium": "Gewiss Stadium", "emoji": "🔵⚫"},
+    {"name": "Fiorentina", "stadium": "Stadio Artemio Franchi", "emoji": "🟣"},
+    {"name": "Bologna", "stadium": "Stadio Renato Dall'Ara", "emoji": "🔴🔵"},
+    {"name": "Torino", "stadium": "Stadio Olimpico Grande Torino", "emoji": "🐂"},
+
+    # Bundesliga
+    {"name": "Bayern Munich", "stadium": "Allianz Arena", "emoji": "🔴"},
+    {"name": "Borussia Dortmund", "stadium": "Signal Iduna Park", "emoji": "🟡"},
+    {"name": "Bayer Leverkusen", "stadium": "BayArena", "emoji": "🔴⚫"},
+    {"name": "RB Leipzig", "stadium": "Red Bull Arena", "emoji": "🔴⚪"},
+    {"name": "Eintracht Frankfurt", "stadium": "Deutsche Bank Park", "emoji": "🦅"},
+    {"name": "VfB Stuttgart", "stadium": "MHPArena", "emoji": "⚪🔴"},
+    {"name": "Wolfsburg", "stadium": "Volkswagen Arena", "emoji": "🐺"},
+    {"name": "Borussia Mönchengladbach", "stadium": "Borussia-Park", "emoji": "🟢"},
+    {"name": "Werder Bremen", "stadium": "Weserstadion", "emoji": "🟢⚪"},
+    {"name": "Union Berlin", "stadium": "Stadion An der Alten Försterei", "emoji": "🔴"},
+
+    # Ligue 1 & Others
+    {"name": "PSG", "stadium": "Parc des Princes", "emoji": "🔵🔴"},
+    {"name": "Marseille", "stadium": "Orange Velodrome", "emoji": "🩵"},
+    {"name": "Lyon", "stadium": "Groupama Stadium", "emoji": "🔴🔵"},
+    {"name": "Monaco", "stadium": "Stade Louis II", "emoji": "🔴⚪"},
+    {"name": "Lille", "stadium": "Decathlon Arena", "emoji": "🔴"},
+    {"name": "Ajax", "stadium": "Johan Cruijff ArenA", "emoji": "⚪🔴"},
+    {"name": "PSV", "stadium": "Philips Stadion", "emoji": "🔴⚪"},
+    {"name": "Feyenoord", "stadium": "De Kuip", "emoji": "🔴⚪"},
+    {"name": "Porto", "stadium": "Estádio do Dragão", "emoji": "🔵"},
+    {"name": "Benfica", "stadium": "Estádio da Luz", "emoji": "🦅"},
+    {"name": "Sporting CP", "stadium": "Estádio José Alvalade", "emoji": "🟢"},
+    {"name": "Galatasaray", "stadium": "Rams Park", "emoji": "🟡🔴"},
+    {"name": "Fenerbahce", "stadium": "Şükrü Saracoğlu Stadium", "emoji": "🟡🔵"},
+    {"name": "Besiktas", "stadium": "Vodafone Park", "emoji": "⚫⚪"},
+    {"name": "Celtic", "stadium": "Celtic Park", "emoji": "🍀"},
+    {"name": "Rangers", "stadium": "Ibrox Stadium", "emoji": "🔵"},
+    {"name": "Al Nassr", "stadium": "Al-Awwal Park", "emoji": "🟡"},
+    {"name": "Al Hilal", "stadium": "Kingdom Arena", "emoji": "🔵"},
+    {"name": "Inter Miami", "stadium": "Chase Stadium", "emoji": "🩷"},
+    {"name": "Boca Juniors", "stadium": "La Bombonera", "emoji": "💙💛"},
 ]
 
 # Global Memory Stores
@@ -125,6 +182,12 @@ async def init_db():
                 user_id BIGINT,
                 PRIMARY KEY (team_code, user_id)
             );
+            CREATE TABLE IF NOT EXISTS custom_teams (
+                id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE,
+                stadium TEXT,
+                emoji TEXT
+            );
         """)
 
         try:
@@ -141,6 +204,13 @@ async def init_db():
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
         except Exception:
             pass
+
+        # Load custom teams from database and extend TEAMS
+        db_custom_teams = await conn.fetch("SELECT name, stadium, emoji FROM custom_teams")
+        for ct in db_custom_teams:
+            team_dict = {"name": ct['name'], "stadium": ct['stadium'] or f"{ct['name']} Stadium", "emoji": ct['emoji'] or "⚽"}
+            if not any(t['name'].lower() == ct['name'].lower() for t in TEAMS):
+                TEAMS.append(team_dict)
 
         # Auto assign rarities to existing cards without rarity
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL AND card_id != 'gemstone'")
@@ -442,6 +512,66 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
+# /addteam Command (Bot Admin Only)
+async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+
+    async with db_pool.acquire() as conn:
+        u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+        is_card_admin = u_info['is_card_admin'] if u_info else False
+
+    if user.id != ADMIN_ID and not is_card_admin:
+        return
+
+    full_text = update.message.text.partition(" ")[2].strip()
+    if not full_text:
+        return await update.message.reply_text(
+            "❌ Usage: `/addteam Name.Emoji` or `/addteam Name.Stadium.Emoji`\nExample: `/addteam Al Nassr. 🟡` or `/addteam Inter Miami.Chase Stadium. 🩷`",
+            parse_mode="Markdown",
+            reply_to_message_id=msg_id
+        )
+
+    parts = [p.strip() for p in full_text.split(".")]
+    if len(parts) == 2:
+        team_name = parts[0]
+        stadium_name = f"{team_name} Stadium"
+        emoji = parts[1]
+    elif len(parts) >= 3:
+        team_name = parts[0]
+        stadium_name = parts[1]
+        emoji = parts[2]
+    else:
+        return await update.message.reply_text("❌ Invalid format. Use `/addteam Name.Emoji`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        try:
+            await conn.execute("""
+                INSERT INTO custom_teams (name, stadium, emoji) VALUES ($1, $2, $3)
+                ON CONFLICT (name) DO UPDATE SET stadium = EXCLUDED.stadium, emoji = EXCLUDED.emoji
+            """, team_name, stadium_name, emoji)
+        except Exception as e:
+            return await update.message.reply_text(f"❌ Error adding team to database: {e}", reply_to_message_id=msg_id)
+
+    # Update global TEAMS list in memory
+    global TEAMS
+    existing = next((t for t in TEAMS if t['name'].lower() == team_name.lower()), None)
+    if existing:
+        existing['stadium'] = stadium_name
+        existing['emoji'] = emoji
+    else:
+        TEAMS.append({"name": team_name, "stadium": stadium_name, "emoji": emoji})
+
+    await update.message.reply_text(
+        f"✅ Team successfully added/updated!\n\n"
+        f"⚽ Name: <b>{team_name}</b>\n"
+        f"🏟 Stadium: {stadium_name}\n"
+        f"🎨 Emoji: {emoji}\n"
+        f"📊 Total Teams in rotation: <b>{len(TEAMS)}</b>",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
 # /admin Command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -457,13 +587,14 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 3. <b>/cbox [amount]</b> - Drop Coin Box in group
 4. <b>/k [user_id] [amount]</b> - Add/Remove Coins
 5. <b>/addadmin [user_id]</b> - Grant Card Admin permission
-6. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
-7. <b>/del [card_id]</b> - Delete a Card
-8. <b>/cardlist</b> - View all Cards
-9. <b>/glist</b> - View active group list
-10. <b>/g</b> or <b>/r</b> - Set Game/Result Media
-11. <b>/stats</b> - View Bot Statistics
-12. <b>/broadcast</b> - Broadcast message (Forward reply)"""
+6. <b>/addteam [name.emoji]</b> - Add new football team for matches
+7. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
+8. <b>/del [card_id]</b> - Delete a Card
+9. <b>/cardlist</b> - View all Cards
+10. <b>/glist</b> - View active group list
+11. <b>/g</b> or <b>/r</b> - Set Game/Result Media
+12. <b>/stats</b> - View Bot Statistics
+13. <b>/broadcast</b> - Broadcast message (Forward reply)"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -928,7 +1059,7 @@ async def get_popular_profile_data(target_uid: int):
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝙴</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
@@ -2880,6 +3011,7 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
+    app.add_handler(CommandHandler("addteam", addteam_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
 
