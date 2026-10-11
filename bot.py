@@ -1187,7 +1187,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
       💎 𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒 - <b>{gem_count}</b>
 🎟𝙑𝙤𝙩𝙚 𝙏𝙞𝙘𝙠𝙚𝙩𝙨 - <b>{tickets}</b>
         
-❀ ɢʟᴏʙ𝙖ʟ ɴᴏ - #{rank}"""
+❀ ɢʟ𝙤ʙ𝙖ʟ ɴ𝙤 - #{rank}"""
 
     if not user_card_rows:
         full_text = f"{text_header}\n\n❄ <b>Owned Cards</b>\n<i>No cards owned yet.</i>"
@@ -1266,6 +1266,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.inline_query
     text = query.query.strip()
     user_id = query.from_user.id
+    user_name = query.from_user.first_name
 
     if text.startswith("harem."):
         try:
@@ -1276,6 +1277,9 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         target_id = user_id
 
     async with db_pool.acquire() as conn:
+        owner_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+        owner_name = owner_row['name'] if owner_row and owner_row['name'] else user_name
+
         user_cards = await conn.fetch("""
             SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
             FROM user_cards uc
@@ -1290,7 +1294,17 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
         title = f"{c['name']} ({c['card_id']})"
         amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
-        caption = f"🎴 <b>{c['name']}</b>{amount_str}\n🆔 ID: <code>{c['card_id']}</code>\n🌟 Rarity: {r_emoji} {r}"
+
+        async with db_pool.acquire() as conn:
+            global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+
+        caption = f"""❀ 𝘏𝘢𝘳𝘦𝘮 𝘖𝘸𝘯𝘦𝘳 ❝ {owner_name} ❞
+
+✿𝐂𝐀𝐑𝐃 𝐍𝐀𝐌𝐄 - <b>{c['name']}</b>{amount_str}
+      ☘ 𝐈𝐃 - <code>{c['card_id']}</code>
+✿ 𝐑𝐀𝐑𝐈𝐓𝐘 - {r_emoji} {r}
+
+⌘ ɢʟᴏʙ𝘢ʟ ދʀᴏ𝘱 𝘤𝘰𝘶𝘯𝘵 - <b>{global_drop_count}</b>"""
         
         if c['type'] == 'photo':
             results.append(
@@ -1804,7 +1818,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
 🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
-   🎖 <b>𝐺𝑙𝑜𝑏𝑎𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
+   🎖 <b>𝐺𝑙𝑜𝑏𝘢𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
     buttons = [
