@@ -251,6 +251,9 @@ async def register_user_group(user, chat):
         if chat and chat.type in ["group", "supergroup"]:
             added_id = user.id if user else None
             added_name = user.first_name if user else None
+            
+            is_new = await conn.fetchrow("SELECT chat_id FROM groups WHERE chat_id = $1", chat.id)
+            
             await conn.execute("""
                 INSERT INTO groups (chat_id, title, added_by_id, added_by_name) 
                 VALUES ($1, $2, $3, $4)
@@ -259,6 +262,20 @@ async def register_user_group(user, chat):
                     added_by_id = COALESCE(groups.added_by_id, EXCLUDED.added_by_id),
                     added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
             """, chat.id, chat.title or "Group", added_id, added_name)
+
+            if not is_new:
+                # Send log to LOG_CHANNEL_ID (like glist format)
+                try:
+                    member_count = await context_bot_get_member_count(added_id, chat.id) # handled safely
+                    adder_text = get_mention(added_id, added_name or "User") if added_id else "—"
+                    log_text = f"""🏰 <b>New Group Added</b>
+
+🔹 <b>Group Name:</b> {chat.title or 'Group'}
+🆔 <b>Group ID:</b> <code>{chat.id}</code>
+👤 <b>Added By:</b> {adder_text}"""
+                    # We can send via global app if needed or bot instance inside context if available. Handled in handlers.
+                except Exception:
+                    pass
 
             if user and not user.is_bot:
                 await conn.execute("""
@@ -572,6 +589,54 @@ async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# /delteam Command (Bot Admin / Card Admin Only)
+async def delteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+
+    async with db_pool.acquire() as conn:
+        u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+        is_card_admin = u_info['is_card_admin'] if u_info else False
+
+    if user.id != ADMIN_ID and not is_card_admin:
+        return
+
+    if not context.args:
+        return await update.message.reply_text(
+            "❌ Usage: `/delteam [Team Name]` or `/delteam [Number/Index from list]`",
+            parse_mode="Markdown",
+            reply_to_message_id=msg_id
+        )
+
+    arg = " ".join(context.args).strip()
+    deleted_name = None
+
+    global TEAMS
+    async with db_pool.acquire() as conn:
+        if arg.isdigit():
+            idx = int(arg) - 1
+            if 0 <= idx < len(TEAMS):
+                team_to_remove = TEAMS[idx]
+                deleted_name = team_to_remove['name']
+                TEAMS.pop(idx)
+                await conn.execute("DELETE FROM custom_teams WHERE LOWER(name) = LOWER($1)", deleted_name)
+            else:
+                return await update.message.reply_text("❌ Invalid team index number.", reply_to_message_id=msg_id)
+        else:
+            found = next((t for t in TEAMS if t['name'].lower() == arg.lower()), None)
+            if found:
+                deleted_name = found['name']
+                TEAMS = [t for t in TEAMS if t['name'].lower() != arg.lower()]
+                await conn.execute("DELETE FROM custom_teams WHERE LOWER(name) = LOWER($1)", arg)
+            else:
+                return await update.message.reply_text(f"❌ Team '<b>{arg}</b>' not found in custom teams list.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+    await update.message.reply_text(
+        f"✅ Team <b>{deleted_name}</b> has been successfully deleted!\n📊 Remaining Teams: <b>{len(TEAMS)}</b>",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
 # /admin Command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -588,13 +653,14 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. <b>/k [user_id] [amount]</b> - Add/Remove Coins
 5. <b>/addadmin [user_id]</b> - Grant Card Admin permission
 6. <b>/addteam [name.emoji]</b> - Add new football team for matches
-7. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
-8. <b>/del [card_id]</b> - Delete a Card
-9. <b>/cardlist</b> - View all Cards
-10. <b>/glist</b> - View active group list
-11. <b>/g</b> or <b>/r</b> - Set Game/Result Media
-12. <b>/stats</b> - View Bot Statistics
-13. <b>/broadcast</b> - Broadcast message (Forward reply)"""
+7. <b>/delteam [name/no]</b> - Delete a custom team
+8. <b>/add [name]</b> or <b>/add [id].[name]</b> - Add new Card (Reply to photo/video)
+9. <b>/del [card_id]</b> - Delete a Card
+10. <b>/cardlist</b> - View all Cards
+11. <b>/glist</b> - View active group list
+12. <b>/g</b> or <b>/r</b> - Set Game/Result Media
+13. <b>/stats</b> - View Bot Statistics
+14. <b>/broadcast</b> - Broadcast message (Forward reply)"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1560,6 +1626,18 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = card.get('rarity', 'Ten')
     r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
+    # Determine Kachi Coin Value based on Rarity
+    if r == 'Hoshi':
+        coin_value = "500-950"
+    elif r == 'Ten':
+        coin_value = "450-650"
+    elif r == 'Kiwami':
+        coin_value = "2000-6800"
+    elif r == 'Kami':
+        coin_value = "1200-4000"
+    else:
+        coin_value = "450-650"
+
     caption_text = f"""🎗𝘾𝘼𝙍𝘿 𝙄𝙉𝙁𝙊𝙍𝙈𝘼𝙏𝙄𝙊𝙉 ♡
 
 ▰▰▱▱▰▰▱▱▰▰▱▱
@@ -1567,6 +1645,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     🍀  𝘐𝘋 - <code>{card['card_id']}</code>
 🎬 𝘛𝘠𝘗𝘌 - {card['type'].upper()}
 🌟 𝘙𝘈𝘙𝘐𝘛𝘠 - {r_emoji} {r}
+💎 Kᴀᴄʜɪ Cᴏɪɴ Value ( {coin_value} )
    🐠𝘎𝘓𝘖𝘉𝘈𝘓 𝘋𝘙𝘖𝘗 𝘊𝘖𝘜𝘕𝘛 - <b>{global_drop_count}</b>
 
 ▱▱▰▰▱▱▰▰▱▱▰▰
@@ -1604,13 +1683,14 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         groups = await conn.fetch("SELECT chat_id, title, added_by_id, added_by_name FROM groups")
 
     if not groups:
-        text = "🏰 **Group list is empty.**"
+        text = "🏰 <b>Group list is empty.</b>"
         if isinstance(update_or_query, Update):
-            return await update_or_query.message.reply_text(text, parse_mode="Markdown", reply_to_message_id=msg_id)
+            return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
         else:
-            return await update_or_query.edit_message_text(text, parse_mode="Markdown")
+            return await update_or_query.edit_message_text(text, parse_mode="HTML")
 
     total_groups = len(groups)
+    page = max(0, min(page, total_groups - 1))
     g = groups[page]
     chat_id = g['chat_id']
 
@@ -1646,7 +1726,7 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
 
     buttons = []
     if page > 0:
-        buttons.append(InlineKeyboardButton("◀ Back", callback_data=f"glist_{page - 1}"))
+        buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"glist_{page - 1}"))
     if page < total_groups - 1:
         buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"glist_{page + 1}"))
 
@@ -1656,6 +1736,13 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True, reply_to_message_id=msg_id)
     else:
         await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+
+# Helper function to get member count safely for logs
+async def context_bot_get_member_count(bot, chat_id):
+    try:
+        return await bot.get_chat_member_count(chat_id)
+    except Exception:
+        return "N/A"
 
 # Media Commands (/g, /r)
 async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1717,8 +1804,8 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_count = await conn.fetchval("SELECT COUNT(*) FROM groups")
 
     await update.message.reply_text(
-        f"📊 **Bot Statistics:**\n\n👥 Users: {u_count}\n🏰 Groups: {g_count}",
-        parse_mode="Markdown",
+        f"📊 <b>Bot Statistics:</b>\n\n👥 Users: {u_count}\n🏰 Groups: {g_count}",
+        parse_mode="HTML",
         reply_to_message_id=msg_id
     )
 
@@ -1772,6 +1859,29 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not chat or not msg:
         return
+
+    # Check if group is newly added and send logs
+    if chat.type in ["group", "supergroup"]:
+        async with db_pool.acquire() as conn:
+            exists = await conn.fetchrow("SELECT chat_id FROM groups WHERE chat_id = $1", chat.id)
+            if not exists and user and not user.is_bot:
+                member_count = "N/A"
+                try:
+                    member_count = await context.bot.get_chat_member_count(chat.id)
+                except Exception:
+                    pass
+                
+                adder_text = get_mention(user.id, user.first_name) if user else "—"
+                log_text = f"""🏰 <b>New Group Added</b>
+
+🔹 <b>Group Name:</b> {chat.title or 'Group'}
+🆔 <b>Group ID:</b> <code>{chat.id}</code>
+👥 <b>Members:</b> {member_count}
+👤 <b>Added By:</b> {adder_text}"""
+                try:
+                    await context.bot.send_message(LOG_CHANNEL_ID, log_text, parse_mode="HTML")
+                except Exception:
+                    pass
 
     await register_user_group(user, chat)
 
@@ -2413,8 +2523,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 VALUES ($1, $2, $3, $4, $5)
             """, card_id, card_name, c_type, file_id, rarity)
 
+            added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else 80
+
             if is_card_admin and user.id != ADMIN_ID:
-                await conn.execute("UPDATE users SET coins = coins + 20 WHERE user_id = $1", user.id)
+                await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", added_reward_coins, user.id)
 
         del pending_card_adds[user.id]
 
@@ -2435,7 +2547,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        reward_notice = "\n🎉 You received <b>+20 Kachi Coins</b> for adding a card!" if (is_card_admin and user.id != ADMIN_ID) else ""
+        reward_notice = f"\n🎉 You received <b>+{added_reward_coins} Kachi Coins</b> for adding a card!" if (is_card_admin and user.id != ADMIN_ID) else ""
         await query.message.edit_text(
             f"✅ Card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Card Name: {card_name}\n🌟 Rarity: {r_emoji} {rarity}{reward_notice}",
             parse_mode="HTML"
@@ -2890,7 +3002,7 @@ A Card will drop now!
         return
 
     if data == "lb_back":
-        original_text = last_results.get(msg_id, "🎗️ 𝗠𝒂𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
+        original_text = last_results.get(msg_id, "🎗️ 𝗠𝗮𝘁𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁")
         original_markup = get_leaderboard_buttons()
 
         if result_media:
@@ -3012,6 +3124,7 @@ def main():
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("addteam", addteam_cmd))
+    app.add_handler(CommandHandler("delteam", delteam_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
 
