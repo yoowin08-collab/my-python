@@ -338,40 +338,8 @@ async def get_weighted_random_card(conn):
             
     return random.choices(cards, weights=weights, k=1)[0]
 
-# Bot DM Start Enforcement Check Helper
-async def check_pm_started(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = update.effective_user
-    if not user or user.is_bot:
-        return True
-    if user.id == ADMIN_ID:
-        return True
-
-    chat = update.effective_chat
-    if chat and chat.type == "private" and update.message and update.message.text and update.message.text.startswith("/start"):
-        return True
-
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT started_in_pm FROM users WHERE user_id = $1", user.id)
-        if row and row['started_in_pm']:
-            return True
-
-    bot_info = await context.bot.get_me()
-    text = f"❌ Hello {get_mention(user.id, user.first_name)}, please start the bot in DM first before using commands or buttons! 🩸"
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Start Bot in DM 🤖", url=f"https://t.me/{bot_info.username}?start=true")
-    ]])
-
-    if update.message:
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=update.message.message_id)
-    elif update.callback_query:
-        await update.callback_query.answer("❌ Please start the bot in DM first!", show_alert=True)
-    return False
-
-# Force Join Check Helper
+# Force Join Check Helper (Removed PM started restriction)
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if not await check_pm_started(update, context):
-        return False
-
     user = update.effective_user
     if not user or user.is_bot:
         return True
@@ -516,50 +484,29 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     await register_user_group(user, chat, context)
 
-    if chat.type == "private":
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET started_in_pm = TRUE WHERE user_id = $1", user.id)
-
     if not await check_force_join(update, context):
         return
 
     bot_info = await context.bot.get_me()
     text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
 
-🌺 Welcome to 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏!
+🌺 Welcome to Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏!
 
 📌 <b>How to play:</b>
 - Add the bot to your Group.
 - Talk in group to trigger the game when message limit is reached.
-- Choose your team or Draw within 1 minute.
+- Choose your team or Draw within 1 minute."""
 
-Rewards / 𝙋𝙧𝙞𝙘𝙚
-- Team Win: 70 🩸 Kachi Coin + 10 🎟️ Vote Tickets
-- Draw Win: 100 🩸 Kachi Coin + 10 🎟️ Vote Tickets
-
-📜 <b>Available Commands:</b>
-• /kc - Check your coins and cards
-• /kbox - Spin Card Box (650 Coins)
-• /ksell [amount] - Sell 1 GemStone 💎 for 200 Coins
-• /card [card_id] - Check Card details and Top Owners
-• /set [card_id] - Change profile card for /kc
-• /vote - Register/View Popular profile (2000 Coins)
-
-🛡️ <b>Team Commands:</b>
-• <b>/team</b> - Create a Team (800 Coins)
-• <b>/myteam</b> - Check your Team Status
-• <b>/join [CODE]</b> - Apply to join a team
-• <b>/out</b> - Leave your current Team
-• <b>/out [user_id]</b> - Kick a member (Leader only)
-• <b>/dele</b> - Delete your Team (Leader only)
-
-🎁 <b>/kgift Instructions (Reply to a message):</b>
-• <b>Send Coins:</b> Reply message with <code>/kgift c100</code>
-• <b>Send Card:</b> Reply message with <code>/kgift 1201</code>"""
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➕ Add To Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
-    ]])
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Help 📖", callback_data="menu_help"),
+            InlineKeyboardButton("Team 🛡️", callback_data="menu_team"),
+            InlineKeyboardButton("Kgift 🎁", callback_data="menu_kgift")
+        ],
+        [
+            InlineKeyboardButton("➕ Add To Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
+        ]
+    ])
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
@@ -1180,7 +1127,7 @@ async def get_popular_profile_data(target_uid: int):
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
@@ -1516,13 +1463,6 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Inline Query Handler for Harem View
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
-    user = query.from_user
-    if user and user.id != ADMIN_ID:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT started_in_pm FROM users WHERE user_id = $1", user.id)
-            if not row or not row['started_in_pm']:
-                return
-
     text = query.query.strip()
     user_id = query.from_user.id
     user_name = query.from_user.first_name
@@ -1917,15 +1857,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     if chat.type == "private":
-        if user and user.id != ADMIN_ID:
-            async with db_pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT started_in_pm FROM users WHERE user_id = $1", user.id)
-                if not row or not row['started_in_pm']:
-                    if msg.text and not msg.text.startswith("/start"):
-                        bot_info = await context.bot.get_me()
-                        await msg.reply_text(f"❌ Please start the bot first by clicking /start or using the button below 🩸", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot 🤖", url=f"https://t.me/{bot_info.username}?start=true")]]))
-                        return
-
         if user.id in team_creation_state:
             state = team_creation_state[user.id]
             step = state.get("step")
@@ -2091,7 +2022,7 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝚁 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
@@ -2334,7 +2265,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         r = card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
-        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations, You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b> ({r_emoji} {r})\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )"
+        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations, You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b> ({r_emoji} {r})\n\n𝙄DG ( <code>{card['card_id']}</code> )"
         
         try:
             if card['type'] == 'photo':
@@ -2533,14 +2464,93 @@ async def run_spin_animation(bot, chat_id, user, query_message):
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
-    if not await check_pm_started(update, context):
-        return
-
     chat_id = query.message.chat_id
     msg_id = query.message.message_id
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
+
+    # Menu Handlers (Help, Team, Kgift, Back)
+    if data == "menu_help":
+        help_text = """📖 <b>Help & Instructions / အသုံးပြုနည်း</b>
+
+🇬🇧 <b>English:</b>
+- Add bot to group and chat to trigger football matches.
+- Bet on Home, Away, or Draw within 1 minute.
+- Earn Kachi Coins and Vote Tickets on win!
+- Spin /kbox for cards, use /kc to check harem, /vote for popular profile.
+
+🇲🇲 <b>မြန်မာဘာသာ:</b>
+- Bot ကို Group ထဲထည့်ပြီး စကားပြောခြင်းဖြင့် ဘောလုံးပွဲများကို စတင်နိုင်ပါတယ်။
+- ၁ မိနစ်အတွင်း အသင်းနိုင် သို့မဟုတ် သရေ (Draw) ကို ရွေးချယ်ပါ။
+- အနိုင်ရပါက Kachi Coins နှင့် Vote Tickets များ ရရှိမည်။
+- /kbox ဖြင့် ကဒ်ပေါက်နိုင်ပြီး /kc ဖြင့် ကိုယ်ပိုင်ကဒ်များကို ကြည့်ရှုနိုင်ပါသည်။"""
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
+        await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=markup)
+        await query.answer()
+        return
+
+    if data == "menu_team":
+        team_text = """🛡️ <b>Team Instructions / အသင်းဆိုင်ရာ အသုံးပြုနည်း</b>
+
+🇬🇧 <b>English:</b>
+- /team - Create a Team (Cost: 800 Coins)
+- /myteam - View your team info and members
+- /join [CODE] - Join a team via code
+- /out - Leave your team (or kick members if leader)
+- /dele - Delete your team (Leader only)
+
+🇲🇲 <b>မြန်မာဘာသာ:</b>
+- /team - အသင်းအသစ် တည်ဆောက်ရန် (ဒင်္ဂါး ၈၀၀ ကုန်ကျသည်)
+- /myteam - မိမိအသင်းအချက်အလက်နှင့် အဖွဲ့ဝင်များကြည့်ရန်
+- /join [CODE] - အသင်းကုဒ်ဖြင့် အသင်းဝင်ရန်
+- /out - အသင်းမှထွက်ရန် (ခေါင်းဆောင်ဆိုလျှင် အဖွဲ့ဝင်ထုတ်ရန်)
+- /dele - အသင်းဖျက်ရန် (ခေါင်းဆောင်သာ)"""
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
+        await query.edit_message_text(team_text, parse_mode="HTML", reply_markup=markup)
+        await query.answer()
+        return
+
+    if data == "menu_kgift":
+        kgift_text = """🎁 <b>Kgift Instructions / လက်ဆောင်ပေးခြင်း အသုံးပြုနည်း</b>
+
+🇬🇧 <b>English:</b>
+Reply to a user's message with:
+- /kgift c[amount] - Send Kachi Coins (e.g. /kgift c100)
+- /kgift [card_id] - Send a specific card (e.g. /kgift 1201)
+
+🇲🇲 <b>မြန်မာဘာသာ:</b>
+လက်ဆောင်ပေးလိုသူ၏ စာကို Reply လုပ်၍ အောက်ပါအတိုင်းသုံးပါ-
+- /kgift c[amount] - Kachi Coins များ ပို့ရန် (ဥပမာ - /kgift c100)
+- /kgift [card_id] - သတ်မှတ်ထားသော ကဒ်တစ်ခုကို ပို့ရန် (ဥပမာ - /kgift 1201)"""
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
+        await query.edit_message_text(kgift_text, parse_mode="HTML", reply_markup=markup)
+        await query.answer()
+        return
+
+    if data == "menu_back":
+        bot_info = await context.bot.get_me()
+        text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
+
+🌺 Welcome to Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏!
+
+📌 <b>How to play:</b>
+- Add the bot to your Group.
+- Talk in group to trigger the game when message limit is reached.
+- Choose your team or Draw within 1 minute."""
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Help 📖", callback_data="menu_help"),
+                InlineKeyboardButton("Team 🛡️", callback_data="menu_team"),
+                InlineKeyboardButton("Kgift 🎁", callback_data="menu_kgift")
+            ],
+            [
+                InlineKeyboardButton("➕ Add To Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
+            ]
+        ])
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await query.answer()
+        return
 
     if data.startswith("addrarity_"):
         parts = data.split("_")
