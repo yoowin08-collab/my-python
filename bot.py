@@ -799,7 +799,7 @@ async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ သင်သည် မည်သည့်အသင်းတွင်မှ မရှိသေးပါ။ (အသင်းစတင်ရန် /team ကိုသုံးပါ)", reply_to_message_id=msg_id)
 
-# /dele Command
+# /dele
 async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1470,7 +1470,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
             if active_card['type'] == 'photo':
                 await update_or_query.message.reply_photo(photo=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
             else:
-                await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+                await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup)
     else:
@@ -1878,7 +1878,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (Fixed threshold tracking using database `msg_count`)
+# Message Handler (Fixed threshold tracking using group_threshold and global_default_threshold correctly)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -1951,19 +1951,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if chat_id not in active_games:
             async with db_pool.acquire() as conn:
-                # Atomically increment and fetch current count and threshold
+                # Atomically increment and fetch current count
                 await conn.execute("""
                     INSERT INTO groups (chat_id, title, msg_count) VALUES ($1, $2, 1)
                     ON CONFLICT (chat_id) DO UPDATE SET msg_count = groups.msg_count + 1
                 """, chat_id, chat.title or "Group")
                 
-                group_row = await conn.fetchrow("SELECT msg_count, threshold FROM groups WHERE chat_id = $1", chat_id)
-                if group_row:
-                    msg_count = group_row['msg_count']
-                    threshold = group_row['threshold'] if group_row['threshold'] is not None else global_default_threshold
-                else:
-                    msg_count = 1
-                    threshold = global_default_threshold
+                group_row = await conn.fetchrow("SELECT msg_count FROM groups WHERE chat_id = $1", chat_id)
+                msg_count = group_row['msg_count'] if group_row else 1
+
+                threshold = group_threshold.get(chat_id, global_default_threshold)
 
                 if msg_count >= threshold:
                     # Reset message count in database
