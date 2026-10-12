@@ -118,14 +118,13 @@ active_card_drops = {}
 pending_card_adds = {}
 game_media = None
 result_media = None
-start_media = None
 global_default_threshold = 10
 
 # Database Connection Pool
 db_pool = None
 
 async def init_db():
-    global db_pool, game_media, result_media, start_media, global_default_threshold, group_threshold
+    global db_pool, game_media, result_media, global_default_threshold
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
     
     async with db_pool.acquire() as conn:
@@ -210,14 +209,20 @@ async def init_db():
         except Exception:
             pass
 
-        # Load custom teams
+        # Load per-group thresholds from database
+        db_groups = await conn.fetch("SELECT chat_id, threshold FROM groups")
+        for g in db_groups:
+            if g['threshold'] is not None:
+                group_threshold[g['chat_id']] = g['threshold']
+
+        # Load custom teams from database and extend TEAMS
         db_custom_teams = await conn.fetch("SELECT name, stadium, emoji FROM custom_teams")
         for ct in db_custom_teams:
             team_dict = {"name": ct['name'], "stadium": ct['stadium'] or f"{ct['name']} Stadium", "emoji": ct['emoji'] or "⚽"}
             if not any(t['name'].lower() == ct['name'].lower() for t in TEAMS):
                 TEAMS.append(team_dict)
 
-        # Auto assign rarities
+        # Auto assign rarities to existing cards without rarity
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL AND card_id != 'gemstone'")
         for c in existing_cards:
             if c['type'] == 'photo':
@@ -240,18 +245,9 @@ async def init_db():
         if r_media_row:
             result_media = json.loads(r_media_row['value'])
 
-        s_media_row = await conn.fetchrow("SELECT value FROM settings WHERE key='start_media'")
-        if s_media_row:
-            start_media = json.loads(s_media_row['value'])
-
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
-
-        # Load group specific thresholds into memory
-        all_groups = await conn.fetch("SELECT chat_id, threshold FROM groups")
-        for g in all_groups:
-            group_threshold[g['chat_id']] = g['threshold'] if g['threshold'] is not None else global_default_threshold
 
 async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = None):
     if not db_pool:
@@ -277,8 +273,10 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                     added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
             """, chat.id, chat.title or "Group", added_id, added_name)
 
-            if chat.id not in group_threshold:
-                group_threshold[chat.id] = global_default_threshold
+            # Load threshold for group if already saved
+            group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat.id)
+            if group_row and group_row['threshold'] is not None:
+                group_threshold[chat.id] = group_row['threshold']
 
             if not is_new and context:
                 try:
@@ -331,6 +329,7 @@ def get_mention(user_id, name):
 def generate_team_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
+# Weighted random card selector for Kbox and Card Drop (Kiwami & Kami are rarer)
 async def get_weighted_random_card(conn):
     cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id != 'gemstone'")
     if not cards:
@@ -352,6 +351,7 @@ async def get_weighted_random_card(conn):
             
     return random.choices(cards, weights=weights, k=1)[0]
 
+# Force Join Check Helper (Removed PM started restriction)
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
     if not user or user.is_bot:
@@ -490,7 +490,7 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claimed_users": {},
     }
 
-# /start Command (Supports start_media photo/video)
+# /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -521,52 +521,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ])
 
-    if start_media:
-        try:
-            if start_media["type"] == "photo":
-                await update.message.reply_photo(photo=start_media["file_id"], caption=text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-                return
-            elif start_media["type"] == "video":
-                await update.message.reply_video(video=start_media["file_id"], caption=text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-                return
-        except Exception:
-            pass
-
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-
-# /s Command (/s set and /s del for Start Media)
-async def start_media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    sub_cmd = context.args[0].lower() if context.args else ""
-    global start_media
-
-    if sub_cmd == "del":
-        start_media = None
-        async with db_pool.acquire() as conn:
-            await conn.execute("DELETE FROM settings WHERE key='start_media'")
-        return await update.message.reply_text("🗑 Start Media deleted successfully.", reply_to_message_id=msg_id)
-
-    reply = update.message.reply_to_message
-    if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ Reply to a photo or video with `/s set` or `/s del`.", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    if sub_cmd == "set" or not sub_cmd:
-        if reply.photo:
-            media_obj = {"type": "photo", "file_id": reply.photo[-1].file_id}
-        else:
-            media_obj = {"type": "video", "file_id": reply.video.file_id}
-
-        start_media = media_obj
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO settings (key, value) VALUES ('start_media', $1)
-                ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-            """, json.dumps(media_obj))
-
-        await update.message.reply_text("✅ Start Media updated successfully!", reply_to_message_id=msg_id)
 
 # /addadmin Command (Admin Only)
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -649,7 +604,7 @@ async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /delteam Command
+# /delteam Command (Bot Admin / Card Admin Only)
 async def delteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -708,7 +663,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>Commands:</b>
 
 1. <b>/game</b> - Trigger game manually
-2. <b>/c [count]</b> - Set global message threshold (DM) or <b>/c [gp_id] [count]</b> for specific group
+2. <b>/c [count]</b> or <b>/c [gpid] [count]</b> - Set group message threshold
 3. <b>/cbox [amount]</b> - Drop Coin Box in group
 4. <b>/k [user_id] [amount]</b> - Add/Remove Coins
 5. <b>/addadmin [user_id]</b> - Grant Card Admin permission
@@ -718,7 +673,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 9. <b>/del [card_id]</b> - Delete a Card
 10. <b>/cardlist</b> - View all Cards
 11. <b>/glist</b> - View active group list
-12. <b>/g</b> or <b>/r</b> or <b>/s</b> - Set Game/Result/Start Media
+12. <b>/g</b> or <b>/r</b> - Set Game/Result Media
 13. <b>/stats</b> - View Bot Statistics
 14. <b>/broadcast</b> - Broadcast message (Forward reply)"""
 
@@ -959,16 +914,19 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ You have left <b>{team['team_name']}</b> team.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /c Command (Supports /c [count] or /c [group_id] [count])
+# /c Command (Updated to support both global default and per-group ID threshold)
 async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global global_default_threshold
     msg_id = update.message.message_id
-    user = update.effective_user
-    if user.id != ADMIN_ID:
+    if update.effective_user.id != ADMIN_ID:
         return
 
     if not context.args:
-        return await update.message.reply_text("❌ Usage:\n• `/c [count]` (Global default)\n• `/c [group_id] [count]` (Specific group)", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text(
+            "❌ Usage:\n• Global: `/c [count]`\n• Per Group: `/c [gpid] [count]`",
+            parse_mode="Markdown",
+            reply_to_message_id=msg_id
+        )
 
     try:
         if len(context.args) == 1:
@@ -981,8 +939,11 @@ async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
                 """, str(count))
 
-            await update.message.reply_text(f"✅ Global default threshold set to **{count}** messages.", parse_mode="Markdown", reply_to_message_id=msg_id)
-
+            await update.message.reply_text(
+                f"✅ Default group message threshold set to **{count}** messages globally.",
+                parse_mode="Markdown",
+                reply_to_message_id=msg_id
+            )
         elif len(context.args) >= 2:
             target_chat_id = int(context.args[0])
             count = int(context.args[1])
@@ -991,14 +952,21 @@ async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             async with db_pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO groups (chat_id, title, threshold) VALUES ($1, 'Group', $2)
+                    INSERT INTO groups (chat_id, threshold) VALUES ($1, $2)
                     ON CONFLICT(chat_id) DO UPDATE SET threshold = EXCLUDED.threshold
                 """, target_chat_id, count)
 
-            await update.message.reply_text(f"✅ Threshold for group <code>{target_chat_id}</code> set to <b>{count}</b> messages.", parse_mode="HTML", reply_to_message_id=msg_id)
-
+            await update.message.reply_text(
+                f"✅ Threshold for Group ID <code>{target_chat_id}</code> set to **{count}** messages.",
+                parse_mode="HTML",
+                reply_to_message_id=msg_id
+            )
     except ValueError:
-        await update.message.reply_text("❌ Invalid number format.", reply_to_message_id=msg_id)
+        await update.message.reply_text(
+            "❌ Invalid number format. Usage:\n• `/c 6`\n• `/c -100123456789 6`",
+            parse_mode="Markdown",
+            reply_to_message_id=msg_id
+        )
 
 # Admin Coin Command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1028,7 +996,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Usage: `/k 1928382 200` or `/k 1928382 -200`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-# /add Command
+# /add Command - Supports /add name (auto random unused id) or /add id.name, then prompts for Rarity via inline buttons
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -1053,8 +1021,10 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if "." in raw_args:
         part1, _, part2 = raw_args.partition(".")
-        card_id = part1.strip()
-        card_name = part2.strip()
+        part1 = part1.strip()
+        part2 = part2.strip()
+        card_id = part1
+        card_name = part2
     else:
         async with db_pool.acquire() as conn:
             while True:
@@ -1193,14 +1163,14 @@ async def get_popular_profile_data(target_uid: int):
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🎐  <b>𝚅𝙾𝚃𝗘 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
 🍀   <b>𝑈𝑆𝐸𝑅 𝐼𝐷</b> - <code>{u_info['user_id']}</code>
 🩸 <b>𝐾𝑎𝑐ℎ𝑖 𝐶𝑜𝑖𝑛</b> - <b>{u_info['coins']}</b>
   💎  <b>𝐺𝑒𝑚𝑆𝑡𝑜𝑛𝑒</b> - <b>{gems}</b>
-🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝚎𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
+🍀 <b>𝑆𝑒𝑙𝑒𝑐𝑡𝑒𝑑 𝐶𝑎𝑟𝑑 𝐼𝐷</b> - <code>{card_id_str}</code>
    🎖 <b>𝐺𝑙𝑜𝑏𝘢𝑙 𝑅𝑎𝑛𝑘</b> - #{u_info['global_rank']}
 〇 <b>𝑇𝑒𝑎𝑚</b> - <b>{team_str}</b>"""
 
@@ -2088,8 +2058,8 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
              <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝙰𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>𝚅𝙾𝚃𝙴 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲𝙾𝙸𝙽𝚂</b> - <b>{earned_coins}</b>
+🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
+🎐  <b>𝚅𝙾𝚃𝗘 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>𝑁𝑎𝑚𝑒</b> - {get_mention(u_info['user_id'], u_info['name'])}
 🍀   <b>𝑈𝑆𝐸𝑅 𝐼𝐷</b> - <code>{u_info['user_id']}</code>
@@ -2226,6 +2196,7 @@ Code: <code>{t['team_code']}</code>
         except Exception:
             pass
 
+# Helper to trigger Card Drop session with weighted random card
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     async with db_pool.acquire() as conn:
         drop_card = await get_weighted_random_card(conn)
@@ -2330,7 +2301,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         r = card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
-        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations, You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b> ({r_emoji} {r})\n\n𝙄𝘿 ( <code>{card['card_id']}</code> )"
+        win_msg = f"🍭{get_mention(winner_id, winner_name)} Congratulations, You Got A New 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b> ({r_emoji} {r})\n\n𝙄DG ( <code>{card['card_id']}</code> )"
         
         try:
             if card['type'] == 'photo':
@@ -2365,19 +2336,15 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
     caption = build_game_ui(game_state)
     markup = build_game_buttons(game_state)
 
-    try:
-        if game_media:
-            if game_media["type"] == "photo":
-                sent = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
-            else:
-                sent = await context.bot.send_video(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
+    if game_media:
+        if game_media["type"] == "photo":
+            sent = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
         else:
-            sent = await context.bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=markup)
-        game_state["msg_id"] = sent.message_id
-    except Exception:
-        if chat_id in active_games:
-            del active_games[chat_id]
-        return
+            sent = await context.bot.send_video(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
+    else:
+        sent = await context.bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=markup)
+
+    game_state["msg_id"] = sent.message_id
 
     while game_state["time_left"] > 0:
         await asyncio.sleep(5)
@@ -2455,25 +2422,22 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     leader_markup = get_leaderboard_buttons()
 
-    try:
-        if result_media:
-            if result_media["type"] == "photo":
-                sent_res = await context.bot.send_photo(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
-            else:
-                sent_res = await context.bot.send_video(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
+    if result_media:
+        if result_media["type"] == "photo":
+            sent_res = await context.bot.send_photo(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
         else:
-            sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
+            sent_res = await context.bot.send_video(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
+    else:
+        sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
 
-        last_results[sent_res.message_id] = res_text
-    except Exception:
-        pass
+    last_results[sent_res.message_id] = res_text
 
     total_goals = home_g + away_g
     if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
         await asyncio.sleep(7)
+        snail_msg = await context.bot.send_message(chat_id, "🐌")
+        await asyncio.sleep(4)
         try:
-            snail_msg = await context.bot.send_message(chat_id, "🐌")
-            await asyncio.sleep(4)
             await context.bot.delete_message(chat_id, snail_msg.message_id)
         except Exception:
             pass
@@ -2482,6 +2446,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
     if chat_id in active_games:
         del active_games[chat_id]
 
+# Background task for spinning box with weighted random card
 async def run_spin_animation(bot, chat_id, user, query_message):
     try:
         frames = ["🔄 [▰▱▱▱▱▱▱▱▱▱] Loading 10%...", "🔄 [▰▰▰▰▱▱▱▱▱▱] Loading 40%...", "🔄 [▰▰▰▰▰▰▰▱▱▱] Loading 70%...", "🔄 [▰▰▰▰▰▰▰▰▰▰] Complete!"]
@@ -2541,6 +2506,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
+    # Menu Handlers (Help, Team, Kgift, Back)
     if data == "menu_help":
         help_text = """📖 <b>Help & Instructions / အသုံးပြုနည်း</b>
 
@@ -2562,7 +2528,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - /ksell [amount] - GemStone များကို Kachi Coins ဖြင့် လဲလှယ်ရန်။
 - /vote - Popular စာရင်းဝင်ရန် သို့မဟုတ် မဲပေးရန်။
 - /card [card_id] - ကဒ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
-- /set [card_id] - /kc တွင်ပြမည့် ကိုယ်ပိုင် ಪ್ರೊဖೈಲ್ ကဒ်ကို သတ်မှတ်ရန်။"""
+- /set [card_id] - /kc တွင်ပြမည့် ကိုယ်ပိုင် প্রൊಫೈಲ್ ကဒ်ကို သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=markup)
         await query.answer()
@@ -3249,10 +3215,7 @@ def main():
     app.add_handler(CommandHandler("c", set_count_cmd))
     app.add_handler(CommandHandler("cbox", cbox_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
-    app.add_handler(CommandHandler(["g", "r", "s"], media_cmd if False else media_cmd)) # handled properly below
-    app.add_handler(CommandHandler("s", start_media_cmd))
-    app.add_handler(CommandHandler("g", media_cmd))
-    app.add_handler(CommandHandler("r", media_cmd))
+    app.add_handler(CommandHandler(["g", "r"], media_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("k", admin_coin_cmd))
