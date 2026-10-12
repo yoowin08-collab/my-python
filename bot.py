@@ -980,7 +980,7 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
         if user.id == team['leader_id']:
-            return await update.message.reply_text("❌ Team leader cannot leave. Use `/dele` to delete team.", reply_to_message_id=msg_id)
+            return await update.message.reply_text("❌ Team leader cannot leave. Use `/dele` to delete team.", parse_mode="Markdown", reply_to_message_id=msg_id)
 
         await conn.execute("DELETE FROM team_members WHERE team_code = $1 AND user_id = $2", team_code, user.id)
 
@@ -2277,8 +2277,8 @@ Code: <code>{t['team_code']}</code>
             pass
 
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    # 4 second snail animation delay before drop
-    anim_msg = await context.bot.send_message(chat_id, "🐌 𝓒𝓪𝓻𝓭 𝓲𝓼 𝓼𝓹𝓪𝔀𝓷𝓲𝓷𝓰...")
+    # Snail animation without text (just emoji)
+    anim_msg = await context.bot.send_message(chat_id, "🐌")
     await asyncio.sleep(4)
     try:
         await context.bot.delete_message(chat_id, anim_msg.message_id)
@@ -2293,15 +2293,20 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     r = drop_card.get('rarity', 'Ten')
     r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-    drop_text = f"""{r_emoji} 𝘈 𝓒𝘩𝓪𝓻𝓪𝓬𝓽𝓮𝓻 𝓒𝓪𝓻𝓭 𝓢𝓹𝓪𝔀𝓷𝓮𝓭 𝘐𝘯 𝘛𝘩𝓮 𝘊𝘩𝓪𝓽  ❄
+    joined_names = [f"• {name}" for uid, name in {}.items()]
+    joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
 
-[ 𝗝𝗢𝗜𝗡 ] 𝘍𝘢𝘴𝓽  𝘍𝓸𝓻 𝘛𝘩𝓮 𝘊𝘭𝘢𝘪𝓶
- 𝘊𝓪𝘳𝓭 ❀
+    drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
 
-𝘎𝘰𝘰𝘥𝓓𝓾𝓬𝓴🍀 𝚃𝚒𝚖𝚎 (30𝚜𝚎𝚌)"""
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
+ Card ❀
+
+{joined_str}
+
+GoodLuck 🍀 Time (30sec)"""
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("𝗝𝗢𝗜𝗡(1/5)", callback_data="join_card_drop")
+        InlineKeyboardButton("𝗝𝗢𝗜𝗡(0/5)", callback_data="join_card_drop")
     ]])
 
     if drop_card['type'] == 'photo':
@@ -2338,12 +2343,17 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         r = drop["card"].get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-        drop_text = f"""{r_emoji} 𝘈 𝓒𝘩𝓪𝓻𝓪𝓬𝓽𝓮𝓻 𝓒𝓪𝓻𝓭 𝓢𝓹𝓪𝔀𝓷𝓮𝓭 𝘐𝘯 𝘛𝘩𝓮 𝘊𝘩𝓪𝓽  ❄
+        joined_names = [f"• {name}" for uid, name in drop["joined_users"].items()]
+        joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
 
-[ 𝗝𝗢𝗜𝗡 ] 𝘍𝘢𝘴𝓽  𝘍𝓸𝓻 𝘛𝘩𝓮 𝘊𝘭𝓪𝘪𝓶
- 𝘊𝓪𝘳𝓭 ❀
+        drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
 
-𝘎𝘰𝘰𝘥𝓓𝓾𝓬𝓴🍀 𝚃𝚒𝚖𝚎 ({drop['timer']}𝚜𝚎𝚌)"""
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
+ Card ❀
+
+{joined_str}
+
+GoodLuck 🍀 Time ({drop['timer']}sec)"""
 
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
@@ -2792,12 +2802,17 @@ Reply to a user's message with:
             r = drop["card"].get('rarity', 'Ten')
             r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-            drop_text = f"""{r_emoji} 𝘈 𝓒𝘩𝓪𝓻𝓪𝓬𝓽𝓮𝓻 𝓒𝓪𝓻𝓭 𝓢𝓹𝓪𝔀𝓷𝓮𝓭 𝘐𝘯 𝘛𝘩𝓮 𝘊𝘩𝓪𝓽  ❄
+            joined_names = [f"• {name}" for uid, name in drop["joined_users"].items()]
+            joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
 
-[ 𝗝𝗢𝗜𝗡 ] 𝘍𝘢𝘴𝓽  𝘍𝓸𝓻 𝘛𝘩𝓮 𝘊𝘭𝘢𝘪𝓶
- 𝘊𝓪𝘳𝓭 ❀
+            drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
 
-𝘎𝘰𝘰𝘥𝓓𝓾𝓬𝓓𝓾𝓬𝓴🍀 𝚃𝚒𝚖𝚎 ({drop['timer']}𝚜𝚎𝚌)"""
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
+ Card ❀
+
+{joined_str}
+
+GoodLuck 🍀 Time ({drop['timer']}sec)"""
 
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
