@@ -485,7 +485,7 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claimed_users": {},
     }
 
-# /start Command
+# /start Command (Updated with Burmese explanation as requested)
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -496,15 +496,15 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bot_info = await context.bot.get_me()
-    text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
+    text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
-🌺 Welcome to Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏!
+🌺 Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်!
 
-📌 <b>Instructions:</b>
-- Add bot to your group.
-- Chat in the group to spawn cards automatically when threshold is reached.
-- Admins can use /game to start football matches.
-- Use /ktop and /popular to check leaderboards."""
+📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
+- Bot ကို Group ထဲသို့ ထည့်ပါ။
+- Group ထဲတွင် စာပေးပို့ပါ (သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်ပါက ကတ်များ အလိုအလျောက် ကျလာပါမည်)။
+- Admin များအနေဖြင့် ဘောလုံးပွဲစဉ်များ စတင်ရန် /game ကို အသုံးပြုနိုင်ပါသည်။
+- ဦးဆောင်သူစာရင်းများကို ကြည့်ရန် /ktop နှင့် /popular ကို အသုံးပြုပါ။"""
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -679,7 +679,7 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (10). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /ktop Command (Global Leaderboard Template)
+# /ktop Command (Updated to Top 10 with Name Mention format as requested)
 async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -700,11 +700,12 @@ async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ""
     ]
     medals = ["🥇", "🥈", "🥉"]
-    for i in range(6):
+    for i in range(10):
         prefix = medals[i] if i < 3 else "☛"
         if i < len(top_users):
             r = top_users[i]
-            lines.append(f"{prefix}{r['name']} - {r['total_cards']} Cards")
+            mention = get_mention(r['user_id'], r['name'])
+            lines.append(f"{prefix} {mention} - {r['total_cards']} Cards")
         else:
             lines.append(f"{prefix}")
     lines.append("")
@@ -712,7 +713,7 @@ async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /kgtop Command (Group Leaderboard Template)
+# /kgtop Command (Updated to Top 10 with Name Mention format as requested)
 async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -740,11 +741,12 @@ async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ""
     ]
     medals = ["🥇", "🥈", "🥉"]
-    for i in range(6):
+    for i in range(10):
         prefix = medals[i] if i < 3 else "☛"
         if i < len(top_users):
             r = top_users[i]
-            lines.append(f"{prefix}{r['name']} - {r['total_cards']} Cards")
+            mention = get_mention(r['user_id'], r['name'])
+            lines.append(f"{prefix} {mention} - {r['total_cards']} Cards")
         else:
             lines.append(f"{prefix}")
     lines.append("▰▱▰▱▰▱▰▱▰▱▰▱")
@@ -1998,7 +2000,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (Triggers Card Drop when message count reaches threshold - Fixed Atomic Counter & Group Safety)
+# Message Handler (Fixed & Optimized atomic threshold counter and race conditions)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -2078,7 +2080,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat_id)
                 threshold = group_row['threshold'] if (group_row and group_row['threshold'] is not None) else group_threshold.get(chat_id, global_default_threshold)
 
-                # Atomic update and threshold check to prevent race conditions and continuous dropping
+                # Robust atomic update and threshold check ensuring clean counting and avoiding spam/race conditions
                 row = await conn.fetchrow("""
                     UPDATE groups 
                     SET msg_count = CASE WHEN msg_count + 1 >= $2 THEN 0 ELSE msg_count + 1 END
@@ -2636,15 +2638,15 @@ Reply to a user's message with:
 
     if data == "menu_back":
         bot_info = await context.bot.get_me()
-        text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
+        text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
-🌺 Welcome to Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏!
+🌺 Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်!
 
-📌 <b>Instructions:</b>
-- Add bot to your group.
-- Chat in the group to spawn cards automatically when threshold is reached.
-- Admins can use /game to start football matches.
-- Use /ktop and /popular to check leaderboards."""
+📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
+- Bot ကို Group ထဲသို့ ထည့်ပါ။
+- Group ထဲတွင် စာပေးပို့ပါ (သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်ပါက ကတ်များ အလိုအလျောက် ကျလာပါမည်)။
+- Admin များအနေဖြင့် ဘောလုံးပွဲစဉ်များ စတင်ရန် /game ကို အသုံးပြုနိုင်ပါသည်။
+- ဦးဆောင်သူစာရင်းများကို ကြည့်ရန် /ktop နှင့် /popular ကို အသုံးပြုပါ။"""
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Help 📖", callback_data="menu_help"),
