@@ -2239,7 +2239,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         "ended": False
     }
 
-    async asyncio.create_task(run_card_drop_timer(context, msg.message_id))
+    asyncio.create_task(run_card_drop_timer(context, msg.message_id))
 
 async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     while msg_id in active_card_drops:
@@ -2608,7 +2608,7 @@ Reply to a user's message with:
         rarity = parts[2]
 
         if user.id != allowed_uid:
-        return await query.answer("❌ သင့်အတွက် မဟုတ်ပါ။", show_alert=True)
+            return await query.answer("❌ သင့်အတွက် မဟုတ်ပါ။", show_alert=True)
 
         card_info = pending_card_adds.get(user.id)
         if not card_info:
@@ -2973,7 +2973,7 @@ Reply to a user's message with:
 
                     await conn.execute("""
                         INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                        ON CONFLICT(user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
                     """, receiver_id, card_id)
 
                     success_text = f"✅ {get_mention(sender_id, user.first_name)} သည် <b>{card_name}</b> (ID: <code>{card_id}</code>) ကို {get_mention(receiver_id, receiver_name)} ထံသို့ ပို့ပေးလိုက်ပါပြီ!"
