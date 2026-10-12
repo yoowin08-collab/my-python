@@ -118,6 +118,7 @@ pending_card_adds = {}
 game_media = None
 result_media = None
 global_default_threshold = 10
+bot_warned_groups = set()
 
 # Database Connection Pool
 db_pool = None
@@ -1651,7 +1652,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         async with db_pool.acquire() as conn:
             global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
 
-        caption = f"""❀ Harem Owner ❝ {owner_name} ❞
+        owner_mention = get_mention(target_id, owner_name)
+        caption = f"""❀ Harem Owner ❝ {owner_mention} ❞
 
 ✿ Card Name - <b>{c['name']}</b>{amount_str}
       ☘ ID - <code>{c['card_id']}</code>
@@ -1826,7 +1828,7 @@ Top Owners 🐾
             except Exception:
                 await update.message.reply_text(caption_text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /glist Command
+# /glist Command (Updated to 5 groups per page with Next/Back and full details including added by mention)
 async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1844,48 +1846,62 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         else:
             return await update_or_query.edit_message_text(text, parse_mode="HTML")
 
+    per_page = 5
     total_groups = len(groups)
-    page = max(0, min(page, total_groups - 1))
-    g = groups[page]
-    chat_id = g['chat_id']
+    total_pages = (total_groups + per_page - 1) // per_page
+    page = max(0, min(page, total_pages - 1))
 
-    member_count = "N/A"
-    invite_link = "N/A"
-    try:
-        member_count = await context.bot.get_chat_member_count(chat_id)
-    except Exception:
-        pass
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_groups = groups[start_idx:end_idx]
 
-    try:
-        chat_obj = await context.bot.get_chat(chat_id)
-        if chat_obj.invite_link:
-            invite_link = chat_obj.invite_link
-        elif chat_obj.username:
-            invite_link = f"https://t.me/{chat_obj.username}"
-        else:
-            invite_link = await context.bot.export_chat_invite_link(chat_id)
-    except Exception:
-        pass
+    group_blocks = []
+    for idx, g in enumerate(current_groups, start=start_idx + 1):
+        chat_id = g['chat_id']
+        member_count = "N/A"
+        try:
+            member_count = await context.bot.get_chat_member_count(chat_id)
+        except Exception:
+            pass
 
-    adder_text = "—"
-    if g['added_by_id']:
-        adder_text = get_mention(g['added_by_id'], g['added_by_name'] or "User")
+        invite_link = "N/A"
+        try:
+            chat_obj = await context.bot.get_chat(chat_id)
+            if chat_obj.invite_link:
+                invite_link = chat_obj.invite_link
+            elif chat_obj.username:
+                invite_link = f"https://t.me/{chat_obj.username}"
+            else:
+                invite_link = await context.bot.export_chat_invite_link(chat_id)
+        except Exception:
+            pass
 
-    text = f"""🏰 <b>Group List ({page + 1}/{total_groups})</b>
+        adder_text = "—"
+        if g['added_by_id']:
+            adder_text = get_mention(g['added_by_id'], g['added_by_name'] or "User")
 
-🔹 <b>Group Name:</b> {g['title']}
-🆔 <b>Group ID:</b> <code>{chat_id}</code>
-👥 <b>Members:</b> {member_count}
-👤 <b>Added By:</b> {adder_text}
-🔗 <b>Link:</b> {invite_link}"""
+        block = f"""<b>{idx}. {g['title']}</b>
+🆔 Gp ID: <code>{chat_id}</code>
+👥 Gp Member: {member_count}
+🔗 Gp Link: {invite_link}
+👤 Addသူ name: {adder_text}"""
+        group_blocks.append(block)
+
+    groups_str = "\n\n".join(group_blocks)
+    text = f"""🏰 <b>Group List (Page {page + 1}/{total_pages})</b>
+
+{groups_str}"""
 
     buttons = []
+    nav_row = []
     if page > 0:
-        buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"glist_{page - 1}"))
-    if page < total_groups - 1:
-        buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"glist_{page + 1}"))
+        nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"glist_{page - 1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"glist_{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
 
-    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
 
     if isinstance(update_or_query, Update):
         await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True, reply_to_message_id=msg_id)
@@ -1941,7 +1957,7 @@ async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ {'Game' if target == 'g' else 'Result'} media updated successfully.", reply_to_message_id=msg_id)
 
-# /stats Command
+# /stats Command (Updated to verify active groups where bot is still present)
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1949,10 +1965,19 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with db_pool.acquire() as conn:
         u_count = await conn.fetchval("SELECT COUNT(*) FROM users")
-        g_count = await conn.fetchval("SELECT COUNT(*) FROM groups")
+        all_groups = await conn.fetch("SELECT chat_id FROM groups")
+
+    active_g_count = 0
+    for g in all_groups:
+        try:
+            member = await context.bot.get_chat_member(g['chat_id'], context.bot.id)
+            if member.status not in ['left', 'kicked']:
+                active_g_count += 1
+        except Exception:
+            pass
 
     await update.message.reply_text(
-        f"📊 <b>Bot Stats:</b>\n\n👥 Users: {u_count}\n🏰 Groups: {g_count}",
+        f"📊 <b>Bot Stats:</b>\n\n👥 Users: {u_count}\n🏰 Groups: {active_g_count}",
         parse_mode="HTML",
         reply_to_message_id=msg_id
     )
@@ -2000,7 +2025,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (Fixed & Optimized atomic threshold counter and race conditions)
+# Message Handler (Fixed & Optimized atomic threshold counter and admin check)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -2070,6 +2095,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
+        
+        # Check if bot is admin in this group
+        try:
+            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+            is_bot_admin = bot_member.status in ["administrator", "creator"]
+        except Exception:
+            is_bot_admin = False
+
+        if not is_bot_admin:
+            if chat_id not in bot_warned_groups:
+                bot_warned_groups.add(chat_id)
+                warning_text = "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကိုAdmin ပေး​ပါက Media ကောင်းကောင်းအလုပ်ပါမည် ဒီတိုင်းဆို ပုံမပါဘူးဖြစ်နေမယ်ဗျ Admin ပေးပေးဦးနော်"
+                try:
+                    await context.bot.send_message(chat_id, warning_text)
+                except Exception:
+                    pass
+
         try:
             async with db_pool.acquire() as conn:
                 await conn.execute("""
@@ -2080,7 +2122,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat_id)
                 threshold = group_row['threshold'] if (group_row and group_row['threshold'] is not None) else group_threshold.get(chat_id, global_default_threshold)
 
-                # Robust atomic update and threshold check ensuring clean counting and avoiding spam/race conditions
                 row = await conn.fetchrow("""
                     UPDATE groups 
                     SET msg_count = CASE WHEN msg_count + 1 >= $2 THEN 0 ELSE msg_count + 1 END
@@ -2303,7 +2344,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     r = drop_card.get('rarity', 'Ten')
     r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-    joined_names = [f"• {name}" for uid, name in {}.items()]
+    joined_names = [f"• {get_mention(uid, name)}" for uid, name in {}.items()]
     joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
 
     drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
@@ -2353,7 +2394,7 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         r = drop["card"].get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-        joined_names = [f"• {name}" for uid, name in drop["joined_users"].items()]
+        joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
         joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
 
         drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
@@ -2593,44 +2634,44 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, query.message.chat, context)
 
     if data == "menu_help":
-        help_text = """📖 <b>Help & Guidelines</b>
+        help_text = """📖 <b>အကူအညီနှင့် လမ်းညွှန်ချက်များ (Help & Guidelines)</b>
 
-- Add bot to group and chat to trigger card drops automatically when threshold is reached.
-- Admins use /game to start football matches.
-- Bet on Home, Away, or Draw within 1 minute.
-- Earn Kachi Coins and Vote Tickets on win!
-- Spin /kbox for cards, use /kc to check harem.
-- /ktop - View Global Leaderboard.
-- /kgtop - View Group Leaderboard.
-- /popular - View Popular Members profile.
-- /ksell [amount] - Sell GemStones for Kachi Coins.
-- /vote - Access/register popular profile & vote.
-- /card [card_id] - View card details and top owners.
-- /set [card_id] - Set active profile card displayed in /kc."""
+- Bot ကို Group ထဲသို့ထည့်ပြီး စာပေးပို့ပါက သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်သည်နှင့် ကတ်များ အလိုအလျောက်ကျလာမည်ဖြစ်ပါသည်။
+- Admin များအနေဖြင့် /game ကိုသုံး၍ ဘောလုံးပွဲစဉ်များ စတင်နိုင်ပါသည်။
+- ၁ မိနစ်အတွင်း Home, Away သို့မဟုတ် Draw ကို ရွေးချယ်ပါ။
+- အနိုင်ရပါက Kachi Coins နှင့် Vote Tickets များ ရရှိမည်ဖြစ်ပါသည်။
+- /kbox ဖြင့် ကတ်ပေါက်ရန် လှည့်ပါ၊ /kc ဖြင့် မိမိ၏ Harem ကို ကြည့်ပါ။
+- /ktop - Global Leaderboard ကို ကြည့်ရန်။
+- /kgtop - Group Leaderboard ကို ကြည့်ရန်။
+- /popular - Popular အဖွဲ့ဝင်များ၏ ပရိုဖိုင်ကို ကြည့်ရန်။
+- /ksell [amount] - GemStones များကို Kachi Coins ဖြင့် ရောင်းချရန်။
+- /vote - Popular ပရိုဖိုင်တွင် စာရင်းသွင်းရန်နှင့် မဲပေးရန်။
+- /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
+- /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=markup)
         await query.answer()
         return
 
     if data == "menu_team":
-        team_text = """🛡️ <b>Team Guidelines</b>
+        team_text = """🛡️ <b>အဖွဲ့ (Team) လမ်းညွှန်ချက်များ</b>
 
-- /team - Create a Team (Cost: 800 Coins)
-- /myteam - View your team info and members
-- /join [CODE] - Join a team via code
-- /out - Leave your team (or kick members if leader)
-- /dele - Delete your team (Leader only)"""
+- /team - Team အသစ်ဖန်တီးရန် (ကုန်ကျငွေ: 800 Coins)
+- /myteam - မိမိအဖွဲ့၏ အချက်အလက်နှင့် အဖွဲ့ဝင်များကို ကြည့်ရန်
+- /join [CODE] - Code ဖြင့် Team ထဲသို့ ဝင်ရောက်ရန်
+- /out - Team မှ ထွက်ရန် (Leader ဆိုပါက အဖွဲ့ဝင်များကို kick နိုင်သည်)
+- /dele - Team ကို ဖျက်သိမ်းရန် (Leader သာလျှင်)"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(team_text, parse_mode="HTML", reply_markup=markup)
         await query.answer()
         return
 
     if data == "menu_kgift":
-        kgift_text = """🎁 <b>Gift Guidelines</b>
+        kgift_text = """🎁 <b>လက်ဆောင်ပေးခြင်း (Gift) လမ်းညွှန်ချက်များ</b>
 
-Reply to a user's message with:
-- /kgift c[amount] - Send Kachi Coins (e.g. /kgift c100)
-- /kgift [card_id] - Send a specific card (e.g. /kgift 1201)"""
+user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပါအတိုင်း ပေးပို့ပါ -
+- /kgift c[amount] - Kachi Coins များ ပေးပို့ရန် (ဥပမာ - /kgift c100)
+- /kgift [card_id] - သတ်မှတ်ထားသော ကတ်တစ်ခု ပေးပို့ရန် (ဥပမာ - /kgift 1201)"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(kgift_text, parse_mode="HTML", reply_markup=markup)
         await query.answer()
@@ -2760,7 +2801,7 @@ Reply to a user's message with:
             r = drop["card"].get('rarity', 'Ten')
             r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-            joined_names = [f"• {name}" for uid, name in drop["joined_users"].items()]
+            joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
             joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
 
             drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
