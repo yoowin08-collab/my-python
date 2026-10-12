@@ -593,7 +593,7 @@ async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ အသင်းကို အောင်မြင်စွာ ထည့်သွင်း/ပြင်ဆင်ပြီးပါပြီ!\n\n"
         f"⚽ အမည်: <b>{team_name}</b>\n"
-        f"🏟 စတเดียม: {stadium_name}\n"
+        f"🏟 စတေဒီယမ်: {stadium_name}\n"
         f"🎨 အမ်မိုဂျီ: {emoji}\n"
         f"📊 စုစုပေါင်းအသင်းရေ: <b>{len(TEAMS)}</b>",
         parse_mode="HTML",
@@ -1156,11 +1156,11 @@ async def get_popular_profile_data(target_uid: int):
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ရသေး"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
-             <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁
+    text = f"""📯 <b>POPULAR MEMBER</b>        
+             <b>PROFILE</b> ◁
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>𝚅𝙾𝚃𝗘 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
+🧸 <b>POPULAR VOTE</b> - <b>{u_info['popular_votes']}</b>
+🎐  <b>VOTE TOTAL EARNED COINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>နာမည်</b> - {get_mention(u_info['user_id'], u_info['name'])}
 🍀   <b>USER ID</b> - <code>{u_info['user_id']}</code>
@@ -1980,14 +1980,14 @@ def build_game_ui(game):
     away_str = "\n".join(away_list) if away_list else "—"
     draw_str = "\n".join(draw_list) if draw_list else "—"
 
-    return f"""⚽  𝗖𝗵𝗼𝗼𝘀𝗲 𝗙𝗼𝗿 𝗪𝗶𝗻 🍀
+    return f"""⚽  <b>Choose For Win</b> 🍀
 
 🏖️ <b>{game['home']['emoji']} {game['home']['name']}</b> vs <b>{game['away']['emoji']} {game['away']['name']}</b> ⛵
 
-⛲ <i>စတเดียม</i> - {game['home']['stadium']}
-⏲ <i>ကျန်ရှိချိန်</i> - {game['time_left']}စက္ကန့်
+⛲ <i>စတေဒီယမ်</i> - {game['home']['stadium']}
+⏲ <i>ကျန်ရှိချိန်</i> - {game['time_left']} စက္ကန့်
 
-🧩 𝙇𝙞𝙫𝙚 𝘽𝙚𝙩𝙩𝙞𝙣𝙜 𝙇𝙞𝙨𝙩 
+🧩 <b>Live Betting List</b> 
 
 ♠ <b>{game['home']['name']}</b>
 {home_str}
@@ -1998,7 +1998,7 @@ def build_game_ui(game):
 ♦️ <b>သရေ (Draw)</b>
 {draw_str}
 
-GᴏᴏᴅLᴜᴄᴋ G_ʏ ☘️"""
+GoodLuck G_Y ☘️"""
 
 def build_game_buttons(game):
     return InlineKeyboardMarkup([
@@ -2032,9 +2032,9 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
         back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 မီနူးသို့", callback_data="lb_back")]])
         try:
             if query.message.caption:
-                await query.edit_message_caption(caption="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>Popular စာရင်းဝင်များ မရှိသေးပါ။ /vote ဖြင့် လျှောက်ထားပါ။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_caption(caption="📯 <b>POPULAR MEMBERS</b>\n\n<i>Popular စာရင်းဝင်များ မရှိသေးပါ။ /vote ဖြင့် လျှောက်ထားပါ။</i>", parse_mode="HTML", reply_markup=back_markup)
             else:
-                await query.edit_message_text(text="📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥𝗦</b>\n\n<i>Popular စာရင်းဝင်များ မရှိသေးပါ။ /vote ဖြင့် လျှောက်ထားပါ။</i>", parse_mode="HTML", reply_markup=back_markup)
+                await query.edit_message_text(text="📯 <b>POPULAR MEMBERS</b>\n\n<i>Popular စာရင်းဝင်များ မရှိသေးပါ။ /vote ဖြင့် လျှောက်ထားပါ။</i>", parse_mode="HTML", reply_markup=back_markup)
         except Exception:
             pass
         return
@@ -2064,11 +2064,11 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     card_id_str = u_info['selected_card_id'] or "မသတ်မှတ်ရသေး"
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
-    text = f"""📯 <b>𝗣𝗢𝗣𝗨𝗟𝗔𝗥 𝗠𝗘𝗠𝗕𝗘𝗥</b>        
-             <b>𝗣𝗥𝗢𝗙𝗜𝗟𝗘</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
+    text = f"""📯 <b>POPULAR MEMBER</b>        
+             <b>PROFILE</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
-🧸 <b>𝙿𝙾𝙿𝚄𝙻𝗔𝗥 𝚅𝙾𝚃𝗘</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>𝚅𝙾𝚃𝗘 𝚃𝙾𝚃𝙰𝙻 𝙴𝙰𝚁𝙴𝙳 𝙲OINS</b> - <b>{earned_coins}</b>
+🧸 <b>POPULAR VOTE</b> - <b>{u_info['popular_votes']}</b>
+🎐  <b>VOTE TOTAL EARNED COINS</b> - <b>{earned_coins}</b>
 
 🍀 <b>နာမည်</b> - {get_mention(u_info['user_id'], u_info['name'])}
 🍀   <b>USER ID</b> - <code>{u_info['user_id']}</code>
@@ -2090,20 +2090,23 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
     markup = InlineKeyboardMarkup(buttons)
 
     card = await get_user_card_media(target_uid)
-    media_sent = False
 
-    if card:
-        try:
+    try:
+        if card:
             if card['type'] == 'photo':
                 media = InputMediaPhoto(media=card['file_id'], caption=text, parse_mode="HTML")
             else:
                 media = InputMediaVideo(media=card['file_id'], caption=text, parse_mode="HTML")
             await query.edit_message_media(media=media, reply_markup=markup)
-            media_sent = True
-        except Exception:
-            pass
-
-    if not media_sent:
+        else:
+            if query.message.caption:
+                try:
+                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+                except Exception:
+                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+            else:
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+    except Exception:
         try:
             if query.message.caption:
                 await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
