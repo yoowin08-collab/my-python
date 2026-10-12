@@ -510,10 +510,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Gift 🎁", callback_data="menu_kgift")
         ],
         [
-            InlineKeyboardButton("Top Leaderboard (/ktop)", callback_data="menu_ktop"),
-            InlineKeyboardButton("Popular (/popular)", callback_data="menu_popular")
-        ],
-        [
             InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
         ]
     ])
@@ -680,32 +676,76 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (10). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /ktop Command (Top 10 users by coins, winrate, and cards)
+# /ktop Command (Global Leaderboard Template)
 async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
     msg_id = update.message.message_id
     async with db_pool.acquire() as conn:
         top_users = await conn.fetch("""
-            SELECT u.user_id, u.name, u.coins, u.wins, u.total_games,
-                   COALESCE(SUM(uc.amount), 0) AS total_cards,
-                   CASE WHEN u.total_games > 0 THEN ROUND((u.wins::NUMERIC / u.total_games::NUMERIC) * 100, 1) ELSE 0.0 END AS winrate
+            SELECT u.user_id, u.name, COALESCE(SUM(uc.amount), 0) AS total_cards
             FROM users u
             LEFT JOIN user_cards uc ON u.user_id = uc.user_id AND uc.card_id != 'gemstone'
-            GROUP BY u.user_id, u.name, u.coins, u.wins, u.total_games
-            ORDER BY u.coins DESC, total_cards DESC
+            GROUP BY u.user_id, u.name
+            ORDER BY total_cards DESC, u.coins DESC
             LIMIT 10
         """)
 
-    if not top_users:
-        return await update.message.reply_text("❌ No leaderboard data available yet.", reply_to_message_id=msg_id)
+    lines = [
+        "KTOP GLOBAL🌍 ( Leaderboard ) 🎖",
+        "▰▱▰▱▰▱▰▱▰▱▰",
+        ""
+    ]
+    medals = ["🥇", "🥈", "🥉"]
+    for i in range(6):
+        prefix = medals[i] if i < 3 else "☛"
+        if i < len(top_users):
+            r = top_users[i]
+            lines.append(f"{prefix}{r['name']} - {r['total_cards']} Cards")
+        else:
+            lines.append(f"{prefix}")
+    lines.append("")
+    lines.append("▰▱▰▱▰▱▰▱▰▱▰")
+    text = "\n".join(lines)
+    await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-    lines = []
-    for idx, r in enumerate(top_users, 1):
-        wr = r['winrate']
-        lines.append(f"{idx}. {get_mention(r['user_id'], r['name'])} — 🩸 {r['coins']} Coins | 🎯 {wr}% Winrate | 🎴 {r['total_cards']} Cards")
+# /kgtop Command (Group Leaderboard Template)
+async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    if chat.type not in ["group", "supergroup"]:
+        return await update.message.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg_id)
 
-    text = "🏆 <b>KTOP LEADERBOARD (Top 10)</b>\n\n" + "\n".join(lines)
+    async with db_pool.acquire() as conn:
+        top_users = await conn.fetch("""
+            SELECT u.user_id, u.name, COALESCE(SUM(uc.amount), 0) AS total_cards
+            FROM users u
+            JOIN group_members gm ON u.user_id = gm.user_id
+            LEFT JOIN user_cards uc ON u.user_id = uc.user_id AND uc.card_id != 'gemstone'
+            WHERE gm.chat_id = $1
+            GROUP BY u.user_id, u.name
+            ORDER BY total_cards DESC, u.coins DESC
+            LIMIT 10
+        """, chat.id)
+
+    lines = [
+        "KTOP IN GROUP🦊",
+        "    ( Leaderboard ) 🎖",
+        "▰▱▰▱▰▱▰▱▰▱▰▱",
+        ""
+    ]
+    medals = ["🥇", "🥈", "🥉"]
+    for i in range(6):
+        prefix = medals[i] if i < 3 else "☛"
+        if i < len(top_users):
+            r = top_users[i]
+            lines.append(f"{prefix}{r['name']} - {r['total_cards']} Cards")
+        else:
+            lines.append(f"{prefix}")
+    lines.append("▰▱▰▱▰▱▰▱▰▱▰▱")
+    text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /popular Command
@@ -724,7 +764,7 @@ async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ No popular members found yet. Use /vote to register.", reply_to_message_id=msg_id)
 
     target_uid = popular_users[0]['user_id']
-    text, keyboard = await get_popular_profile_data(target_uid)
+    text, keyboard = await get_popular_profile_data(target_uid, 0, len(popular_users))
     card = await get_user_card_media(target_uid)
 
     if card:
@@ -1212,7 +1252,7 @@ async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-async def get_popular_profile_data(target_uid: int):
+async def get_popular_profile_data(target_uid: int, current_idx: int = 0, total_pop: int = 1):
     async with db_pool.acquire() as conn:
         u_info = await conn.fetchrow("""
             SELECT u.user_id, u.name, u.coins, u.selected_card_id, u.popular_votes,
@@ -1231,7 +1271,7 @@ async def get_popular_profile_data(target_uid: int):
     earned_coins = (u_info['popular_votes'] or 0) * 20
 
     text = f"""📯 <b>POPULAR MEMBER</b>        
-             <b>PROFILE</b> ◁
+             <b>PROFILE</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
 
 🧸 <b>POPULAR VOTE</b> - <b>{u_info['popular_votes']}</b>
 🎐  <b>VOTE TOTAL EARNED COINS</b> - <b>{earned_coins}</b>
@@ -1246,9 +1286,11 @@ async def get_popular_profile_data(target_uid: int):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🗳️ Vote (5 Tickets)", callback_data=f"pop_vote_{target_uid}_0"),
-            InlineKeyboardButton("💎 Gem Gift (1 Gem)", callback_data=f"pop_gemgift_{target_uid}_0")
-        ]
+            InlineKeyboardButton("◀️ Back", callback_data=f"pop_view_{current_idx - 1}"),
+            InlineKeyboardButton("🗳️ Vote (5 Tickets)", callback_data=f"pop_vote_{target_uid}_{current_idx}"),
+            InlineKeyboardButton("Next ▶️", callback_data=f"pop_view_{current_idx + 1}")
+        ],
+        [InlineKeyboardButton("💎 Gem Gift (1 Gem)", callback_data=f"pop_gemgift_{target_uid}_{current_idx}")]
     ])
     return text, keyboard
 
@@ -1263,9 +1305,10 @@ async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT is_popular FROM users WHERE user_id = $1", user.id)
+        popular_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_popular = TRUE") or 1
 
     if user_row and user_row['is_popular']:
-        text, keyboard = await get_popular_profile_data(user.id)
+        text, keyboard = await get_popular_profile_data(user.id, 0, popular_count)
         card = await get_user_card_media(user.id)
         
         if card:
@@ -2108,55 +2151,11 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
         return
 
     pop_uids = [r['user_id'] for r in popular_users]
-    random.seed(int(time.time() // 10) + current_idx)
-    random.shuffle(pop_uids)
-
     total_pop = len(pop_uids)
     current_idx = current_idx % total_pop
     target_uid = pop_uids[current_idx]
 
-    async with db_pool.acquire() as conn:
-        u_info = await conn.fetchrow("""
-            SELECT u.user_id, u.name, u.coins, u.selected_card_id, u.popular_votes,
-                   (SELECT COUNT(*) + 1 FROM users WHERE coins > u.coins) AS global_rank,
-                   (SELECT amount FROM user_cards WHERE user_id = u.user_id AND card_id = 'gemstone') AS gem_count,
-                   ut.team_name
-            FROM users u
-            LEFT JOIN team_members tm ON u.user_id = tm.user_id
-            LEFT JOIN user_teams ut ON tm.team_code = ut.team_code
-            WHERE u.user_id = $1
-        """, target_uid)
-
-    gems = u_info['gem_count'] or 0
-    team_str = u_info['team_name'] or "None"
-    card_id_str = u_info['selected_card_id'] or "Not set"
-    earned_coins = (u_info['popular_votes'] or 0) * 20
-
-    text = f"""📯 <b>POPULAR MEMBER</b>        
-             <b>PROFILE</b> ◁ (<b>{current_idx + 1}</b>/<b>{total_pop}</b>)
-
-🧸 <b>POPULAR VOTE</b> - <b>{u_info['popular_votes']}</b>
-🎐  <b>VOTE TOTAL EARNED COINS</b> - <b>{earned_coins}</b>
-
-🍀 <b>Name</b> - {get_mention(u_info['user_id'], u_info['name'])}
-🍀   <b>USER ID</b> - <code>{u_info['user_id']}</code>
-🩸 <b>Kachi Coin</b> - <b>{u_info['coins']}</b>
-  💎  <b>GemStone</b> - <b>{gems}</b>
-🍀 <b>Selected Card ID</b> - <code>{card_id_str}</code>
-   🎖 <b>Global Rank</b> - #{u_info['global_rank']}
-〇 <b>Team</b> - <b>{team_str}</b>"""
-
-    buttons = [
-        [
-            InlineKeyboardButton("◀️ Back", callback_data=f"pop_view_{current_idx - 1}"),
-            InlineKeyboardButton("🗳️ Vote (5 Tickets)", callback_data=f"pop_vote_{target_uid}_{current_idx}"),
-            InlineKeyboardButton("Next ▶️", callback_data=f"pop_view_{current_idx + 1}")
-        ],
-        [InlineKeyboardButton("💎 Gem Gift (1 Gem)", callback_data=f"pop_gemgift_{target_uid}_{current_idx}")],
-        [InlineKeyboardButton("🔙 Back to Menu", callback_data="lb_back")]
-    ]
-    markup = InlineKeyboardMarkup(buttons)
-
+    text, keyboard = await get_popular_profile_data(target_uid, current_idx, total_pop)
     card = await get_user_card_media(target_uid)
 
     try:
@@ -2165,21 +2164,21 @@ async def render_popular_view(query, context: ContextTypes.DEFAULT_TYPE, current
                 media = InputMediaPhoto(media=card['file_id'], caption=text, parse_mode="HTML")
             else:
                 media = InputMediaVideo(media=card['file_id'], caption=text, parse_mode="HTML")
-            await query.edit_message_media(media=media, reply_markup=markup)
+            await query.edit_message_media(media=media, reply_markup=keyboard)
         else:
             if query.message.caption:
                 try:
-                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
                 except Exception:
-                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
             else:
-                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
     except Exception:
         try:
             if query.message.caption:
-                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
             else:
-                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
         except Exception:
             pass
 
@@ -2277,7 +2276,6 @@ Code: <code>{t['team_code']}</code>
             pass
 
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    # Snail animation without text (just emoji)
     anim_msg = await context.bot.send_message(chat_id, "🐌")
     await asyncio.sleep(4)
     try:
@@ -2303,7 +2301,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
 {joined_str}
 
-GoodLuck 🍀 Time (30sec)"""
+GoodLuck 🍀 Time (50sec)"""
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("𝗝𝗢𝗜𝗡(0/5)", callback_data="join_card_drop")
@@ -2318,7 +2316,7 @@ GoodLuck 🍀 Time (30sec)"""
         "chat_id": chat_id,
         "card": drop_card,
         "joined_users": {},
-        "timer": 30,
+        "timer": 50,
         "ended": False
     }
 
@@ -2590,8 +2588,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Bet on Home, Away, or Draw within 1 minute.
 - Earn Kachi Coins and Vote Tickets on win!
 - Spin /kbox for cards, use /kc to check harem.
-- /ktop - View top users leaderboard.
-- /popular - View popular members profile.
+- /ktop - View Global Leaderboard.
+- /kgtop - View Group Leaderboard.
+- /popular - View Popular Members profile.
 - /ksell [amount] - Sell GemStones for Kachi Coins.
 - /vote - Access/register popular profile & vote.
 - /card [card_id] - View card details and top owners.
@@ -2625,55 +2624,6 @@ Reply to a user's message with:
         await query.answer()
         return
 
-    if data == "menu_ktop":
-        await query.answer()
-        async with db_pool.acquire() as conn:
-            top_users = await conn.fetch("""
-                SELECT u.user_id, u.name, u.coins, u.wins, u.total_games,
-                       COALESCE(SUM(uc.amount), 0) AS total_cards,
-                       CASE WHEN u.total_games > 0 THEN ROUND((u.wins::NUMERIC / u.total_games::NUMERIC) * 100, 1) ELSE 0.0 END AS winrate
-                FROM users u
-                LEFT JOIN user_cards uc ON u.user_id = uc.user_id AND uc.card_id != 'gemstone'
-                GROUP BY u.user_id, u.name, u.coins, u.wins, u.total_games
-                ORDER BY u.coins DESC, total_cards DESC
-                LIMIT 10
-            """)
-        if not top_users:
-            text = "🏆 <b>KTOP LEADERBOARD</b>\n\n<i>No data available yet.</i>"
-        else:
-            lines = [f"{i+1}. {get_mention(r['user_id'], r['name'])} — 🩸 {r['coins']} Coins | 🎯 {r['winrate']}% Winrate | 🎴 {r['total_cards']} Cards" for i, r in enumerate(top_users)]
-            text = "🏆 <b>KTOP LEADERBOARD (Top 10)</b>\n\n" + "\n".join(lines)
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
-        try:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            pass
-        return
-
-    if data == "menu_popular":
-        await query.answer()
-        async with db_pool.acquire() as conn:
-            popular_users = await conn.fetch("SELECT user_id FROM users WHERE is_popular = TRUE")
-        if not popular_users:
-            text = "📯 <b>POPULAR MEMBERS</b>\n\n<i>No popular members found yet. Use /vote to register.</i>"
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
-            try:
-                await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-            except Exception:
-                pass
-            return
-        target_uid = popular_users[0]['user_id']
-        text, keyboard = await get_popular_profile_data(target_uid)
-        # Add back button to keyboard rows
-        kb_list = list(keyboard.inline_keyboard)
-        kb_list.append([InlineKeyboardButton("◀️ Back", callback_data="menu_back")])
-        markup = InlineKeyboardMarkup(kb_list)
-        try:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            pass
-        return
-
     if data == "menu_back":
         bot_info = await context.bot.get_me()
         text = f"""👋 Hello {get_mention(user.id, user.first_name)} !
@@ -2690,10 +2640,6 @@ Reply to a user's message with:
                 InlineKeyboardButton("Help 📖", callback_data="menu_help"),
                 InlineKeyboardButton("Team 🛡️", callback_data="menu_team"),
                 InlineKeyboardButton("Gift 🎁", callback_data="menu_kgift")
-            ],
-            [
-                InlineKeyboardButton("Top Leaderboard (/ktop)", callback_data="menu_ktop"),
-                InlineKeyboardButton("Popular (/popular)", callback_data="menu_popular")
             ],
             [
                 InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
@@ -2876,17 +2822,16 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
 
         await query.answer("💎 GemStone sent successfully!", show_alert=True)
 
-        if query.message.reply_markup and any("Next" in b.text or "Back" in b.text for row in query.message.reply_markup.inline_keyboard for b in row):
-            await render_popular_view(query, context, current_idx=c_idx)
-        else:
-            text, keyboard = await get_popular_profile_data(target_uid)
-            try:
-                if query.message.caption:
-                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
-                else:
-                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
-            except Exception:
-                pass
+        async with db_pool.acquire() as conn:
+            popular_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_popular = TRUE") or 1
+        text, keyboard = await get_popular_profile_data(target_uid, c_idx, popular_count)
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
         return
 
     if data.startswith("pop_vote_"):
@@ -2909,17 +2854,16 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
 
         await query.answer("🗳️ Voted successfully! (-5 Tickets)", show_alert=True)
 
-        if query.message.reply_markup and any("Next" in b.text or "Back" in b.text for row in query.message.reply_markup.inline_keyboard for b in row):
-            await render_popular_view(query, context, current_idx=c_idx)
-        else:
-            text, keyboard = await get_popular_profile_data(target_uid)
-            try:
-                if query.message.caption:
-                    await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
-                else:
-                    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
-            except Exception:
-                pass
+        async with db_pool.acquire() as conn:
+            popular_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_popular = TRUE") or 1
+        text, keyboard = await get_popular_profile_data(target_uid, c_idx, popular_count)
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
         return
 
     if data.startswith("create_team_"):
@@ -3312,6 +3256,7 @@ def main():
     app.add_handler(CommandHandler("out", out_team_cmd))
     app.add_handler(CommandHandler("vote", vote_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
+    app.add_handler(CommandHandler("kgtop", kgtop_cmd))
     app.add_handler(CommandHandler("popular", popular_cmd))
 
     # Admin & Card Admin Commands
