@@ -250,67 +250,70 @@ async def init_db():
 async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = None):
     if not db_pool:
         return
-    async with db_pool.acquire() as conn:
-        if user and not user.is_bot:
-            await conn.execute("""
-                INSERT INTO users (user_id, name) VALUES ($1, $2)
-                ON CONFLICT(user_id) DO UPDATE SET name = EXCLUDED.name
-            """, user.id, user.first_name)
-        if chat and chat.type in ["group", "supergroup"]:
-            added_id = user.id if user else None
-            added_name = user.first_name if user else None
-            
-            is_new = await conn.fetchrow("SELECT chat_id FROM groups WHERE chat_id = $1", chat.id)
-            
-            await conn.execute("""
-                INSERT INTO groups (chat_id, title, added_by_id, added_by_name) 
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT(chat_id) DO UPDATE SET 
-                    title = EXCLUDED.title,
-                    added_by_id = COALESCE(groups.added_by_id, EXCLUDED.added_by_id),
-                    added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
-            """, chat.id, chat.title or "Group", added_id, added_name)
+    try:
+        async with db_pool.acquire() as conn:
+            if user and not user.is_bot:
+                await conn.execute("""
+                    INSERT INTO users (user_id, name) VALUES ($1, $2)
+                    ON CONFLICT(user_id) DO UPDATE SET name = EXCLUDED.name
+                """, user.id, user.first_name)
+            if chat and chat.type in ["group", "supergroup"]:
+                added_id = user.id if user and not user.is_bot else None
+                added_name = user.first_name if user and not user.is_bot else None
+                
+                is_new = await conn.fetchrow("SELECT chat_id FROM groups WHERE chat_id = $1", chat.id)
+                
+                await conn.execute("""
+                    INSERT INTO groups (chat_id, title, added_by_id, added_by_name) 
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT(chat_id) DO UPDATE SET 
+                        title = EXCLUDED.title,
+                        added_by_id = COALESCE(groups.added_by_id, EXCLUDED.added_by_id),
+                        added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
+                """, chat.id, chat.title or "Group", added_id, added_name)
 
-            group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat.id)
-            if group_row and group_row['threshold'] is not None:
-                group_threshold[chat.id] = group_row['threshold']
+                group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat.id)
+                if group_row and group_row['threshold'] is not None:
+                    group_threshold[chat.id] = group_row['threshold']
 
-            if not is_new and context:
-                try:
-                    member_count = await context.bot.get_chat_member_count(chat.id)
-                except Exception:
-                    member_count = "N/A"
+                if not is_new and context and added_id:
+                    try:
+                        member_count = await context.bot.get_chat_member_count(chat.id)
+                    except Exception:
+                        member_count = "N/A"
 
-                invite_link = "N/A"
-                try:
-                    chat_obj = await context.bot.get_chat(chat.id)
-                    if chat_obj.invite_link:
-                        invite_link = chat_obj.invite_link
-                    elif chat_obj.username:
-                        invite_link = f"https://t.me/{chat_obj.username}"
-                    else:
-                        invite_link = await context.bot.export_chat_invite_link(chat.id)
-                except Exception:
-                    pass
+                    invite_link = "N/A"
+                    try:
+                        chat_obj = await context.bot.get_chat(chat.id)
+                        if chat_obj.invite_link:
+                            invite_link = chat_obj.invite_link
+                        elif chat_obj.username:
+                            invite_link = f"https://t.me/{chat_obj.username}"
+                        else:
+                            invite_link = await context.bot.export_chat_invite_link(chat.id)
+                    except Exception:
+                        pass
 
-                adder_text = get_mention(added_id, added_name or "User") if added_id else "—"
-                log_text = f"""🏰 <b>New Group Added</b>
+                    adder_text = get_mention(added_id, added_name or "User") if added_id else "—"
+                    log_text = f"""🏰 <b>New Group Added</b>
 
 🔹 <b>Group Name:</b> {chat.title or 'Group'}
 👥 <b>Members:</b> {member_count}
 🆔 <b>Group ID:</b> <code>{chat.id}</code>
 🔗 <b>Link:</b> {invite_link}
 👤 <b>Added By:</b> {adder_text}"""
-                try:
-                    await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
-                except Exception:
-                    pass
+                    try:
+                        await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
+                    except Exception:
+                        pass
 
-            if user and not user.is_bot:
-                await conn.execute("""
-                    INSERT INTO group_members (chat_id, user_id) VALUES ($1, $2)
-                    ON CONFLICT DO NOTHING
-                """, chat.id, user.id)
+                if user and not user.is_bot:
+                    await conn.execute("""
+                        INSERT INTO group_members (chat_id, user_id) VALUES ($1, $2)
+                        ON CONFLICT DO NOTHING
+                    """, chat.id, user.id)
+    except Exception as e:
+        print(f"Error in register_user_group: {e}")
 
 async def add_coins(user_id, amount):
     async with db_pool.acquire() as conn:
@@ -1995,7 +1998,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (Triggers Card Drop when message count reaches threshold)
+# Message Handler (Triggers Card Drop when message count reaches threshold - Fixed Atomic Counter & Group Safety)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -2006,7 +2009,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     if chat.type == "private":
-        if user.id in team_creation_state:
+        if user and user.id in team_creation_state:
             state = team_creation_state[user.id]
             step = state.get("step")
 
@@ -2065,21 +2068,28 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
-        
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO groups (chat_id, title, msg_count) VALUES ($1, $2, 1)
-                ON CONFLICT (chat_id) DO UPDATE SET msg_count = groups.msg_count + 1
-            """, chat_id, chat.title or "Group")
-            
-            group_row = await conn.fetchrow("SELECT msg_count FROM groups WHERE chat_id = $1", chat_id)
-            msg_count = group_row['msg_count'] if group_row else 1
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO groups (chat_id, title, msg_count) VALUES ($1, $2, 0)
+                    ON CONFLICT (chat_id) DO UPDATE SET title = COALESCE($2, groups.title)
+                """, chat_id, chat.title or "Group")
+                
+                group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat_id)
+                threshold = group_row['threshold'] if (group_row and group_row['threshold'] is not None) else group_threshold.get(chat_id, global_default_threshold)
 
-            threshold = group_threshold.get(chat_id, global_default_threshold)
+                # Atomic update and threshold check to prevent race conditions and continuous dropping
+                row = await conn.fetchrow("""
+                    UPDATE groups 
+                    SET msg_count = CASE WHEN msg_count + 1 >= $2 THEN 0 ELSE msg_count + 1 END
+                    WHERE chat_id = $1
+                    RETURNING msg_count, (msg_count = 0) AS should_drop
+                """, chat_id, threshold)
 
-            if msg_count >= threshold:
-                await conn.execute("UPDATE groups SET msg_count = 0 WHERE chat_id = $1", chat_id)
-                asyncio.create_task(trigger_card_drop(context, chat_id))
+                if row and row['should_drop']:
+                    asyncio.create_task(trigger_card_drop(context, chat_id))
+        except Exception as e:
+            print(f"Error in group message handler: {e}")
 
 # UI & Buttons
 def build_game_ui(game):
