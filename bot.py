@@ -274,7 +274,6 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                     added_by_name = COALESCE(groups.added_by_name, EXCLUDED.added_by_name)
             """, chat.id, chat.title or "Group", added_id, added_name)
 
-            # Load threshold for group if already saved
             group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat.id)
             if group_row and group_row['threshold'] is not None:
                 group_threshold[chat.id] = group_row['threshold']
@@ -503,8 +502,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📌 <b>ကစားနည်းလမ်းညွှန်:</b>
 - Bot ကို သင်၏ Group ထဲသို့ ထည့်ပါ။
-- Group ထဲတွင် စကားပြောဆိုပါ၊ စာအကြောင်းရေ သတ်မှတ်ချက်ပြည့်တာနဲ့ Game စတင်ပါလိမ့်မယ်။
-- ၁ မိနစ်အတွင်း အသင်းနိုင် သို့မဟုတ် သရေ (Draw) ကို ရွေးချယ်ပါ။"""
+- Group ထဲတွင် စကားပြောဆိုပါ၊ စာအကြောင်းရေ သတ်မှတ်ချက်ပြည့်တာနဲ့ ကဒ်ကျဆင်းပါလိမ့်မယ်။
+- Admin များမှ /game ဖြင့် ဘောလုံးပွဲစတင်နိုင်ပါသည်။"""
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -675,14 +674,27 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /game Command
+# /game Command (Group Admin or Bot Admin only, with active game check)
 async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
-    if update.effective_user.id != ADMIN_ID:
-        return
-    chat_id = update.effective_chat.id
+    user = update.effective_user
+    chat = update.effective_chat
+    chat_id = chat.id
+
+    is_allowed = (user.id == ADMIN_ID)
+    if not is_allowed and chat.type in ["group", "supergroup"]:
+        try:
+            member = await context.bot.get_chat_member(chat_id, user.id)
+            if member.status in ["administrator", "creator"]:
+                is_allowed = True
+        except Exception:
+            pass
+
+    if not is_allowed:
+        return await update.message.reply_text("❌ ဤ Command ကို Group Admin များသာ အသုံးပြုနိုင်ပါသည်။", reply_to_message_id=msg_id)
+
     if chat_id in active_games:
-        return await update.message.reply_text("❌ ဤ Group တွင် Game တစ်ခု လက်ရှိကစားနေဆဲ ဖြစ်ပါသည်။", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ အရင် game မပြီးသေးပါ သတိပေးပါတယ်။", reply_to_message_id=msg_id)
     
     asyncio.create_task(start_game(context, chat_id, is_admin_triggered=True))
 
@@ -1462,7 +1474,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         if nav_row:
             keyboard_rows.append(nav_row)
 
-    keyboard_rows.append([InlineKeyboardButton("Harem 🎴", switch_inline_query_current_chat=f"harem.{target_id}")])
+    keyboard_rows.append([InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{target_id}")])
     markup = InlineKeyboardMarkup(keyboard_rows)
 
     if isinstance(update_or_query, Update):
@@ -1572,7 +1584,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
         cards = await conn.fetch("SELECT card_id, name, type, rarity FROM cards ORDER BY card_id ASC")
 
     if not cards:
-        text = "🎴 <b>ကဒ်စာရင်း ಖាលೀ ဖြစ်နေပါသည်။</b>"
+        text = "🎴 <b>ကဒ်စာရင်း ခាលೀ ဖြစ်နေပါသည်။</b>"
         if isinstance(update_or_query, Update):
             return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
         else:
@@ -1618,7 +1630,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
-# /card [card_id] Command
+# /card [card_id] Command (With correct 🩸 Kachi Coin and 💎 GemStone emojis)
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1678,7 +1690,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     🍀  ID - <code>{card['card_id']}</code>
 🎬 အမျိုးအစား - {card['type'].upper()}
 🌟 Rarity - {r_emoji} {r}
-💎 Kachi Coin တန်ဖိုး ( {coin_value} )
+🩸 Kachi Coin တန်ဖိုး ( {coin_value} )
    🐠 Global ကျဆင်းမှု - <b>{global_drop_count}</b>
 
 ▱▱▰▰▱▱▰▰▱▱▰▰
@@ -1878,7 +1890,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (Fixed threshold tracking using group_threshold and global_default_threshold correctly)
+# Message Handler (Triggers Card Drop when message count reaches threshold)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -1949,23 +1961,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
         
-        if chat_id not in active_games:
-            async with db_pool.acquire() as conn:
-                # Atomically increment and fetch current count
-                await conn.execute("""
-                    INSERT INTO groups (chat_id, title, msg_count) VALUES ($1, $2, 1)
-                    ON CONFLICT (chat_id) DO UPDATE SET msg_count = groups.msg_count + 1
-                """, chat_id, chat.title or "Group")
-                
-                group_row = await conn.fetchrow("SELECT msg_count FROM groups WHERE chat_id = $1", chat_id)
-                msg_count = group_row['msg_count'] if group_row else 1
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO groups (chat_id, title, msg_count) VALUES ($1, $2, 1)
+                ON CONFLICT (chat_id) DO UPDATE SET msg_count = groups.msg_count + 1
+            """, chat_id, chat.title or "Group")
+            
+            group_row = await conn.fetchrow("SELECT msg_count FROM groups WHERE chat_id = $1", chat_id)
+            msg_count = group_row['msg_count'] if group_row else 1
 
-                threshold = group_threshold.get(chat_id, global_default_threshold)
+            threshold = group_threshold.get(chat_id, global_default_threshold)
 
-                if msg_count >= threshold:
-                    # Reset message count in database
-                    await conn.execute("UPDATE groups SET msg_count = 0 WHERE chat_id = $1", chat_id)
-                    asyncio.create_task(start_game(context, chat_id, is_admin_triggered=False))
+            if msg_count >= threshold:
+                await conn.execute("UPDATE groups SET msg_count = 0 WHERE chat_id = $1", chat_id)
+                asyncio.create_task(trigger_card_drop(context, chat_id))
 
 # UI & Buttons
 def build_game_ui(game):
@@ -2211,19 +2220,18 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     if not drop_card:
         return
 
-    drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
+    r = drop_card.get('rarity', 'Ten')
+    r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-4 ဦး သို့မဟုတ် ထို့ထက်ပို၍ အနိုင်ရရှိခြင်း သို့မဟုတ် ဂိုး ၄ ဂိုးနှင့်အထက် သွင်းယူနိုင်ခဲ့ပါပြီ❄! 
+    drop_text = f"""{r_emoji} 𝘈 𝓒𝓱𝓪𝓻𝓪𝓬𝓽𝓮𝓻 𝓒𝓪𝓻𝓭 𝓢𝓹𝓪𝔀𝓷𝓮𝓭 𝘘𝓷 𝘛𝓱𝓮 𝘊𝓱𝓪𝓽  ❄
 
-ကဒ်တစ်ခု ကျဆင်းလာပါပြီ!
+[ 𝗝𝗢𝗜𝗡 ] 𝘍𝓪𝓼𝓽  𝘍𝓸𝓻 𝘛𝓱𝓮 𝘊𝓵𝓪𝓲𝓶
+ 𝘊𝓪𝘳𝓭 ❀
 
-⏱️ 𝙏𝙞𝙢𝙚 : 00:30
-
-📋 <b>Live List:</b>
-<i>မည်သူမျှ မဝင်ရသေးပါ။</i>"""
+𝘎𝘰𝘰𝘥𝓓𝓾𝓬𝓓𝓾𝓬𝓴 🍀 𝚃𝚒𝚖𝚎 (30𝚜𝚎𝚌)"""
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Join မည် (1/5)", callback_data="join_card_drop")
+        InlineKeyboardButton("𝗝𝗢𝗜𝗡(1/5)", callback_data="join_card_drop")
     ]])
 
     if drop_card['type'] == 'photo':
@@ -2256,27 +2264,19 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         if drop["ended"]:
             break
 
-        joined_lines = []
-        for uid, uname in drop["joined_users"].items():
-            joined_lines.append(f"• {get_mention(uid, uname)}")
-        list_str = "\n".join(joined_lines) if joined_lines else "<i>မည်သူမျှ မဝင်ရသေးပါ။</i>"
-
         current_count = len(drop["joined_users"])
-        timer_str = f"00:{drop['timer']:02d}"
-        
-        drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
+        r = drop["card"].get('rarity', 'Ten')
+        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-4 ဦး သို့မဟုတ် ထို့ထက်ပို၍ အနိုင်ရရှိခြင်း သို့မဟုတ် ဂိုး ၄ ဂိုးနှင့်အထက် သွင်းယူနိုင်ခဲ့ပါပြီ❄! 
+        drop_text = f"""{r_emoji} 𝘈 𝓒𝓱𝓪𝓻𝓪𝓬𝓽𝓮𝓻 𝓒𝓪𝓻𝓭 𝓢𝓹𝓪𝔀𝓷𝓮𝓭 𝘘𝓷 𝘛𝓱𝓮 𝘊𝓱𝓪𝓽  ❄
 
-ကဒ်တစ်ခု ကျဆင်းလာပါပြီ!
+[ 𝗝𝗢𝗜𝗡 ] 𝘍𝓪𝓼𝓽  𝘍𝓸𝓻 𝘛𝓱𝓮 𝘊𝓵𝓪𝓲𝓶
+ 𝘊𝓪𝘳𝓭 ❀
 
-⏱️ 𝙏𝙞𝙢𝙚 : {timer_str}
-
-📋 <b>Live List:</b>
-{list_str}"""
+𝘎𝘰𝘰𝘥𝓓𝓾𝓬𝓓𝓾𝓬𝓴 🍀 𝚃𝚒𝚖𝚎 ({drop['timer']}𝚜𝚎𝚌)"""
 
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"Join ({current_count}/5)", callback_data="join_card_drop")
+            InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
         ]])
 
         try:
@@ -2309,7 +2309,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         r = card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
-        win_msg = f"🍭 {get_mention(winner_id, winner_name)} ဂုဏ်ယူပါတယ်၊ ကဒ်အသစ် ရရှိသွားပါပြီ 𝘾𝘼𝙍𝘿 𝙉𝘼𝙈𝙀 - <b>{card['name']}</b> ({r_emoji} {r})\n\nID: ( <code>{card['card_id']}</code> )"
+        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
         
         try:
             if card['type'] == 'photo':
@@ -2440,17 +2440,6 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     last_results[sent_res.message_id] = res_text
 
-    total_goals = home_g + away_g
-    if len(winners) >= 4 or total_goals >= 4 or is_admin_triggered:
-        await asyncio.sleep(7)
-        snail_msg = await context.bot.send_message(chat_id, "🐌")
-        await asyncio.sleep(4)
-        try:
-            await context.bot.delete_message(chat_id, snail_msg.message_id)
-        except Exception:
-            pass
-        asyncio.create_task(trigger_card_drop(context, chat_id))
-
     if chat_id in active_games:
         del active_games[chat_id]
 
@@ -2517,7 +2506,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = """📖 <b>အကူအညီနှင့် လမ်းညွှန်ချက်များ</b>
 
 🇬🇧 <b>English:</b>
-- Add bot to group and chat to trigger football matches.
+- Add bot to group and chat to trigger card drops automatically.
+- Admins use /game to start football matches.
 - Bet on Home, Away, or Draw within 1 minute.
 - Earn Kachi Coins and Vote Tickets on win!
 - Spin /kbox for cards, use /kc to check harem, /vote for popular profile.
@@ -2527,7 +2517,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - /set [card_id] - Set your active profile card displayed in /kc.
 
 🇲🇲 <b>မြန်မာဘာသာ:</b>
-- Bot ကို Group ထဲထည့်ပြီး စကားပြောခြင်းဖြင့် ဘောလုံးပွဲများကို စတင်နိုင်ပါသည်။
+- Bot ကို Group ထဲထည့်ပြီး စကားပြောခြင်းဖြင့် ကဒ်များ ကျဆင်းလာပါမည်။
+- Admin များမှ /game ဖြင့် ဘောလုံးပွဲစတင်နိုင်ပါသည်။
 - ၁ မိနစ်အတွင်း အသင်းနိုင် သို့မဟုတ် သရေ (Draw) ကို ရွေးချယ်ပါ။
 - အနိုင်ရပါက Kachi Coins နှင့် Vote Tickets များ ရရှိမည်။
 - /kbox ဖြင့် ကဒ်ပေါက်နိုင်ပြီး /kc ဖြင့် ကိုယ်ပိုင်ကဒ်များကို ကြည့်ရှုနိုင်ပါသည်။
@@ -2586,8 +2577,8 @@ Reply to a user's message with:
 
 📌 <b>ကစားနည်းလမ်းညွှန်:</b>
 - Bot ကို သင်၏ Group ထဲသို့ ထည့်ပါ။
-- Group ထဲတွင် စကားပြောဆိုပါ၊ စာအကြောင်းရေ သတ်မှတ်ချက်ပြည့်တာနဲ့ Game စတင်ပါလိမ့်မယ်။
-- ၁ မိနစ်အတွင်း အသင်းနိုင် သို့မဟုတ် သရေ (Draw) ကို ရွေးချယ်ပါ။"""
+- Group ထဲတွင် စကားပြောဆိုပါ၊ စာအကြောင်းရေ သတ်မှတ်ချက်ပြည့်တာနဲ့ ကဒ်ကျဆင်းပါလိမ့်မယ်။
+- Admin များမှ /game ဖြင့် ဘောလုံးပွဲစတင်နိုင်ပါသည်။"""
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("အကူအညီ 📖", callback_data="menu_help"),
@@ -2697,27 +2688,19 @@ Reply to a user's message with:
         if len(drop["joined_users"]) >= 5:
             await finalize_card_drop(context, msg_id)
         else:
-            joined_lines = []
-            for uid, uname in drop["joined_users"].items():
-                joined_lines.append(f"• {get_mention(uid, uname)}")
-            list_str = "\n".join(joined_lines)
-
             current_count = len(drop["joined_users"])
-            timer_str = f"00:{drop['timer']:02d}"
+            r = drop["card"].get('rarity', 'Ten')
+            r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-            drop_text = f"""❀ 𝙃𝙚𝙮𝙮𝙮𝙮 𝙒𝙖𝙞𝙩 𝘼 𝙈𝙞𝙣𝙪𝙩𝙚 ❀
+            drop_text = f"""{r_emoji} 𝘈 𝓒𝓱𝓪𝓻𝓪𝓬𝓽𝓮𝓻 𝓒𝓪𝓻𝓭 𝓢𝓹𝓪𝔀𝓷𝓮𝓭 𝘘𝓷 𝘛𝓱𝓮 𝘊𝓱𝓪𝓽  ❄
 
-4 ဦး သို့မဟုတ် ထို့ထက်ပို၍ အနိုင်ရရှိခြင်း သို့မဟုတ် ဂိုး ၄ ဂိုးနှင့်အထက် သွင်းယူနိုင်ခဲ့ပါပြီ❄! 
+[ 𝗝𝗢𝗜𝗡 ] 𝘍𝓪𝓼𝓽  𝘍𝓸𝓻 𝘛𝓱𝓮 𝘊𝓵𝓪𝓲𝓶
+ 𝘊𝓪𝘳𝓭 ❀
 
-ကဒ်တစ်ခု ကျဆင်းလာပါပြီ!
-
-⏱️ 𝙏𝙞𝙢𝙚 : {timer_str}
-
-📋 <b>Live List:</b>
-{list_str}"""
+𝘎𝘰𝘰𝘥𝓓𝓾𝓬𝓓𝓾𝓬𝓴 🍀 𝚃𝚒𝚖𝚎 ({drop['timer']}𝚜𝚎𝚌)"""
 
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"Join ({current_count}/5)", callback_data="join_card_drop")
+                InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
             ]])
 
             try:
