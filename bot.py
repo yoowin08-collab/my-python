@@ -115,6 +115,8 @@ team_creation_state = {}
 pending_joins = {}
 active_card_drops = {}
 pending_card_adds = {}
+pending_quizzes = {}
+active_quizzes = {}
 game_media = None
 result_media = None
 global_default_threshold = 10
@@ -441,6 +443,112 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+# Quiz Commands (/q and /send)
+async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    
+    is_allowed = (user.id == ADMIN_ID)
+    if not is_allowed:
+        async with db_pool.acquire() as conn:
+            u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+            if u_info and u_info['is_card_admin']:
+                is_allowed = True
+
+    if not is_allowed:
+        return
+
+    full_text = msg.text.partition(" ")[2].strip()
+    if not full_text:
+        return await msg.reply_text("❌ Usage: `/q Question. Option1. Option2. t.CorrectOption`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    parts = [p.strip() for p in full_text.split(".")]
+    if len(parts) < 3:
+        return await msg.reply_text("❌ Invalid format. Use: `/q Question. Opt1. Opt2. t.Correct`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    question = parts[0]
+    options = []
+    correct_ans = None
+
+    for p in parts[1:]:
+        if p.lower().startswith("t."):
+            correct_ans = p[2:].strip()
+            options.append(correct_ans)
+        else:
+            options.append(p)
+
+    if not correct_ans:
+        return await msg.reply_text("❌ Correct answer (marked with t.) is missing.", reply_to_message_id=msg.message_id)
+
+    random.shuffle(options)
+
+    preview_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{question}</b>"
+    keyboard = []
+    for idx, opt in enumerate(options):
+        keyboard.append([InlineKeyboardButton(opt, callback_data=f"quiz_preview_{idx}")])
+
+    sent = await msg.reply_text(preview_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard), reply_to_message_id=msg.message_id)
+    
+    pending_quizzes[sent.message_id] = {
+        "question": question,
+        "options": options,
+        "correct": correct_ans
+    }
+
+async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+
+    is_allowed = (user.id == ADMIN_ID)
+    if not is_allowed:
+        async with db_pool.acquire() as conn:
+            u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+            if u_info and u_info['is_card_admin']:
+                is_allowed = True
+
+    if not is_allowed:
+        return
+
+    reply = msg.reply_to_message
+    if not reply or reply.message_id not in pending_quizzes:
+        return await msg.reply_text("❌ Please reply to the quiz preview message with `/send`.", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    quiz_data = pending_quizzes[reply.message_id]
+
+    async with db_pool.acquire() as conn:
+        groups = await conn.fetch("SELECT chat_id FROM groups")
+
+    quiz_id = str(uuid.uuid4())[:8]
+    quiz_text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz_data['question']}</b>"
+
+    success_count = 0
+    for g in groups:
+        chat_id = g['chat_id']
+        try:
+            keyboard = []
+            for idx, opt in enumerate(quiz_data['options']):
+                keyboard.append([InlineKeyboardButton(opt, callback_data=f"ans_{quiz_id}_{idx}")])
+
+            sent_quiz = await context.bot.send_message(
+                chat_id=chat_id,
+                text=quiz_text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+            active_quizzes[sent_quiz.message_id] = {
+                "chat_id": chat_id,
+                "question": quiz_data['question'],
+                "options": quiz_data['options'],
+                "correct": quiz_data['correct'],
+                "solved": False
+            }
+            success_count += 1
+        except Exception:
+            pass
+
+    await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups successfully!", reply_to_message_id=msg.message_id)
+
 # Coin Box Command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -486,7 +594,7 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claimed_users": {},
     }
 
-# /start Command (Updated with Burmese explanation as requested)
+# /start Command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -520,7 +628,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /addadmin Command (Admin Only)
+# /addadmin Command
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -542,7 +650,7 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
-# /addteam Command (Bot Admin Only)
+# /addteam Command
 async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -647,24 +755,26 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 <b>List:</b>
 1. /game - Start game manually
-2. /c [count] or /c [gpid] [count] - Set threshold
-3. /crest - Reset all thresholds & message counts
-4. /cbox [amount] - Send Coin Box
-5. /k [user_id] [amount] - Add/remove coins
-6. /addadmin [user_id] - Add Card Admin
-7. /addteam [name.emoji] - Add custom team
-8. /delteam [name] - Delete team
-9. /add - Add new card (reply to media)
-10. /del [card_id] - Delete card
-11. /cardlist - View all cards
-12. /glist - View groups list
-13. /g or /r - Set Game/Result media
-14. /stats - View stats
-15. /broadcast - Broadcast message"""
+2. /q - Create trivia quiz
+3. /send - Broadcast quiz to groups (reply to /q)
+4. /c [count] or /c [gpid] [count] - Set threshold
+5. /crest - Reset all thresholds & message counts
+6. /cbox [amount] - Send Coin Box
+7. /k [user_id] [amount] - Add/remove coins
+8. /addadmin [user_id] - Add Card Admin
+9. /addteam [name.emoji] - Add custom team
+10. /delteam [name] - Delete team
+11. /add - Add new card (reply to media)
+12. /del [card_id] - Delete card
+13. /cardlist - View all cards
+14. /glist - View groups list
+15. /g or /r - Set Game/Result media
+16. /stats - View stats
+17. /broadcast - Broadcast message"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /crest Command (Reset all group thresholds and message counts)
+# /crest Command
 async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -680,7 +790,7 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (10). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /ktop Command (Updated to Top 10 with Name Mention format as requested)
+# /ktop Command
 async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -714,7 +824,7 @@ async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /kgtop Command (Updated to Top 10 with Name Mention format as requested)
+# /kgtop Command
 async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -784,7 +894,7 @@ async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /game Command (Group Admin or Bot Admin only)
+# /game Command
 async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -1828,7 +1938,7 @@ Top Owners 🐾
             except Exception:
                 await update.message.reply_text(caption_text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /glist Command (Updated to 5 groups per page with Next/Back and full details including added by mention)
+# /glist Command
 async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1957,7 +2067,7 @@ async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ {'Game' if target == 'g' else 'Result'} media updated successfully.", reply_to_message_id=msg_id)
 
-# /stats Command (Updated to verify active groups where bot is still present)
+# /stats Command
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -2025,7 +2135,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (Fixed & Optimized atomic threshold counter and admin check)
+# Message Handler
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -2096,7 +2206,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
         
-        # Check if bot is admin in this group
         try:
             bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
             is_bot_admin = bot_member.status in ["administrator", "creator"]
@@ -2430,7 +2539,6 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     except Exception:
         pass
 
-    # 🐸 animation for 4 seconds before showing result
     anim_msg = await context.bot.send_message(chat_id, "🐸")
     await asyncio.sleep(4)
     try:
@@ -2644,6 +2752,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
+
+    if data.startswith("ans_"):
+        parts = data.split("_")
+        quiz_uuid = parts[1]
+        chosen_idx = int(parts[2])
+
+        quiz = active_quizzes.get(msg_id)
+        if not quiz or quiz["solved"]:
+            return await query.answer("❌ အဖြေမှန်ကို အခြားသူ ဖြေဆိုပြီးပါပြီ (သို့မဟုတ်) Quiz ပြီးဆုံးသွားပါပြီ။", show_alert=True)
+
+        chosen_opt = quiz["options"][chosen_idx]
+        if chosen_opt == quiz["correct"]:
+            quiz["solved"] = True
+            coins_won = random.randint(1000, 3000)
+            await add_coins(user.id, coins_won)
+
+            result_text = f"""✅ <b>အဖြေမှန်သွားပါပြီ!</b>
+
+❓ <b>{quiz['question']}</b>
+👤 <b>အနိုင်ရသူ:</b> {get_mention(user.id, user.first_name)}
+💰 <b>ရရှိသော Kachi Coin:</b> +{coins_won} 🩸
+
+CHECK /kc Use Coin /kbox"""
+
+            try:
+                await query.edit_message_text(result_text, parse_mode="HTML", reply_markup=None)
+            except Exception:
+                pass
+            await query.answer(f"🎉 မှန်ကန်ပါသည်။ +{coins_won} Coins ရရှိပါသည်!", show_alert=True)
+        else:
+            await query.answer("❌ အဖြေမှားနေပါသည် ထပ်မံကြိုးစားပါ။", show_alert=True)
+        return
+
+    if data.startswith("quiz_preview_"):
+        return await query.answer("ℹ️ This is a preview. Use /send to broadcast to groups.", show_alert=True)
 
     if data == "menu_help":
         help_text = """📖 <b>အကူအညီနှင့် လမ်းညွှန်ချက်များ (Help & Guidelines)</b>
@@ -3326,6 +3469,8 @@ def main():
 
     # Admin & Card Admin Commands
     app.add_handler(CommandHandler("game", manual_game_cmd))
+    app.add_handler(CommandHandler("q", q_cmd))
+    app.add_handler(CommandHandler("send", send_quiz_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("c", set_count_cmd))
