@@ -443,8 +443,8 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-# Quiz Commands (/q and /send) - Modified to use / separator and t/ prefix
-async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Quiz Commands (/aa and /send) - Updated to /aa with 3 option buttons and admin select buttons
+async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
     
@@ -460,39 +460,36 @@ async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     full_text = msg.text.partition(" ")[2].strip()
     if not full_text:
-        return await msg.reply_text("❌ Usage: `/q Question/Option1/Option2/t/CorrectOption`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂ / အဖြေ၃`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
-    parts = [p.strip() for p in full_text.split("/")]
-    if len(parts) < 3:
-        return await msg.reply_text("❌ Invalid format. Use: `/q Question/Opt1/Opt2/t/Correct`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+    if "/" in full_text:
+        parts = [p.strip() for p in full_text.split("/")]
+    else:
+        parts = [p.strip() for p in full_text.split(".")]
+
+    if len(parts) < 4:
+        return await msg.reply_text("❌ အနည်းဆုံး မေးခွန်း ၁ ခုနှင့် အဖြေ ၃ ခု ထည့်ပေးရပါမည်။ ဥပမာ: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂ / အဖြေ၃`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     question = parts[0]
-    options = []
-    correct_ans = None
+    options = parts[1:4] # အဖြေ ၃ ခု
 
-    for p in parts[1:]:
-        if p.lower().startswith("t/") or p.lower().startswith("t."):
-            correct_ans = p[2:].strip()
-            options.append(correct_ans)
-        else:
-            options.append(p)
-
-    if not correct_ans:
-        return await msg.reply_text("❌ Correct answer (marked with t/) is missing.", reply_to_message_id=msg.message_id)
-
-    random.shuffle(options)
-
-    preview_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{question}</b>"
+    preview_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{question}</b>\n\n<i>👇 ကျေးဇူးပြု၍ အောက်ပါခလုတ်များမှ အဖြေမှန်ကို ရွေးချယ်ပေးပါ -</i>"
+    
     keyboard = []
     for idx, opt in enumerate(options):
-        keyboard.append([InlineKeyboardButton(opt, callback_data=f"quiz_preview_{idx}")])
+        keyboard.append([InlineKeyboardButton(f"📌 {opt}", callback_data="aa_noop")])
+    
+    select_row = []
+    for idx, opt in enumerate(options):
+        select_row.append(InlineKeyboardButton(f"✅ အဖြေမှန် ({idx+1})", callback_data=f"aa_sel_{idx}"))
+    keyboard.append(select_row)
 
     sent = await msg.reply_text(preview_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard), reply_to_message_id=msg.message_id)
     
     pending_quizzes[sent.message_id] = {
         "question": question,
         "options": options,
-        "correct": correct_ans
+        "correct": None
     }
 
 async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -514,6 +511,8 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text("❌ Please reply to the quiz preview message with `/send`.", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     quiz_data = pending_quizzes[reply.message_id]
+    if not quiz_data.get('correct'):
+        return await msg.reply_text("❌ ကျေးဇူးပြု၍ Quiz ပုံစံတွင် အဖြေမှန်ကို အရင်ဆုံး inline button နှိပ်၍ ရွေးချယ်ပေးပါ။", reply_to_message_id=msg.message_id)
 
     async with db_pool.acquire() as conn:
         groups = await conn.fetch("SELECT chat_id FROM groups")
@@ -755,8 +754,8 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 <b>List:</b>
 1. /game - Start game manually
-2. /q - Create trivia quiz
-3. /send - Broadcast quiz to groups (reply to /q)
+2. /aa - Create trivia quiz
+3. /send - Broadcast quiz to groups (reply to /aa)
 4. /c [count] or /c [gpid] [count] - Set threshold
 5. /crest - Reset all thresholds & message counts
 6. /cbox [amount] - Send Coin Box
@@ -2753,6 +2752,38 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
+    if data == "aa_noop":
+        return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
+
+    if data.startswith("aa_sel_"):
+        idx = int(data.split("_")[2])
+        quiz = pending_quizzes.get(msg_id)
+        if not quiz:
+            return await query.answer("❌ Quiz preview မရှိတော့ပါ သို့မဟုတ် သက်တမ်းကုန်သွားပါပြီ။", show_alert=True)
+        
+        quiz["correct"] = quiz["options"][idx]
+        correct_opt = quiz["correct"]
+        
+        updated_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{quiz['question']}</b>\n\n✅ <b>အဖြေမှန်ရွေးချယ်ပြီးပါပြီ:</b> <code>{correct_opt}</code>\n\n<i>ယခု `/send` ဖြင့် group များသို့ ပို့နိုင်ပါပြီ။</i>"
+        
+        keyboard = []
+        for o_idx, opt in enumerate(quiz["options"]):
+            prefix = "⭐" if opt == correct_opt else "📌"
+            keyboard.append([InlineKeyboardButton(f"{prefix} {opt}", callback_data="aa_noop")])
+        
+        select_row = []
+        for o_idx, opt in enumerate(quiz["options"]):
+            btn_text = f"✅ ရွေးပြီး ({o_idx+1})" if opt == correct_opt else f"အဖြေမှန် ({o_idx+1})"
+            select_row.append(InlineKeyboardButton(btn_text, callback_data=f"aa_sel_{o_idx}"))
+        keyboard.append(select_row)
+
+        try:
+            await query.edit_message_text(updated_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            pass
+        await query.answer(f"✅ အဖြေမှန်အဖြစ် '{correct_opt}' ကို သတ်မှတ်ပြီးပါပြီ။", show_alert=True)
+        return
+
     if data.startswith("ans_"):
         parts = data.split("_")
         quiz_uuid = parts[1]
@@ -2799,7 +2830,7 @@ CHECK /kc Use Coin /kbox"""
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
 - /kgtop - Group Leaderboard ကို ကြည့်ရန်။
 - /popular - Popular အဖွဲ့ဝင်များ၏ ပရိုဖိုင်ကို ကြည့်ရန်။
-- /ksell [amount] - GemStones များကို Kachi Coins ဖြင့် ရောင်းချရန်።
+- /ksell [amount] - GemStones များကို Kachi Coins ဖြင့် ရောင်းချရန်။
 - /vote - Popular ပရိုဖိုင်တွင် စာရင်းသွင်းရန်နှင့် မဲပေးရန်။
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
 - /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
@@ -3469,7 +3500,7 @@ def main():
 
     # Admin & Card Admin Commands
     app.add_handler(CommandHandler("game", manual_game_cmd))
-    app.add_handler(CommandHandler("q", q_cmd))
+    app.add_handler(CommandHandler("aa", aa_cmd))
     app.add_handler(CommandHandler("send", send_quiz_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
