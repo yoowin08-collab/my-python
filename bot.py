@@ -2430,6 +2430,14 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     except Exception:
         pass
 
+    # 🐸 animation for 4 seconds before showing result
+    anim_msg = await context.bot.send_message(chat_id, "🐸")
+    await asyncio.sleep(4)
+    try:
+        await context.bot.delete_message(chat_id, anim_msg.message_id)
+    except Exception:
+        pass
+
     if joined:
         winner_id, winner_name = random.choice(list(joined.items()))
         async with db_pool.acquire() as conn:
@@ -2442,13 +2450,17 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
         win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
         
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{winner_id}")]
+        ])
+
         try:
             if card['type'] == 'photo':
-                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML")
+                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
             else:
-                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML")
+                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
         except Exception:
-            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
+            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML", reply_markup=keyboard)
     else:
         win_msg = f"❌ Card drop for <b>{card['name']}</b> cancelled as no one joined."
         try:
