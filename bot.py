@@ -443,7 +443,47 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-# Quiz Commands (/aa and /send) - Updated to /aa with 3 option buttons and admin select buttons
+# Quiz Timer Task for Live Countdown
+async def run_quiz_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, quiz_id: str):
+    while msg_id in active_quizzes:
+        quiz = active_quizzes[msg_id]
+        if quiz.get("solved", False):
+            break
+        if quiz["time_left"] <= 0:
+            quiz["solved"] = True
+            expired_text = f"⏰ <b>အချိန်ပြည့်သွားပါပီ!</b>\n\n❓ <b>{quiz['question']}</b>\n\n✅ <b>အဖြေမှန်:</b> <code>{quiz['correct']}</code>"
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=expired_text,
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            break
+
+        text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz['question']}</b>\n\n⏱️ Time Left: <b>{quiz['time_left']}</b> sec"
+        keyboard = []
+        for idx, opt in enumerate(quiz['options']):
+            keyboard.append([InlineKeyboardButton(opt, callback_data=f"ans_{quiz_id}_{idx}")])
+
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception:
+            pass
+
+        await asyncio.sleep(1)
+        quiz["time_left"] -= 1
+
+# Quiz Commands (/aa and /send) - Updated with flexible options & 30s live timer
 async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -460,18 +500,18 @@ async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     full_text = msg.text.partition(" ")[2].strip()
     if not full_text:
-        return await msg.reply_text("❌ Usage: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂ / အဖြေ၃`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂ / အဖြေ၃ ...`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     if "/" in full_text:
         parts = [p.strip() for p in full_text.split("/")]
     else:
         parts = [p.strip() for p in full_text.split(".")]
 
-    if len(parts) < 4:
-        return await msg.reply_text("❌ အနည်းဆုံး မေးခွန်း ၁ ခုနှင့် အဖြေ ၃ ခု ထည့်ပေးရပါမည်။ ဥပမာ: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂ / အဖြေ၃`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+    if len(parts) < 3:
+        return await msg.reply_text("❌ အနည်းဆုံး မေးခွန်း ၁ ခုနှင့် အဖြေ ၂ ခု ထည့်ပေးရပါမည်။ ဥပမာ: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     question = parts[0]
-    options = parts[1:4] # အဖြေ ၃ ခု
+    options = parts[1:] # အဖြေများကို ကြိုက်သလောက် ယူမည်
 
     preview_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{question}</b>\n\n<i>👇 ကျေးဇူးပြု၍ အောက်ပါခလုတ်များမှ အဖြေမှန်ကို ရွေးချယ်ပေးပါ -</i>"
     
@@ -518,15 +558,23 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         groups = await conn.fetch("SELECT chat_id FROM groups")
 
     quiz_id = str(uuid.uuid4())[:8]
-    quiz_text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz_data['question']}</b>"
 
     success_count = 0
     for g in groups:
         chat_id = g['chat_id']
         try:
+            member_count = await context.bot.get_chat_member_count(chat_id)
+            if member_count <= 30:
+                continue
+        except Exception:
+            continue
+
+        try:
             keyboard = []
             for idx, opt in enumerate(quiz_data['options']):
                 keyboard.append([InlineKeyboardButton(opt, callback_data=f"ans_{quiz_id}_{idx}")])
+
+            quiz_text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz_data['question']}</b>\n\n⏱️ Time Left: <b>30</b> sec"
 
             sent_quiz = await context.bot.send_message(
                 chat_id=chat_id,
@@ -540,13 +588,15 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "question": quiz_data['question'],
                 "options": quiz_data['options'],
                 "correct": quiz_data['correct'],
+                "time_left": 30,
                 "solved": False
             }
+            asyncio.create_task(run_quiz_timer(context, chat_id, sent_quiz.message_id, quiz_id))
             success_count += 1
         except Exception:
             pass
 
-    await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups successfully!", reply_to_message_id=msg.message_id)
+    await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups (members > 30) successfully!", reply_to_message_id=msg.message_id)
 
 # Coin Box Command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
