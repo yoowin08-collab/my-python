@@ -443,7 +443,7 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-# Quiz Commands (/q and /send)
+# Quiz Commands (/q and /send) - Modified to use / separator and t/ prefix
 async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -460,25 +460,25 @@ async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     full_text = msg.text.partition(" ")[2].strip()
     if not full_text:
-        return await msg.reply_text("❌ Usage: `/q Question. Option1. Option2. t.CorrectOption`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/q Question/Option1/Option2/t/CorrectOption`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
-    parts = [p.strip() for p in full_text.split(".")]
+    parts = [p.strip() for p in full_text.split("/")]
     if len(parts) < 3:
-        return await msg.reply_text("❌ Invalid format. Use: `/q Question. Opt1. Opt2. t.Correct`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Invalid format. Use: `/q Question/Opt1/Opt2/t/Correct`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     question = parts[0]
     options = []
     correct_ans = None
 
     for p in parts[1:]:
-        if p.lower().startswith("t."):
+        if p.lower().startswith("t/") or p.lower().startswith("t."):
             correct_ans = p[2:].strip()
             options.append(correct_ans)
         else:
             options.append(p)
 
     if not correct_ans:
-        return await msg.reply_text("❌ Correct answer (marked with t.) is missing.", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Correct answer (marked with t/) is missing.", reply_to_message_id=msg.message_id)
 
     random.shuffle(options)
 
@@ -2799,7 +2799,7 @@ CHECK /kc Use Coin /kbox"""
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
 - /kgtop - Group Leaderboard ကို ကြည့်ရန်။
 - /popular - Popular အဖွဲ့ဝင်များ၏ ပရိုဖိုင်ကို ကြည့်ရန်။
-- /ksell [amount] - GemStones များကို Kachi Coins ဖြင့် ရောင်းချရန်။
+- /ksell [amount] - GemStones များကို Kachi Coins ဖြင့် ရောင်းချရန်።
 - /vote - Popular ပရိုဖိုင်တွင် စာရင်းသွင်းရန်နှင့် မဲပေးရန်။
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
 - /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
