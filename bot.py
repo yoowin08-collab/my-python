@@ -385,7 +385,6 @@ async def get_weighted_random_card(conn):
     cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id != 'gemstone'")
     if not cards:
         return None
-    # All rarities equal weight (random choice from all cards)
     return random.choice(cards)
 
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -1220,7 +1219,6 @@ async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_names": {},
         "time_left": 60,
         "group_messages": {}, # chat_id -> message_id
-        "page": 0,
         "ended": False
     }
     active_games[game_id] = game_state
@@ -1232,8 +1230,8 @@ async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for g in groups:
         chat_id = g['chat_id']
         try:
-            caption, total_pages = build_game_ui(game_state, 0)
-            markup = build_game_buttons(game_state, game_id, total_pages)
+            caption = build_game_ui(game_state)
+            markup = build_game_buttons(game_state, game_id)
             if game_media:
                 if game_media["type"] == "photo":
                     sent_msg = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
@@ -2627,28 +2625,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Error in group message handler: {e}")
 
-# UI & Buttons with Pagination for participants
-def build_game_ui(game, page=0):
-    per_page = 5
-    all_uids = list(game["bets"].keys())
-    total = len(all_uids)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = max(0, min(page, total_pages - 1))
-    game["page"] = page
+# UI & Buttons with Comma-separated participant lists (No Pagination)
+def build_game_ui(game):
+    home_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "home"]
+    away_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "away"]
+    draw_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "draw"]
 
-    slice_uids = all_uids[page * per_page : (page + 1) * per_page]
+    home_str = ", ".join(home_list) if home_list else "—"
+    away_str = ", ".join(away_list) if away_list else "—"
+    draw_str = ", ".join(draw_list) if draw_list else "—"
 
-    home_list = [game["user_names"][uid] for uid in slice_uids if game["bets"][uid] == "home"]
-    away_list = [game["user_names"][uid] for uid in slice_uids if game["bets"][uid] == "away"]
-    draw_list = [game["user_names"][uid] for uid in slice_uids if game["bets"][uid] == "draw"]
-
-    home_str = "\n".join(home_list) if home_list else "—"
-    away_str = "\n".join(away_list) if away_list else "—"
-    draw_str = "\n".join(draw_list) if draw_list else "—"
-
-    page_info = f" (Page {page+1}/{total_pages})" if total_pages > 1 else ""
-
-    return f"""⚽  <b>Choose For Win</b> 🍀{page_info}
+    return f"""⚽  <b>Choose For Win</b> 🍀
 
 🏖️ <b>{game['home']['emoji']} {game['home']['name']}</b> vs <b>{game['away']['emoji']} {game['away']['name']}</b> ⛵
 
@@ -2657,35 +2644,25 @@ def build_game_ui(game, page=0):
 
 🧩 <b>Live Betting List</b> 
 
-♠ <b>{game['home']['name']}</b>
+♠ <b>{game['home']['name']}:</b>
 {home_str}
 
-♥ <b>{game['away']['name']}</b>
+♥ <b>{game['away']['name']}:</b>
 {away_str}
 
-♦️ <b>Draw</b>
+♦️ <b>Draw:</b>
 {draw_str}
 
-GoodLuck G_Y ☘️""", total_pages
+GoodLuck G_Y ☘️"""
 
-def build_game_buttons(game, game_id, total_pages=1):
-    buttons = [
+def build_game_buttons(game, game_id):
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"{game['home']['emoji']} {game['home']['name']}", callback_data=f"bet_{game_id}_home"),
             InlineKeyboardButton(f"{game['away']['emoji']} {game['away']['name']}", callback_data=f"bet_{game_id}_away"),
         ],
         [InlineKeyboardButton("🤝 Draw", callback_data=f"bet_{game_id}_draw")],
-    ]
-    if total_pages > 1:
-        nav = []
-        page = game.get("page", 0)
-        if page > 0:
-            nav.append(InlineKeyboardButton("◀️ Back", callback_data=f"gpage_{game_id}_{page-1}"))
-        if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"gpage_{game_id}_{page+1}"))
-        if nav:
-            buttons.append(nav)
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 def get_leaderboard_buttons():
     return InlineKeyboardMarkup([
@@ -2984,7 +2961,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     if msg_id in active_card_drops:
         del active_card_drops[msg_id]
 
-# Group Game Loop & Broadcast Runner
+# Group Game Loop & Broadcast Runner (Optimized with asyncio.gather for smooth performance)
 async def run_group_game_loop(context: ContextTypes.DEFAULT_TYPE, game_id: str):
     game_state = active_games.get(game_id)
     if not game_state:
@@ -2994,16 +2971,21 @@ async def run_group_game_loop(context: ContextTypes.DEFAULT_TYPE, game_id: str):
         await asyncio.sleep(5)
         game_state["time_left"] -= 5
         
-        for chat_id, msg_id in list(game_state["group_messages"].items()):
+        caption = build_game_ui(game_state)
+        markup = build_game_buttons(game_state, game_id)
+
+        async def update_group(chat_id, msg_id):
             try:
-                caption, total_pages = build_game_ui(game_state, game_state["page"])
-                markup = build_game_buttons(game_state, game_id, total_pages)
                 if game_media:
                     await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=caption, parse_mode="HTML", reply_markup=markup)
                 else:
                     await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=caption, parse_mode="HTML", reply_markup=markup)
             except Exception:
                 pass
+
+        tasks = [update_group(cid, mid) for cid, mid in list(game_state["group_messages"].items())]
+        if tasks:
+            await asyncio.gather(*tasks)
 
     game_state["ended"] = True
 
@@ -3806,38 +3788,21 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         game["user_names"][user.id] = get_mention(user.id, user.first_name)
         await query.answer("✅ Bet placed!")
 
-        for cid, mid in game["group_messages"].items():
+        caption = build_game_ui(game)
+        markup = build_game_buttons(game, game_id)
+
+        async def update_group(cid, mid):
             try:
-                caption, total_pages = build_game_ui(game, game["page"])
-                markup = build_game_buttons(game, game_id, total_pages)
                 if game_media:
                     await context.bot.edit_message_caption(chat_id=cid, message_id=mid, caption=caption, parse_mode="HTML", reply_markup=markup)
                 else:
                     await context.bot.edit_message_text(chat_id=cid, message_id=mid, text=caption, parse_mode="HTML", reply_markup=markup)
             except Exception:
                 pass
-        return
 
-    if data.startswith("gpage_"):
-        parts = data.split("_")
-        game_id = parts[1]
-        page = int(parts[2])
-        game = active_games.get(game_id)
-        if not game or game["ended"]:
-            return await query.answer("❌ This game has ended.", show_alert=True)
-
-        game["page"] = page
-        await query.answer()
-
-        try:
-            caption, total_pages = build_game_ui(game, page)
-            markup = build_game_buttons(game, game_id, total_pages)
-            if game_media:
-                await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=markup)
-            else:
-                await query.edit_message_text(text=caption, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            pass
+        tasks = [update_group(cid, mid) for cid, mid in list(game["group_messages"].items())]
+        if tasks:
+            await asyncio.gather(*tasks)
         return
 
     if data == "lb_back":
