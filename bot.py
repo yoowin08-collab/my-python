@@ -120,7 +120,7 @@ active_quizzes = {}
 last_game_times = {}
 game_media = None
 result_media = None
-global_default_threshold = 10
+global_default_threshold = 70
 bot_warned_groups = set()
 
 # Anti-Spam Tracking Stores
@@ -158,7 +158,7 @@ async def init_db():
                 title TEXT,
                 added_by_id BIGINT,
                 added_by_name TEXT,
-                threshold INT DEFAULT 10,
+                threshold INT DEFAULT 70,
                 msg_count INT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS group_members (
@@ -219,7 +219,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 10;")
+            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 70;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
@@ -825,7 +825,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. /game - Start game manually
 2. /aa - Create trivia quiz
 3. /send - Broadcast quiz to groups (reply to /aa)
-4. /c [count] or /c [gpid] [count] - Set threshold
+4. /c [gpid] [count] - Set threshold for a specific group
 5. /crest - Reset all thresholds & message counts
 6. /cbox [amount] - Send Coin Box
 7. /k [user_id] [amount] - Add/remove coins
@@ -1075,13 +1075,13 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global group_threshold, global_default_threshold
     group_threshold.clear()
-    global_default_threshold = 10
+    global_default_threshold = 70
 
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE groups SET threshold = 10, msg_count = 0")
+        await conn.execute("UPDATE groups SET threshold = 70, msg_count = 0")
         await conn.execute("DELETE FROM settings WHERE key = 'default_threshold'")
 
-    await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (10). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
+    await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (70). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /ktop Command
 @restricted_command
@@ -1458,57 +1458,40 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ You left <b>{team['team_name']}</b> team.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /c Command
+# /c [gpid] [count] Command
 @restricted_command
 async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global global_default_threshold
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
         return
 
-    if not context.args:
+    if len(context.args) < 2:
         return await update.message.reply_text(
-            "❌ Usage:\n• Global: `/c [count]`\n• Group specific: `/c [gpid] [count]`",
+            "❌ Usage: `/c [gpid] [count]`",
             parse_mode="Markdown",
             reply_to_message_id=msg_id
         )
 
     try:
-        if len(context.args) == 1:
-            count = int(context.args[0])
-            global_default_threshold = count
+        target_chat_id = int(context.args[0])
+        count = int(context.args[1])
 
-            async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO settings (key, value) VALUES ('default_threshold', $1)
-                    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-                """, str(count))
+        group_threshold[target_chat_id] = count
 
-            await update.message.reply_text(
-                f"✅ Global default threshold set to **{count}**.",
-                parse_mode="Markdown",
-                reply_to_message_id=msg_id
-            )
-        elif len(context.args) >= 2:
-            target_chat_id = int(context.args[0])
-            count = int(context.args[1])
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO groups (chat_id, threshold) VALUES ($1, $2)
+                ON CONFLICT(chat_id) DO UPDATE SET threshold = EXCLUDED.threshold
+            """, target_chat_id, count)
 
-            group_threshold[target_chat_id] = count
-
-            async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO groups (chat_id, threshold) VALUES ($1, $2)
-                    ON CONFLICT(chat_id) DO UPDATE SET threshold = EXCLUDED.threshold
-                """, target_chat_id, count)
-
-            await update.message.reply_text(
-                f"✅ Group ID <code>{target_chat_id}</code> threshold set to **{count}**.",
-                parse_mode="HTML",
-                reply_to_message_id=msg_id
-            )
+        await update.message.reply_text(
+            f"✅ Group ID <code>{target_chat_id}</code> threshold set to **{count}**.",
+            parse_mode="HTML",
+            reply_to_message_id=msg_id
+        )
     except ValueError:
         await update.message.reply_text(
-            "❌ Invalid number format.",
+            "❌ Invalid number format. Usage: `/c [gpid] [count]`",
             parse_mode="Markdown",
             reply_to_message_id=msg_id
         )
@@ -2467,7 +2450,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (with Anti-Spam & Ignore logic)
+# Message Handler (with Anti-Spam & Ignore logic - modified to warn only once)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -2540,14 +2523,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = time.time()
         key = (chat_id, user.id)
 
-        # Check if user is under 10-minute spam ignore period
+        # Check if user is under 10-minute spam ignore period (silently ignore without repeated warnings)
         if key in spam_ignores and spam_ignores[key] > now:
-            warning_text = f"{get_mention(user.id, user.first_name)} 10minutes ignore please don't spam like that again ⛩"
-            try:
-                await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-            except Exception:
-                pass
-            return  # Do not count message or process further
+            return
 
         # Anti-spam check (4 messages in 5 seconds)
         if key not in user_message_timestamps:
