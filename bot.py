@@ -784,14 +784,15 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 15. /g or /r - Set Game/Result media
 16. /stats - View stats
 17. /broadcast - Broadcast message
-18. /mute [id] [time] [reason] - Mute user
-19. /ban [id] [reason] - Ban user
-20. /umute [id] - Unmute user
-21. /unban [id] - Unban user"""
+18. /check [user_id] - Check user profile info
+19. /mute [id] [time] [reason] - Mute user (Admin only)
+20. /ban [id] [reason] - Ban user (Admin only)
+21. /umute [id] - Unmute user (Admin only)
+22. /unban [id] - Unban user (Admin only)"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# New Moderation Helper & Commands (/mute, /ban, /umute, /unban)
+# Moderation Commands (/mute, /ban, /umute, /unban) - Restricted strictly to ADMIN_ID
 def parse_time(time_str: str) -> int:
     time_str = time_str.lower().strip()
     mult = 1
@@ -812,24 +813,14 @@ def parse_time(time_str: str) -> int:
     except ValueError:
         return 60
 
-async def is_user_admin(chat_id, user_id, context):
-    if user_id == ADMIN_ID:
-        return True
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        return member.status in ["administrator", "creator"]
-    except Exception:
-        return False
-
 async def mute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.message
+    if user.id != ADMIN_ID:
+        return
     if not chat or chat.type not in ["group", "supergroup"]:
         return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
-
-    if not await is_user_admin(chat.id, user.id, context):
-        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
 
     if len(context.args) < 2:
         return await msg.reply_text("❌ Usage: `/mute [user_id] [time] [reason]`\nဥပမာ: `/mute 817378 2m spamလုပ်လို့`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -863,11 +854,10 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.message
+    if user.id != ADMIN_ID:
+        return
     if not chat or chat.type not in ["group", "supergroup"]:
         return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
-
-    if not await is_user_admin(chat.id, user.id, context):
-        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
 
     if not context.args:
         return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -892,11 +882,10 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.message
+    if user.id != ADMIN_ID:
+        return
     if not chat or chat.type not in ["group", "supergroup"]:
         return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
-
-    if not await is_user_admin(chat.id, user.id, context):
-        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
 
     if not context.args:
         return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -929,11 +918,10 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.message
+    if user.id != ADMIN_ID:
+        return
     if not chat or chat.type not in ["group", "supergroup"]:
         return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
-
-    if not await is_user_admin(chat.id, user.id, context):
-        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
 
     if not context.args:
         return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -952,6 +940,93 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await msg.reply_text(f"❌ Failed to unban user: {e}", reply_to_message_id=msg.message_id)
+
+# /check [user_id] Command (Admin Only)
+async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    if user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT coins, selected_card_id, name, vote_tickets FROM users WHERE user_id = $1", target_id)
+        if not user_row:
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+
+        coins = user_row['coins'] or 0
+        tickets = user_row['vote_tickets'] or 0
+        selected_card_id = user_row['selected_card_id']
+        db_name = user_row['name'] or "User"
+
+        rank_row = await conn.fetchrow("SELECT COUNT(*) + 1 AS rank FROM users WHERE coins > $1", coins)
+        rank = rank_row['rank']
+
+        gem_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", target_id)
+        gem_count = gem_row['amount'] if gem_row else 0
+
+        user_card_rows = await conn.fetch("""
+            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
+            FROM user_cards uc 
+            JOIN cards c ON uc.card_id = c.card_id 
+            WHERE uc.user_id = $1 AND uc.amount > 0 AND c.card_id != 'gemstone'
+            ORDER BY c.card_id ASC
+        """, target_id)
+
+    username_str = "None"
+    try:
+        chat_obj = await context.bot.get_chat(target_id)
+        if chat_obj.username:
+            username_str = f"@{chat_obj.username}"
+        if chat_obj.first_name:
+            db_name = chat_obj.first_name
+    except Exception:
+        pass
+
+    text_header = f"""❀ Name - {get_mention(target_id, db_name)}
+🏷 Username - {username_str}
+⬤ ID - <code>{target_id}</code>
+🩸 Kachi Coin - <b>{coins}</b>
+💎 GemStone - <b>{gem_count}</b>
+🎟 Vote Tickets - <b>{tickets}</b>
+
+❀ Global Rank - #{rank}"""
+
+    cards_info_list = []
+    for c in user_card_rows[:5]:
+        count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
+        rarity_emoji = "🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮"))
+        cards_info_list.append(f"{rarity_emoji} {c['name']} ( <code>{c['card_id']}</code> ){count_str}")
+
+    cards_info = "\n".join(cards_info_list) if cards_info_list else "<i>No cards yet.</i>"
+    full_text = f"{text_header}\n\n❄ <b>Owned Cards</b>\n\n{cards_info}"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{target_id}")]
+    ])
+
+    active_card = None
+    if selected_card_id:
+        active_card = next((c for c in user_card_rows if c['card_id'] == selected_card_id), None)
+    if not active_card and user_card_rows:
+        active_card = user_card_rows[-1]
+
+    try:
+        if active_card and active_card['type'] == 'photo':
+            await msg.reply_photo(photo=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+        elif active_card and active_card['type'] == 'video':
+            await msg.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+        else:
+            await msg.reply_text(full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+    except Exception:
+        await msg.reply_text(full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
 
 # /crest Command
 async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3774,8 +3849,9 @@ def main():
     app.add_handler(CommandHandler("delteam", delteam_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
+    app.add_handler(CommandHandler("check", check_user_cmd))
 
-    # Moderation Commands (/mute, /ban, /umute, /unban)
+    # Moderation Commands (/mute, /ban, /umute, /unban) - Admin Only
     app.add_handler(CommandHandler("mute", mute_cmd))
     app.add_handler(CommandHandler("ban", ban_cmd))
     app.add_handler(CommandHandler("umute", umute_cmd))
