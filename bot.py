@@ -443,47 +443,7 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-# Quiz Timer Task for Live Countdown
-async def run_quiz_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, quiz_id: str):
-    while msg_id in active_quizzes:
-        quiz = active_quizzes[msg_id]
-        if quiz.get("solved", False):
-            break
-        if quiz["time_left"] <= 0:
-            quiz["solved"] = True
-            expired_text = f"⏰ <b>အချိန်ပြည့်သွားပါပီ!</b>\n\n❓ <b>{quiz['question']}</b>\n\n✅ <b>အဖြေမှန်:</b> <code>{quiz['correct']}</code>"
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    text=expired_text,
-                    parse_mode="HTML",
-                    reply_markup=None
-                )
-            except Exception:
-                pass
-            break
-
-        text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz['question']}</b>\n\n⏱️ Time Left: <b>{quiz['time_left']}</b> sec"
-        keyboard = []
-        for idx, opt in enumerate(quiz['options']):
-            keyboard.append([InlineKeyboardButton(opt, callback_data=f"ans_{quiz_id}_{idx}")])
-
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=msg_id,
-                text=text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except Exception:
-            pass
-
-        await asyncio.sleep(1)
-        quiz["time_left"] -= 1
-
-# Quiz Commands (/aa and /send) - Updated with flexible options & 30s live timer
+# Quiz Commands (/aa and /send) - Updated: 30s timer removed, single attempt & 2 wrong limit added
 async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -511,7 +471,7 @@ async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text("❌ အနည်းဆုံး မေးခွန်း ၁ ခုနှင့် အဖြေ ၂ ခု ထည့်ပေးရပါမည်။ ဥပမာ: `/aa မေးခွန်း / အဖြေ၁ / အဖြေ၂`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     question = parts[0]
-    options = parts[1:] # အဖြေများကို ကြိုက်သလောက် ယူမည်
+    options = parts[1:]
 
     preview_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{question}</b>\n\n<i>👇 ကျေးဇူးပြု၍ အောက်ပါခလုတ်များမှ အဖြေမှန်ကို ရွေးချယ်ပေးပါ -</i>"
     
@@ -574,7 +534,7 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for idx, opt in enumerate(quiz_data['options']):
                 keyboard.append([InlineKeyboardButton(opt, callback_data=f"ans_{quiz_id}_{idx}")])
 
-            quiz_text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz_data['question']}</b>\n\n⏱️ Time Left: <b>30</b> sec"
+            quiz_text = f"❓ <b>Kachi Trivia Quiz</b>\n\n<b>{quiz_data['question']}</b>"
 
             sent_quiz = await context.bot.send_message(
                 chat_id=chat_id,
@@ -588,10 +548,10 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "question": quiz_data['question'],
                 "options": quiz_data['options'],
                 "correct": quiz_data['correct'],
-                "time_left": 30,
-                "solved": False
+                "solved": False,
+                "answered_users": set(),
+                "wrong_users": set()
             }
-            asyncio.create_task(run_quiz_timer(context, chat_id, sent_quiz.message_id, quiz_id))
             success_count += 1
         except Exception:
             pass
@@ -2843,6 +2803,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not quiz or quiz["solved"]:
             return await query.answer("❌ အဖြေမှန်ကို အခြားသူ ဖြေဆိုပြီးပါပြီ (သို့မဟုတ်) Quiz ပြီးဆုံးသွားပါပြီ။", show_alert=True)
 
+        if user.id in quiz["answered_users"]:
+            return await query.answer("❌ သင် ဖြေဆိုပြီးဖြစ်ပါသည်။ တစ်ဦးလျှင် တစ်ကြိမ်သာ ဖြေဆိုခွင့်ရှိသည်။", show_alert=True)
+
         chosen_opt = quiz["options"][chosen_idx]
         if chosen_opt == quiz["correct"]:
             quiz["solved"] = True
@@ -2863,7 +2826,25 @@ CHECK /kc Use Coin /kbox"""
                 pass
             await query.answer(f"🎉 မှန်ကန်ပါသည်။ +{coins_won} Coins ရရှိပါသည်!", show_alert=True)
         else:
-            await query.answer("❌ အဖြေမှားနေပါသည် ထပ်မံကြိုးစားပါ။", show_alert=True)
+            quiz["answered_users"].add(user.id)
+            quiz["wrong_users"].add(user.id)
+
+            if len(quiz["wrong_users"]) >= 2:
+                quiz["solved"] = True
+                expired_text = f"❌ <b>မှားဖြေခွင့်ကုန်သွားပါပြီ!</b>\n\n❓ <b>{quiz['question']}</b>\n\n✅ <b>အဖြေမှန်:</b> <code>{quiz['correct']}</code>"
+                try:
+                    await query.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=expired_text,
+                        parse_mode="HTML",
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
+                await query.answer("❌ မှားဖြေခွင့်ကုန်သွားပါပြီ။", show_alert=True)
+            else:
+                await query.answer("❌ အဖြေမှားနေပါသည်!", show_alert=True)
         return
 
     if data.startswith("quiz_preview_"):
