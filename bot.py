@@ -107,7 +107,8 @@ TEAMS = [
 
 # Global Memory Stores
 group_threshold = {}
-active_games = {}
+active_games = {}       # game_id -> game_state
+dm_game_previews = {}   # message_id -> game_info
 last_results = {}
 active_cboxes = {}
 pending_gifts = {}
@@ -384,22 +385,8 @@ async def get_weighted_random_card(conn):
     cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id != 'gemstone'")
     if not cards:
         return None
-    
-    weights = []
-    for c in cards:
-        r = c.get('rarity', 'Ten')
-        if r == 'Kiwami':
-            weights.append(1)
-        elif r == 'Kami':
-            weights.append(3)
-        elif r == 'Hoshi':
-            weights.append(15)
-        elif r == 'Ten':
-            weights.append(30)
-        else:
-            weights.append(15)
-            
-    return random.choices(cards, weights=weights, k=1)[0]
+    # All rarities equal weight (random choice from all cards)
+    return random.choice(cards)
 
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
@@ -676,7 +663,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
 - Bot ကို Group ထဲသို့ ထည့်ပါ။
 - Group ထဲတွင် စာပေးပို့ပါ (သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်ပါက ကတ်များ အလိုအလျောက် ကျလာပါမည်)။
-- Admin များအနေဖြင့် ဘောလုံးပွဲစဉ်များ စတင်ရန် /game ကို အသုံးပြုနိုင်ပါသည်။
 - ဦးဆောင်သူစာရင်းများကို ကြည့်ရန် /ktop နှင့် /popular ကို အသုံးပြုပါ။"""
 
     keyboard = InlineKeyboardMarkup([
@@ -822,7 +808,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = """⚡ <b>Admin Commands</b>
 
 👑 <b>List:</b>
-1. /game - Start game manually
+1. /game - Start game preview in Bot DM (Reply with /play to broadcast to all groups)
 2. /aa - Create trivia quiz
 3. /send - Broadcast quiz to groups (reply to /aa)
 4. /c [gpid] [count] - Set threshold for a specific group
@@ -1190,44 +1176,78 @@ async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /game Command with 5 minutes cooldown
+# Admin DM /game and /play Commands
 @restricted_command
-async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
+async def game_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    chat = update.effective_chat
-    chat_id = chat.id
+    msg = update.message
+    if user.id != ADMIN_ID or update.effective_chat.type != "private":
+        return await msg.reply_text("❌ This command can only be used by the Bot Admin in DM.", reply_to_message_id=msg.message_id)
 
-    is_allowed = (user.id == ADMIN_ID)
-    if not is_allowed and chat.type in ["group", "supergroup"]:
+    home_team, away_team = random.sample(TEAMS, 2)
+    preview_text = f"""⚽ <b>Game Preview Ready</b>
+
+🏖️ <b>{home_team['emoji']} {home_team['name']}</b> vs <b>{away_team['emoji']} {away_team['name']}</b>
+⛲ Stadium: {home_team['stadium']}
+
+<i>Reply to this message with <code>/play</code> to broadcast this game to all groups.</i>"""
+
+    sent = await msg.reply_text(preview_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+    dm_game_previews[sent.message_id] = {
+        "home": home_team,
+        "away": away_team
+    }
+
+@restricted_command
+async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    if user.id != ADMIN_ID or update.effective_chat.type != "private":
+        return
+
+    reply = msg.reply_to_message
+    if not reply or reply.message_id not in dm_game_previews:
+        return await msg.reply_text("❌ Please reply to the game preview message with `/play`.", reply_to_message_id=msg.message_id)
+
+    game_info = dm_game_previews.pop(reply.message_id)
+    game_id = str(uuid.uuid4())[:8]
+
+    game_state = {
+        "game_id": game_id,
+        "home": game_info["home"],
+        "away": game_info["away"],
+        "bets": {},
+        "user_names": {},
+        "time_left": 60,
+        "group_messages": {}, # chat_id -> message_id
+        "page": 0,
+        "ended": False
+    }
+    active_games[game_id] = game_state
+
+    async with db_pool.acquire() as conn:
+        groups = await conn.fetch("SELECT chat_id FROM groups")
+
+    success_count = 0
+    for g in groups:
+        chat_id = g['chat_id']
         try:
-            member = await context.bot.get_chat_member(chat_id, user.id)
-            if member.status in ["administrator", "creator"]:
-                is_allowed = True
+            caption, total_pages = build_game_ui(game_state, 0)
+            markup = build_game_buttons(game_state, game_id, total_pages)
+            if game_media:
+                if game_media["type"] == "photo":
+                    sent_msg = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
+                else:
+                    sent_msg = await context.bot.send_video(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
+            else:
+                sent_msg = await context.bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=markup)
+            game_state["group_messages"][chat_id] = sent_msg.message_id
+            success_count += 1
         except Exception:
             pass
 
-    if not is_allowed:
-        return await update.message.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg_id)
-
-    # 5 minutes cooldown check (300 seconds)
-    now = time.time()
-    last_time = last_game_times.get(chat_id, 0)
-    cooldown = 300
-    if now - last_time < cooldown and user.id != ADMIN_ID:
-        remaining = int(cooldown - (now - last_time))
-        mins = remaining // 60
-        secs = remaining % 60
-        return await update.message.reply_text(
-            f"❌ Please wait {mins}m {secs}s before starting another game (5-minute cooldown).",
-            reply_to_message_id=msg_id
-        )
-
-    if chat_id in active_games:
-        return await update.message.reply_text("❌ Previous game is still active.", reply_to_message_id=msg_id)
-    
-    last_game_times[chat_id] = now
-    asyncio.create_task(start_game(context, chat_id, is_admin_triggered=True))
+    await msg.reply_text(f"✅ Game broadcasted to {success_count} groups successfully!", reply_to_message_id=msg.message_id)
+    asyncio.create_task(run_group_game_loop(context, game_id))
 
 async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_to_msg_id=None):
     async with db_pool.acquire() as conn:
@@ -2450,7 +2470,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler (with Anti-Spam & Ignore logic - modified to warn only once)
+# Message Handler (with Anti-Spam & Ignore logic)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -2523,11 +2543,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = time.time()
         key = (chat_id, user.id)
 
-        # Check if user is under 10-minute spam ignore period (silently ignore without repeated warnings)
         if key in spam_ignores and spam_ignores[key] > now:
             return
 
-        # Anti-spam check (4 messages in 5 seconds)
         if key not in user_message_timestamps:
             user_message_timestamps[key] = []
         
@@ -2535,7 +2553,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_message_timestamps[key].append(now)
 
         if len(user_message_timestamps[key]) >= 4:
-            spam_ignores[key] = now + 600  # 10 minutes ignore
+            spam_ignores[key] = now + 600
             user_message_timestamps[key] = []
 
             warning_text = f"{get_mention(user.id, user.first_name)} 10minutes ignore please don't spam like that again ⛩"
@@ -2609,17 +2627,28 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Error in group message handler: {e}")
 
-# UI & Buttons
-def build_game_ui(game):
-    home_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "home"]
-    away_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "away"]
-    draw_list = [game["user_names"][uid] for uid, choice in game["bets"].items() if choice == "draw"]
+# UI & Buttons with Pagination for participants
+def build_game_ui(game, page=0):
+    per_page = 5
+    all_uids = list(game["bets"].keys())
+    total = len(all_uids)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    game["page"] = page
+
+    slice_uids = all_uids[page * per_page : (page + 1) * per_page]
+
+    home_list = [game["user_names"][uid] for uid in slice_uids if game["bets"][uid] == "home"]
+    away_list = [game["user_names"][uid] for uid in slice_uids if game["bets"][uid] == "away"]
+    draw_list = [game["user_names"][uid] for uid in slice_uids if game["bets"][uid] == "draw"]
 
     home_str = "\n".join(home_list) if home_list else "—"
     away_str = "\n".join(away_list) if away_list else "—"
     draw_str = "\n".join(draw_list) if draw_list else "—"
 
-    return f"""⚽  <b>Choose For Win</b> 🍀
+    page_info = f" (Page {page+1}/{total_pages})" if total_pages > 1 else ""
+
+    return f"""⚽  <b>Choose For Win</b> 🍀{page_info}
 
 🏖️ <b>{game['home']['emoji']} {game['home']['name']}</b> vs <b>{game['away']['emoji']} {game['away']['name']}</b> ⛵
 
@@ -2637,16 +2666,26 @@ def build_game_ui(game):
 ♦️ <b>Draw</b>
 {draw_str}
 
-GoodLuck G_Y ☘️"""
+GoodLuck G_Y ☘️""", total_pages
 
-def build_game_buttons(game):
-    return InlineKeyboardMarkup([
+def build_game_buttons(game, game_id, total_pages=1):
+    buttons = [
         [
-            InlineKeyboardButton(f"{game['home']['emoji']} {game['home']['name']}", callback_data="bet_home"),
-            InlineKeyboardButton(f"{game['away']['emoji']} {game['away']['name']}", callback_data="bet_away"),
+            InlineKeyboardButton(f"{game['home']['emoji']} {game['home']['name']}", callback_data=f"bet_{game_id}_home"),
+            InlineKeyboardButton(f"{game['away']['emoji']} {game['away']['name']}", callback_data=f"bet_{game_id}_away"),
         ],
-        [InlineKeyboardButton("🤝 Draw", callback_data="bet_draw")],
-    ])
+        [InlineKeyboardButton("🤝 Draw", callback_data=f"bet_{game_id}_draw")],
+    ]
+    if total_pages > 1:
+        nav = []
+        page = game.get("page", 0)
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀️ Back", callback_data=f"gpage_{game_id}_{page-1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"gpage_{game_id}_{page+1}"))
+        if nav:
+            buttons.append(nav)
+    return InlineKeyboardMarkup(buttons)
 
 def get_leaderboard_buttons():
     return InlineKeyboardMarkup([
@@ -2945,57 +2984,49 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     if msg_id in active_card_drops:
         del active_card_drops[msg_id]
 
-# Game Flow
-async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_triggered: bool = False):
-    home_team, away_team = random.sample(TEAMS, 2)
-    game_state = {
-        "home": home_team,
-        "away": away_team,
-        "bets": {},
-        "user_names": {},
-        "time_left": 60,
-        "msg_id": None,
-    }
-    active_games[chat_id] = game_state
-
-    caption = build_game_ui(game_state)
-    markup = build_game_buttons(game_state)
-
-    if game_media:
-        if game_media["type"] == "photo":
-            sent = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
-        else:
-            sent = await context.bot.send_video(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
-    else:
-        sent = await context.bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=markup)
-
-    game_state["msg_id"] = sent.message_id
+# Group Game Loop & Broadcast Runner
+async def run_group_game_loop(context: ContextTypes.DEFAULT_TYPE, game_id: str):
+    game_state = active_games.get(game_id)
+    if not game_state:
+        return
 
     while game_state["time_left"] > 0:
         await asyncio.sleep(5)
         game_state["time_left"] -= 5
-        text = build_game_ui(game_state)
-        buttons = build_game_buttons(game_state)
+        
+        for chat_id, msg_id in list(game_state["group_messages"].items()):
+            try:
+                caption, total_pages = build_game_ui(game_state, game_state["page"])
+                markup = build_game_buttons(game_state, game_id, total_pages)
+                if game_media:
+                    await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=caption, parse_mode="HTML", reply_markup=markup)
+                else:
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=caption, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
+
+    game_state["ended"] = True
+
+    for chat_id, msg_id in list(game_state["group_messages"].items()):
         try:
-            if game_media:
-                await context.bot.edit_message_caption(chat_id=chat_id, message_id=game_state["msg_id"], caption=text, parse_mode="HTML", reply_markup=buttons)
-            else:
-                await context.bot.edit_message_text(chat_id=chat_id, message_id=game_state["msg_id"], text=text, parse_mode="HTML", reply_markup=buttons)
+            await context.bot.delete_message(chat_id, msg_id)
         except Exception:
             pass
 
-    try:
-        await context.bot.delete_message(chat_id, game_state["msg_id"])
-    except Exception:
-        pass
+    anim_msg_tasks = []
+    for chat_id in game_state["group_messages"].keys():
+        async def send_anim(cid):
+            try:
+                m = await context.bot.send_message(cid, "⚡")
+                await asyncio.sleep(3)
+                await context.bot.delete_message(cid, m.message_id)
+            except Exception:
+                pass
+        anim_msg_tasks.append(send_anim(chat_id))
+    await asyncio.gather(*anim_msg_tasks)
 
-    anim = await context.bot.send_message(chat_id, "⚡")
-    await asyncio.sleep(3)
-    try:
-        await context.bot.delete_message(chat_id, anim.message_id)
-    except Exception:
-        pass
-
+    home_team = game_state["home"]
+    away_team = game_state["away"]
     home_g, away_g = random.randint(0, 3), random.randint(0, 3)
     if home_g > away_g:
         win_choice, win_name = "home", home_team["name"]
@@ -3013,7 +3044,7 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
             await conn.execute("UPDATE users SET total_games = total_games + 1 WHERE user_id = $1", uid)
 
             if choice == win_choice:
-                reward = 100 if win_choice == "draw" else 70
+                reward = 400 if win_choice == "draw" else 200
                 await add_coins(uid, reward)
                 await conn.execute("UPDATE users SET wins = wins + 1, vote_tickets = vote_tickets + 10 WHERE user_id = $1", uid)
                 winners.append(f"{uname} (+{reward} 🩸 | +10 🎟️)")
@@ -3047,18 +3078,21 @@ async def start_game(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is_admin_
 
     leader_markup = get_leaderboard_buttons()
 
-    if result_media:
-        if result_media["type"] == "photo":
-            sent_res = await context.bot.send_photo(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
-        else:
-            sent_res = await context.bot.send_video(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
-    else:
-        sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
+    for chat_id in game_state["group_messages"].keys():
+        try:
+            if result_media:
+                if result_media["type"] == "photo":
+                    sent_res = await context.bot.send_photo(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
+                else:
+                    sent_res = await context.bot.send_video(chat_id, result_media["file_id"], caption=res_text, parse_mode="HTML", reply_markup=leader_markup)
+            else:
+                sent_res = await context.bot.send_message(chat_id, res_text, parse_mode="HTML", reply_markup=leader_markup)
+            last_results[sent_res.message_id] = res_text
+        except Exception:
+            pass
 
-    last_results[sent_res.message_id] = res_text
-
-    if chat_id in active_games:
-        del active_games[chat_id]
+    if game_id in active_games:
+        del active_games[game_id]
 
 async def run_spin_animation(bot, chat_id, user, query_message):
     try:
@@ -3211,7 +3245,7 @@ CHECK /kc Use Coin /kbox"""
         help_text = """📖 <b>အကူအညီနှင့် လမ်းညွှန်ချက်များ (Help & Guidelines)</b>
 
 - Bot ကို Group ထဲသို့ထည့်ပြီး စာပေးပို့ပါက သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်သည်နှင့် ကတ်များ အလိုအလျောက်ကျလာမည်ဖြစ်ပါသည်။
-- Admin များအနေဖြင့် /game ကိုသုံး၍ ဘောလုံးပွဲစဉ်များ စတင်နိုင်ပါသည်။
+- Admin များအနေဖြင့် Bot DM တွင် /game ဖြင့် Game Preview ထုတ်၍ /play ဖြင့် Group အားလုံးသို့ ပို့ဆောင်နိုင်ပါသည်။
 - ၁ မိနစ်အတွင်း Home, Away သို့မဟုတ် Draw ကို ရွေးချယ်ပါ။
 - အနိုင်ရပါက Kachi Coins နှင့် Vote Tickets များ ရရှိမည်ဖြစ်ပါသည်။
 - /kbox ဖြင့် ကတ်ပေါက်ရန် လှည့်ပါ၊ /kc ဖြင့် မိမိ၏ Harem ကို ကြည့်ပါ။
@@ -3260,7 +3294,6 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
 📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
 - Bot ကို Group ထဲသို့ ထည့်ပါ။
 - Group ထဲတွင် စာပေးပို့ပါ (သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်ပါက ကတ်များ အလိုအလျောက် ကျလာပါမည်)။
-- Admin များအနေဖြင့် ဘောလုံးပွဲစဉ်များ စတင်ရန် /game ကို အသုံးပြုနိုင်ပါသည်။
 - ဦးဆောင်သူစာရင်းများကို ကြည့်ရန် /ktop နှင့် /popular ကို အသုံးပြုပါ။"""
         keyboard = InlineKeyboardMarkup([
             [
@@ -3762,15 +3795,49 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         return
 
     if data.startswith("bet_"):
-        game = active_games.get(chat_id)
-        if not game:
+        parts = data.split("_")
+        game_id = parts[1]
+        choice = parts[2]
+        game = active_games.get(game_id)
+        if not game or game["ended"]:
             return await query.answer("❌ This game has ended.", show_alert=True)
 
-        choice = data.replace("bet_", "")
         game["bets"][user.id] = choice
         game["user_names"][user.id] = get_mention(user.id, user.first_name)
-
         await query.answer("✅ Bet placed!")
+
+        for cid, mid in game["group_messages"].items():
+            try:
+                caption, total_pages = build_game_ui(game, game["page"])
+                markup = build_game_buttons(game, game_id, total_pages)
+                if game_media:
+                    await context.bot.edit_message_caption(chat_id=cid, message_id=mid, caption=caption, parse_mode="HTML", reply_markup=markup)
+                else:
+                    await context.bot.edit_message_text(chat_id=cid, message_id=mid, text=caption, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
+        return
+
+    if data.startswith("gpage_"):
+        parts = data.split("_")
+        game_id = parts[1]
+        page = int(parts[2])
+        game = active_games.get(game_id)
+        if not game or game["ended"]:
+            return await query.answer("❌ This game has ended.", show_alert=True)
+
+        game["page"] = page
+        await query.answer()
+
+        try:
+            caption, total_pages = build_game_ui(game, page)
+            markup = build_game_buttons(game, game_id, total_pages)
+            if game_media:
+                await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=markup)
+            else:
+                await query.edit_message_text(text=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
         return
 
     if data == "lb_back":
@@ -3886,8 +3953,9 @@ def main():
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
     app.add_handler(CommandHandler("popular", popular_cmd))
 
-    # Admin & Card Admin Commands
-    app.add_handler(CommandHandler("game", manual_game_cmd))
+    # Admin & Card Admin Commands (Game triggered via DM /game and /play)
+    app.add_handler(CommandHandler("game", game_cmd_dm))
+    app.add_handler(CommandHandler("play", play_cmd_dm))
     app.add_handler(CommandHandler("aa", aa_cmd))
     app.add_handler(CommandHandler("send", send_quiz_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
