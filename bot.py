@@ -6,7 +6,7 @@ import string
 import time
 import uuid
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -121,6 +121,10 @@ game_media = None
 result_media = None
 global_default_threshold = 10
 bot_warned_groups = set()
+
+# Anti-Spam Tracking Stores
+user_message_timestamps = {}
+spam_ignores = {}
 
 # Database Connection Pool
 db_pool = None
@@ -443,7 +447,7 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-# Quiz Commands (/aa and /send) - Updated: 30s timer removed, single attempt & 2 wrong limit added
+# Quiz Commands (/aa and /send)
 async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -779,9 +783,175 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 14. /glist - View groups list
 15. /g or /r - Set Game/Result media
 16. /stats - View stats
-17. /broadcast - Broadcast message"""
+17. /broadcast - Broadcast message
+18. /mute [id] [time] [reason] - Mute user
+19. /ban [id] [reason] - Ban user
+20. /umute [id] - Unmute user
+21. /unban [id] - Unban user"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+
+# New Moderation Helper & Commands (/mute, /ban, /umute, /unban)
+def parse_time(time_str: str) -> int:
+    time_str = time_str.lower().strip()
+    mult = 1
+    if time_str.endswith('s'):
+        mult = 1
+        time_str = time_str[:-1]
+    elif time_str.endswith('m'):
+        mult = 60
+        time_str = time_str[:-1]
+    elif time_str.endswith('h'):
+        mult = 3600
+        time_str = time_str[:-1]
+    elif time_str.endswith('d'):
+        mult = 86400
+        time_str = time_str[:-1]
+    try:
+        return int(time_str) * mult
+    except ValueError:
+        return 60
+
+async def is_user_admin(chat_id, user_id, context):
+    if user_id == ADMIN_ID:
+        return True
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in ["administrator", "creator"]
+    except Exception:
+        return False
+
+async def mute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    if not chat or chat.type not in ["group", "supergroup"]:
+        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
+
+    if not await is_user_admin(chat.id, user.id, context):
+        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
+
+    if len(context.args) < 2:
+        return await msg.reply_text("❌ Usage: `/mute [user_id] [time] [reason]`\nဥပမာ: `/mute 817378 2m spamလုပ်လို့`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    try:
+        target_id = int(context.args[0])
+        time_str = context.args[1]
+        reason = " ".join(context.args[2:]) if len(context.args) > 2 else "No reason provided"
+    except ValueError:
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+
+    seconds = parse_time(time_str)
+    until_timestamp = int(time.time()) + seconds
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat.id,
+            user_id=target_id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=until_timestamp
+        )
+        await msg.reply_text(
+            f"🔇 <b>Muted User</b>\n\n👤 User ID: <code>{target_id}</code>\n⏳ Duration: {time_str}\n📝 Reason: {reason}",
+            parse_mode="HTML",
+            reply_to_message_id=msg.message_id
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Failed to mute user: {e}", reply_to_message_id=msg.message_id)
+
+async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    if not chat or chat.type not in ["group", "supergroup"]:
+        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
+
+    if not await is_user_admin(chat.id, user.id, context):
+        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    try:
+        target_id = int(context.args[0])
+        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
+    except ValueError:
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+
+    try:
+        await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_id)
+        await msg.reply_text(
+            f"🔨 <b>Banned User</b>\n\n👤 User ID: <code>{target_id}</code>\n📝 Reason: {reason}",
+            parse_mode="HTML",
+            reply_to_message_id=msg.message_id
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Failed to ban user: {e}", reply_to_message_id=msg.message_id)
+
+async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    if not chat or chat.type not in ["group", "supergroup"]:
+        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
+
+    if not await is_user_admin(chat.id, user.id, context):
+        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat.id,
+            user_id=target_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True
+            )
+        )
+        await msg.reply_text(
+            f"🔊 <b>Unmuted User</b>\n\n👤 User ID: <code>{target_id}</code>",
+            parse_mode="HTML",
+            reply_to_message_id=msg.message_id
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Failed to unmute user: {e}", reply_to_message_id=msg.message_id)
+
+async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    if not chat or chat.type not in ["group", "supergroup"]:
+        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
+
+    if not await is_user_admin(chat.id, user.id, context):
+        return await msg.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg.message_id)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+
+    try:
+        await context.bot.unban_chat_member(chat_id=chat.id, user_id=target_id, only_if_banned=True)
+        await msg.reply_text(
+            f"🔓 <b>Unbanned User</b>\n\n👤 User ID: <code>{target_id}</code>",
+            parse_mode="HTML",
+            reply_to_message_id=msg.message_id
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Failed to unban user: {e}", reply_to_message_id=msg.message_id)
 
 # /crest Command
 async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2144,12 +2314,12 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
-# Message Handler
+# Message Handler (with Anti-Spam & Ignore logic)
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.message
-    if not chat or not msg:
+    if not chat or not msg or not user or user.is_bot:
         return
 
     await register_user_group(user, chat, context)
@@ -2214,7 +2384,63 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
+        now = time.time()
+        key = (chat_id, user.id)
+
+        # Check if user is under 10-minute spam ignore period
+        if key in spam_ignores and spam_ignores[key] > now:
+            warning_text = f"{get_mention(user.id, user.first_name)} 10minutes ignore please don't spam like that again ⛩"
+            try:
+                await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+            except Exception:
+                pass
+            return  # Do not count message or process further
+
+        # Anti-spam check (4 messages in 5 seconds)
+        if key not in user_message_timestamps:
+            user_message_timestamps[key] = []
         
+        user_message_timestamps[key] = [ts for ts in user_message_timestamps[key] if now - ts <= 5]
+        user_message_timestamps[key].append(now)
+
+        if len(user_message_timestamps[key]) >= 4:
+            spam_ignores[key] = now + 600  # 10 minutes ignore
+            user_message_timestamps[key] = []
+
+            warning_text = f"{get_mention(user.id, user.first_name)} 10minutes ignore please don't spam like that again ⛩"
+            try:
+                await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+            except Exception:
+                pass
+
+            invite_link = "N/A"
+            try:
+                chat_obj = await context.bot.get_chat(chat_id)
+                if chat_obj.invite_link:
+                    invite_link = chat_obj.invite_link
+                elif chat_obj.username:
+                    invite_link = f"https://t.me/{chat_obj.username}"
+                else:
+                    invite_link = await context.bot.export_chat_invite_link(chat_id)
+            except Exception:
+                pass
+
+            username_str = f"@{user.username}" if user.username else "None"
+            log_text = f"""🚨 <b>Spam Detected!</b>
+
+👤 <b>Spam Name:</b> {get_mention(user.id, user.first_name)}
+🏷 <b>Username:</b> {username_str}
+🆔 <b>User ID:</b> <code>{user.id}</code>
+🏰 <b>Group Name:</b> {chat.title or 'Group'}
+🔗 <b>Group Link:</b> {invite_link}"""
+
+            try:
+                await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
+            except Exception:
+                pass
+
+            return
+
         try:
             bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
             is_bot_admin = bot_member.status in ["administrator", "creator"]
@@ -3548,6 +3774,12 @@ def main():
     app.add_handler(CommandHandler("delteam", delteam_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
+
+    # Moderation Commands (/mute, /ban, /umute, /unban)
+    app.add_handler(CommandHandler("mute", mute_cmd))
+    app.add_handler(CommandHandler("ban", ban_cmd))
+    app.add_handler(CommandHandler("umute", umute_cmd))
+    app.add_handler(CommandHandler("unban", unban_cmd))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(InlineQueryHandler(inline_query_handler))
