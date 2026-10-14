@@ -117,6 +117,7 @@ active_card_drops = {}
 pending_card_adds = {}
 pending_quizzes = {}
 active_quizzes = {}
+last_game_times = {}
 game_media = None
 result_media = None
 global_default_threshold = 10
@@ -146,7 +147,11 @@ async def init_db():
                 is_popular BOOLEAN DEFAULT FALSE,
                 popular_votes BIGINT DEFAULT 0,
                 is_card_admin BOOLEAN DEFAULT FALSE,
-                started_in_pm BOOLEAN DEFAULT FALSE
+                started_in_pm BOOLEAN DEFAULT FALSE,
+                banned BOOLEAN DEFAULT FALSE,
+                ban_reason TEXT,
+                muted_until BIGINT DEFAULT 0,
+                mute_reason TEXT
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -208,6 +213,10 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS popular_votes BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_admin BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS started_in_pm BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 10;")
@@ -253,6 +262,44 @@ async def init_db():
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
+
+# Bot-level Ban & Mute Restriction Decorator
+def restricted_command(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        msg = update.effective_message
+        if user and not user.is_bot and user.id != ADMIN_ID:
+            async with db_pool.acquire() as conn:
+                user_row = await conn.fetchrow(
+                    "SELECT banned, ban_reason, muted_until, mute_reason FROM users WHERE user_id = $1",
+                    user.id
+                )
+                if user_row:
+                    now = int(time.time())
+                    if user_row['banned']:
+                        reason = user_row['ban_reason'] or 'No reason provided'
+                        if msg:
+                            await msg.reply_text(
+                                f"❌ <b>You are banned from using this bot.</b>\n📝 Reason: {reason}",
+                                parse_mode="HTML",
+                                reply_to_message_id=msg.message_id
+                            )
+                        return
+                    if user_row['muted_until'] and user_row['muted_until'] > now:
+                        remaining = user_row['muted_until'] - now
+                        mins = remaining // 60
+                        secs = remaining % 60
+                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                        reason = user_row['mute_reason'] or 'No reason provided'
+                        if msg:
+                            await msg.reply_text(
+                                f"🔇 <b>You are muted from using this bot.</b>\n⏳ Time remaining: {time_str}\n📝 Reason: {reason}",
+                                parse_mode="HTML",
+                                reply_to_message_id=msg.message_id
+                            )
+                        return
+        return await func(update, context)
+    return wrapper
 
 async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = None):
     if not db_pool:
@@ -448,6 +495,7 @@ async def team_reset_checker(context: ContextTypes.DEFAULT_TYPE):
             pass
 
 # Quiz Commands (/aa and /send)
+@restricted_command
 async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -496,6 +544,7 @@ async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "correct": None
     }
 
+@restricted_command
 async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -563,6 +612,7 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups (members > 30) successfully!", reply_to_message_id=msg.message_id)
 
 # Coin Box Command
+@restricted_command
 async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -608,6 +658,7 @@ async def cbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
 # /start Command
+@restricted_command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -642,6 +693,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # /addadmin Command
+@restricted_command
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -664,6 +716,7 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
 # /addteam Command
+@restricted_command
 async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -719,6 +772,7 @@ async def addteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # /delteam Command
+@restricted_command
 async def delteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -759,6 +813,7 @@ async def delteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Team <b>{deleted_name}</b> deleted successfully!", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /admin Command
+@restricted_command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -785,14 +840,14 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 16. /stats - View stats
 17. /broadcast - Broadcast message
 18. /check [user_id] - Check user profile info
-19. /mute [id] [time] [reason] - Mute user (Admin only)
-20. /ban [id] [reason] - Ban user (Admin only)
-21. /umute [id] - Unmute user (Admin only)
-22. /unban [id] - Unban user (Admin only)"""
+19. /mute [id] [time] [reason] - Mute user from bot usage
+20. /ban [id] [reason] - Ban user from bot usage
+21. /umute [id] - Unmute user from bot usage
+22. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# Moderation Commands (/mute, /ban, /umute, /unban) - Restricted strictly to ADMIN_ID
+# Bot-level Moderation Commands (/mute, /ban, /umute, /unban)
 def parse_time(time_str: str) -> int:
     time_str = time_str.lower().strip()
     mult = 1
@@ -813,14 +868,12 @@ def parse_time(time_str: str) -> int:
     except ValueError:
         return 60
 
+@restricted_command
 async def mute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
     user = update.effective_user
     msg = update.message
     if user.id != ADMIN_ID:
         return
-    if not chat or chat.type not in ["group", "supergroup"]:
-        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
 
     if len(context.args) < 2:
         return await msg.reply_text("❌ Usage: `/mute [user_id] [time] [reason]`\nဥပမာ: `/mute 817378 2m spamလုပ်လို့`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -835,29 +888,25 @@ async def mute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seconds = parse_time(time_str)
     until_timestamp = int(time.time()) + seconds
 
-    try:
-        await context.bot.restrict_chat_member(
-            chat_id=chat.id,
-            user_id=target_id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=until_timestamp
-        )
-        await msg.reply_text(
-            f"🔇 <b>Muted User</b>\n\n👤 User ID: <code>{target_id}</code>\n⏳ Duration: {time_str}\n📝 Reason: {reason}",
-            parse_mode="HTML",
-            reply_to_message_id=msg.message_id
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Failed to mute user: {e}", reply_to_message_id=msg.message_id)
+    async with db_pool.acquire() as conn:
+        user_exists = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+        if not user_exists:
+            await conn.execute("INSERT INTO users (user_id, name, muted_until, mute_reason) VALUES ($1, 'User', $2, $3)", target_id, until_timestamp, reason)
+        else:
+            await conn.execute("UPDATE users SET muted_until = $1, mute_reason = $2 WHERE user_id = $3", until_timestamp, reason, target_id)
 
+    await msg.reply_text(
+        f"🔇 <b>Muted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>\n⏳ Duration: {time_str}\n📝 Reason: {reason}",
+        parse_mode="HTML",
+        reply_to_message_id=msg.message_id
+    )
+
+@restricted_command
 async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
     user = update.effective_user
     msg = update.message
     if user.id != ADMIN_ID:
         return
-    if not chat or chat.type not in ["group", "supergroup"]:
-        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
 
     if not context.args:
         return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -868,24 +917,25 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
 
-    try:
-        await context.bot.ban_chat_member(chat_id=chat.id, user_id=target_id)
-        await msg.reply_text(
-            f"🔨 <b>Banned User</b>\n\n👤 User ID: <code>{target_id}</code>\n📝 Reason: {reason}",
-            parse_mode="HTML",
-            reply_to_message_id=msg.message_id
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Failed to ban user: {e}", reply_to_message_id=msg.message_id)
+    async with db_pool.acquire() as conn:
+        user_exists = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+        if not user_exists:
+            await conn.execute("INSERT INTO users (user_id, name, banned, ban_reason) VALUES ($1, 'User', TRUE, $2)", target_id, reason)
+        else:
+            await conn.execute("UPDATE users SET banned = TRUE, ban_reason = $1 WHERE user_id = $2", reason, target_id)
 
+    await msg.reply_text(
+        f"🔨 <b>Banned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>\n📝 Reason: {reason}",
+        parse_mode="HTML",
+        reply_to_message_id=msg.message_id
+    )
+
+@restricted_command
 async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
     user = update.effective_user
     msg = update.message
     if user.id != ADMIN_ID:
         return
-    if not chat or chat.type not in ["group", "supergroup"]:
-        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
 
     if not context.args:
         return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -895,33 +945,21 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
 
-    try:
-        await context.bot.restrict_chat_member(
-            chat_id=chat.id,
-            user_id=target_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
-        )
-        await msg.reply_text(
-            f"🔊 <b>Unmuted User</b>\n\n👤 User ID: <code>{target_id}</code>",
-            parse_mode="HTML",
-            reply_to_message_id=msg.message_id
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Failed to unmute user: {e}", reply_to_message_id=msg.message_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET muted_until = 0, mute_reason = NULL WHERE user_id = $1", target_id)
 
+    await msg.reply_text(
+        f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
+        parse_mode="HTML",
+        reply_to_message_id=msg.message_id
+    )
+
+@restricted_command
 async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
     user = update.effective_user
     msg = update.message
     if user.id != ADMIN_ID:
         return
-    if not chat or chat.type not in ["group", "supergroup"]:
-        return await msg.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg.message_id)
 
     if not context.args:
         return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
@@ -931,17 +969,17 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
 
-    try:
-        await context.bot.unban_chat_member(chat_id=chat.id, user_id=target_id, only_if_banned=True)
-        await msg.reply_text(
-            f"🔓 <b>Unbanned User</b>\n\n👤 User ID: <code>{target_id}</code>",
-            parse_mode="HTML",
-            reply_to_message_id=msg.message_id
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Failed to unban user: {e}", reply_to_message_id=msg.message_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET banned = FALSE, ban_reason = NULL WHERE user_id = $1", target_id)
+
+    await msg.reply_text(
+        f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
+        parse_mode="HTML",
+        reply_to_message_id=msg.message_id
+    )
 
 # /check [user_id] Command (Admin Only)
+@restricted_command
 async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
@@ -1029,6 +1067,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
 
 # /crest Command
+@restricted_command
 async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1045,6 +1084,7 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (10). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /ktop Command
+@restricted_command
 async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1079,6 +1119,7 @@ async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /kgtop Command
+@restricted_command
 async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1119,6 +1160,7 @@ async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /popular Command
+@restricted_command
 async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1148,7 +1190,8 @@ async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /game Command
+# /game Command with 5 minutes cooldown
+@restricted_command
 async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -1167,9 +1210,23 @@ async def manual_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed:
         return await update.message.reply_text("❌ Only group admins can use this command.", reply_to_message_id=msg_id)
 
+    # 5 minutes cooldown check (300 seconds)
+    now = time.time()
+    last_time = last_game_times.get(chat_id, 0)
+    cooldown = 300
+    if now - last_time < cooldown and user.id != ADMIN_ID:
+        remaining = int(cooldown - (now - last_time))
+        mins = remaining // 60
+        secs = remaining % 60
+        return await update.message.reply_text(
+            f"❌ Please wait {mins}m {secs}s before starting another game (5-minute cooldown).",
+            reply_to_message_id=msg_id
+        )
+
     if chat_id in active_games:
         return await update.message.reply_text("❌ Previous game is still active.", reply_to_message_id=msg_id)
     
+    last_game_times[chat_id] = now
     asyncio.create_task(start_game(context, chat_id, is_admin_triggered=True))
 
 async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_to_msg_id=None):
@@ -1248,6 +1305,7 @@ Code: <code>{t_info['team_code']}</code>
             pass
 
 # /team Command
+@restricted_command
 async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1269,6 +1327,7 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # /myteam Command
+@restricted_command
 async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1286,6 +1345,7 @@ async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are not in any team. Use /team to start.", reply_to_message_id=msg_id)
 
 # /dele
+@restricted_command
 async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1308,6 +1368,7 @@ async def delete_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Team <b>{team_name}</b> deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /join [CODE] Command
+@restricted_command
 async def join_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1358,6 +1419,7 @@ Accept request?"""
         await update.message.reply_text("❌ Could not send message to team leader. Leader must start the bot first.", reply_to_message_id=msg_id)
 
 # /out Command
+@restricted_command
 async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1397,6 +1459,7 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ You left <b>{team['team_name']}</b> team.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /c Command
+@restricted_command
 async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global global_default_threshold
     msg_id = update.message.message_id
@@ -1451,6 +1514,7 @@ async def set_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # Admin Coin Command
+@restricted_command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1479,6 +1543,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Usage: `/k [user_id] [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
 # /add Command
+@restricted_command
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -1557,6 +1622,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # /del Command
+@restricted_command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1579,6 +1645,7 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /ksell [amount] Command
+@restricted_command
 async def ksell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1665,6 +1732,7 @@ async def get_popular_profile_data(target_uid: int, current_idx: int = 0, total_
     return text, keyboard
 
 # /vote Command
+@restricted_command
 async def vote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1709,6 +1777,7 @@ Register for the popular list and collect votes from others.
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # /set Command
+@restricted_command
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1737,6 +1806,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Active profile card changed to <b>{has_card['name']}</b> for /kc.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /kbox Command
+@restricted_command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1775,6 +1845,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # /kgift Command
+@restricted_command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1971,6 +2042,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
                 pass
 
 # /kc Command Handler
+@restricted_command
 async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -2049,6 +2121,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer(results, cache_time=1)
 
 # /cardlist Command
+@restricted_command
 async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -2107,6 +2180,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
             pass
 
 # /card [card_id] Command
+@restricted_command
 async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -2161,7 +2235,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     caption_text = f"""🎗 Card Information ♡
 
-▰▰▱▱▰▰▱▱▰▰▱▱
+▰▰▱▱▰▰▱▱
 🍀 Name - {card['name']}
     🍀  ID - <code>{card['card_id']}</code>
 🎬 Type - {card['type'].upper()}
@@ -2193,6 +2267,7 @@ Top Owners 🐾
                 await update.message.reply_text(caption_text, parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /glist Command
+@restricted_command
 async def glist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -2273,6 +2348,7 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
         await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 # Media Commands (/g, /r)
+@restricted_command
 async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -2322,6 +2398,7 @@ async def media_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ {'Game' if target == 'g' else 'Result'} media updated successfully.", reply_to_message_id=msg_id)
 
 # /stats Command
+@restricted_command
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -2366,6 +2443,7 @@ async def run_async_broadcast(bot, chat_id, reply_msg_id, targets, status_msg_id
         pass
 
 # /broadcast Command
+@restricted_command
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -3851,7 +3929,7 @@ def main():
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
 
-    # Moderation Commands (/mute, /ban, /umute, /unban) - Admin Only
+    # Bot-level Moderation Commands (/mute, /ban, /umute, /unban)
     app.add_handler(CommandHandler("mute", mute_cmd))
     app.add_handler(CommandHandler("ban", ban_cmd))
     app.add_handler(CommandHandler("umute", umute_cmd))
