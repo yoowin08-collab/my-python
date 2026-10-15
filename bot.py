@@ -30,6 +30,7 @@ active_card_drops = {}
 pending_card_adds = {}
 pending_quizzes = {}
 active_quizzes = {}
+pending_kachi_transfers = {}
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -402,6 +403,27 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
 
+    if context.args and context.args[0].startswith("kachi_"):
+        try:
+            target_id = int(context.args[0].replace("kachi_", ""))
+            if target_id == user.id:
+                return await update.message.reply_text("❌ You cannot transfer Kachi to yourself.", reply_to_message_id=msg_id)
+            
+            pending_kachi_transfers[user.id] = target_id
+            async with db_pool.acquire() as conn:
+                target_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+                target_name = target_row['name'] if target_row else "User"
+
+            return await update.message.reply_text(
+                f"💸 <b>Kachi Transfer</b>\n\n"
+                f"You are sending Kachi to <b>{target_name}</b> (ID: <code>{target_id}</code>).\n"
+                f"Please enter the amount of Kachi you want to send:",
+                parse_mode="HTML",
+                reply_to_message_id=msg_id
+            )
+        except ValueError:
+            pass
+
     bot_info = await context.bot.get_me()
     text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
@@ -461,7 +483,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. /send - Broadcast quiz to groups (reply to /aa)
 3. /c [gpid] [count] - Set threshold for a specific group
 4. /crest - Reset all thresholds & message counts
-5. /k [user_id] [amount] - Add/remove coins
+5. /k [user_id] [amount] - Add/remove Kachi
 6. /addadmin [user_id] - Add Card Admin
 7. /add - Add new card (reply to media)
 8. /del [card_id] - Delete card
@@ -666,7 +688,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌐 Global Rank - #{rank}
 🏷 Username - {username_str}
 ⬤ ID - <code>{target_id}</code>
-🩸 Kachi Coin - <b>{coins}</b>"""
+🩸 Kachi - <b>{coins}</b>"""
 
     cards_info_list = []
     for c in user_card_rows[:5]:
@@ -810,8 +832,8 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         action_text = "added" if amount >= 0 else "deducted"
         await update.message.reply_text(
-            f"✅ {abs(amount)} Kachi Coins {action_text} to {get_mention(target_id, new_row['name'])}.\n"
-            f"💰 Current Coins: <b>{new_row['coins']}</b>",
+            f"✅ {abs(amount)} Kachi {action_text} to {get_mention(target_id, new_row['name'])}.\n"
+            f"💰 Current Kachi: <b>{new_row['coins']}</b>",
             parse_mode="HTML",
             reply_to_message_id=msg_id
         )
@@ -944,7 +966,7 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await conn.execute("UPDATE users SET selected_card_id = $1 WHERE user_id = $2", target_card_id, user.id)
 
-    await update.message.reply_text(f"✅ Active profile card changed to <b>{has_card['name']}</b> for /kc.", parse_mode="HTML", reply_to_message_id=msg_id)
+    await update.message.reply_text(f"✅ Active profile card changed to <b>{has_card['name']}</b> for /kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 @restricted_command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1008,121 +1030,28 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "card_name": card['name']
     }
 
-async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
-    user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
-    target_id = owner_id if owner_id else user.id
-    msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
-
-    async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT selected_card_id, name FROM users WHERE user_id = $1", target_id)
-        selected_card_id = user_row['selected_card_id'] if user_row else None
-        display_name = user_row['name'] if user_row else user.first_name
-
-        rank_row = await conn.fetchrow("""
-            SELECT COUNT(*) + 1 AS rank FROM (
-                SELECT u.user_id, COALESCE(SUM(uc.amount), 0) as tc
-                FROM users u
-                LEFT JOIN user_cards uc ON u.user_id = uc.user_id
-                GROUP BY u.user_id
-            ) sub WHERE tc > (
-                SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE user_id = $1
-            )
-        """, target_id)
-        global_rank = rank_row['rank'] if rank_row else 1
-
-        user_card_rows = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
-            FROM user_cards uc 
-            JOIN cards c ON uc.card_id = c.card_id 
-            WHERE uc.user_id = $1 AND uc.amount > 0
-            ORDER BY c.card_id ASC
-        """, target_id)
-
-    total_owned_sum = sum(c['amount'] for c in user_card_rows)
-
-    per_page = 8
-    total_cards = len(user_card_rows)
-    total_pages = (total_cards + per_page - 1) // per_page if total_cards > 0 else 1
-    page = max(0, min(page, total_pages - 1))
-
-    page_str = f" ({page + 1}/{total_pages})"
-    text_header = f"""❀ 𝗡𝗮𝗺𝗲 - {get_mention(target_id, display_name)}
-🌐 𝗚𝗹𝗼𝗯𝗮𝗹 𝗥𝗮𝗻𝗸 - #{global_rank}
-
-𝗛𝗮𝗿𝗲𝗺 𝗣𝗮𝗴𝗲{page_str}"""
-
-    if not user_card_rows:
-        full_text = f"{text_header}\n\n<i>No cards yet.</i>"
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(f"Harem❄ ({total_owned_sum})", switch_inline_query_current_chat=f"harem.{target_id}")
-            ]
-        ])
-        if isinstance(update_or_query, Update):
-            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-        else:
-            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML", reply_markup=keyboard)
-
-    active_card = None
-    if selected_card_id:
-        active_card = next((c for c in user_card_rows if c['card_id'] == selected_card_id), None)
-    if not active_card:
-        active_card = user_card_rows[-1]
-
-    start_idx = page * per_page
-    end_idx = start_idx + per_page
-    current_page_cards = user_card_rows[start_idx:end_idx]
-
-    cards_info_list = []
-    for c in current_page_cards:
-        count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else " 1x"
-        rarity_emoji = "🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮"))
-        cards_info_list.append(f"🍀 {c['name']} {rarity_emoji} 🧩 [ <code>{c['card_id']}</code> ]{count_str}")
-
-    cards_info = "\n".join(cards_info_list)
-    full_text = f"{text_header}\n\n{cards_info}"
-
-    keyboard_rows = []
-    if total_pages > 1:
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kcpage_{page - 1}_{target_id}"))
-        if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kcpage_{page + 1}_{target_id}"))
-        if nav_row:
-            keyboard_rows.append(nav_row)
-
-    keyboard_rows.append([
-        InlineKeyboardButton(f"Harem❄ ({total_owned_sum})", switch_inline_query_current_chat=f"harem.{target_id}")
-    ])
-    markup = InlineKeyboardMarkup(keyboard_rows)
-
-    if isinstance(update_or_query, Update):
-        try:
-            if active_card['type'] == 'photo':
-                await update_or_query.message.reply_photo(photo=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
-            else:
-                await update_or_query.message.reply_video(video=active_card['file_id'], caption=full_text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=markup)
-    else:
-        query = update_or_query
-        try:
-            await query.edit_message_caption(caption=full_text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            try:
-                await query.edit_message_text(text=full_text, parse_mode="HTML", reply_markup=markup)
-            except Exception:
-                pass
-
 @restricted_command
-async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
     user = update.effective_user
     chat = update.effective_chat
+    msg_id = update.message.message_id
     await register_user_group(user, chat, context)
-    await render_kc_view(update, context, page=0, owner_id=user.id)
+
+    target_id = user.id
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", target_id)
+        kachi_amount = user_row['coins'] if user_row else 0
+        display_name = user_row['name'] if user_row else user.first_name
+
+    bot_info = await context.bot.get_me()
+    text = f"ᴄᴀᴛᴄʜᴇʀ ɴᴀᴍᴇ - {display_name}"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Kachi: {kachi_amount}", url=f"https://t.me/{bot_info.username}?start=kachi_{target_id}")]
+    ])
+    
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
@@ -1310,7 +1239,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     🍀  ID - <code>{card['card_id']}</code>
 🎬 Type - {card['type'].upper()}
 🌟 Rarity - {r_emoji} {r}
-🩸 Kachi Coin Value ( {coin_value} )
+🩸 Kachi Value ( {coin_value} )
    🐠 Global Drops - <b>{global_drop_count}</b>
 
 ▱▱▰▰▱▱▰▰▱▱▰▰
@@ -1492,6 +1421,66 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await register_user_group(user, chat, context)
+
+    if chat.type == "private":
+        if user.id in pending_kachi_transfers:
+            target_id = pending_kachi_transfers[user.id]
+            text_input = msg.text.strip() if msg.text else ""
+            if not text_input.isdigit():
+                return await msg.reply_text("❌ Please enter a valid number for Kachi amount.", reply_to_message_id=msg.message_id)
+            
+            amount = int(text_input)
+            if amount <= 0:
+                return await msg.reply_text("❌ Amount must be greater than 0.", reply_to_message_id=msg.message_id)
+
+            async with db_pool.acquire() as conn:
+                sender_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
+                sender_coins = sender_row['coins'] if sender_row else 0
+                sender_name = sender_row['name'] if sender_row else user.first_name
+
+                if sender_coins < amount:
+                    del pending_kachi_transfers[user.id]
+                    return await msg.reply_text(f"❌ Insufficient Kachi balance. (Current: {sender_coins} Kachi)", reply_to_message_id=msg.message_id)
+
+                target_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", target_id)
+                target_coins = target_row['coins'] if target_row else 0
+                target_name = target_row['name'] if target_row else "User"
+
+                new_sender_coins = max(0, sender_coins - amount)
+                new_target_coins = min(1000, target_coins + amount)
+
+                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_sender_coins, user.id)
+                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_target_coins, target_id)
+
+            del pending_kachi_transfers[user.id]
+
+            time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            receipt_sender = f"""✦ KACHI TRANSFER RECEIPT ✦
+
+📤 Sender: {get_mention(user.id, sender_name)}
+📥 Recipient: {get_mention(target_id, target_name)}
+💎 Amount Transferred: <b>{amount}</b> Kachi
+💳 Remaining Balance: <b>{new_sender_coins}</b> Kachi
+
+Status: Successful ✅
+🕒 Time: {time_str} UTC"""
+
+            receipt_target = f"""✦ KACHI TRANSFER RECEIPT ✦
+
+📤 Sender: {get_mention(user.id, sender_name)}
+📥 Recipient: {get_mention(target_id, target_name)}
+💎 Amount Transferred: <b>{amount}</b> Kachi
+💳 Current Balance: <b>{new_target_coins}</b> Kachi
+
+Status: Successful ✅
+🕒 Time: {time_str} UTC"""
+
+            await msg.reply_text(receipt_sender, parse_mode="HTML", reply_to_message_id=msg.message_id)
+            try:
+                await context.bot.send_message(target_id, receipt_target, parse_mode="HTML")
+            except Exception:
+                pass
+            return
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
@@ -1700,7 +1689,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         r = card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
-        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
+        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kachi 🎗"
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{winner_id}")]
@@ -1786,15 +1775,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ❓ <b>{quiz['question']}</b>
 👤 <b>အနိုင်ရသူ:</b> {get_mention(user.id, user.first_name)}
-💰 <b>ရရှိသော Kachi Coin:</b> +{coins_won} 🩸
+💰 <b>ရရှိသော Kachi:</b> +{coins_won} 🩸
 
-CHECK /kc Use Coin"""
+CHECK /kachi Use Kachi"""
 
             try:
                 await query.edit_message_text(result_text, parse_mode="HTML", reply_markup=None)
             except Exception:
                 pass
-            await query.answer(f"🎉 မှန်ကန်ပါသည်။ +{coins_won} Coins ရရှိပါသည်!", show_alert=True)
+            await query.answer(f"🎉 မှန်ကန်ပါသည်။ +{coins_won} Kachi ရရှိပါသည်!", show_alert=True)
         else:
             quiz["answered_users"].add(user.id)
             quiz["wrong_users"].add(user.id)
@@ -1824,7 +1813,7 @@ CHECK /kc Use Coin"""
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
 - /kgtop - Group Leaderboard ကို ကြည့်ရန်။
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
-- /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
+- /set [card_id] - /kachi တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=markup)
         await query.answer()
@@ -1914,7 +1903,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         except Exception:
             pass
 
-        reward_notice = f"\n🎉 Received <b>+{added_reward_coins} Kachi Coins</b> for adding card!" if (is_card_admin and user.id != ADMIN_ID) else ""
+        reward_notice = f"\n🎉 Received <b>+{added_reward_coins} Kachi</b> for adding card!" if (is_card_admin and user.id != ADMIN_ID) else ""
         await query.message.edit_text(
             f"✅ Card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_emoji} {rarity}{reward_notice}",
             parse_mode="HTML"
@@ -2046,18 +2035,6 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
                 pass
             return await query.answer("Gift sent successfully!")
 
-    if data.startswith("kcpage_"):
-        parts = data.split("_")
-        page = int(parts[1])
-        target_id = int(parts[2])
-
-        if user.id != target_id:
-            return await query.answer("❌ Not your /kc view.", show_alert=True)
-
-        await render_kc_view(query, context, page=page, owner_id=target_id)
-        await query.answer()
-        return
-
     if data.startswith("glist_"):
         if user.id != ADMIN_ID:
             return await query.answer("❌ Admin only.", show_alert=True)
@@ -2086,7 +2063,7 @@ def main():
 
     # Public User Commands
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("kc", check_kc_cmd))
+    app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
