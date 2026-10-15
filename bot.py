@@ -501,7 +501,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# Helper function for sending card drops with 🐌 animation & 4sec delay
+# Helper function for sending card drops with 🐌 animation & 4sec delay (No Spoilers, Normal text)
 async def send_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int, specific_card=None):
     anim_msg = await context.bot.send_message(chat_id, "🐌")
     await asyncio.sleep(4)
@@ -521,10 +521,10 @@ async def send_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int, speci
     r = drop_card.get('rarity', 'Ten')
     r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
-    # Fixed: Removed the card name from command text to avoid duplication, keeping it only in the spoiler ||name||
+    # Removed spoilers entirely, showing normal text
     drop_text = f"""{r_emoji} A Kachi Character Has Spawned In The Chat 🍭
 Catch This Character Add To Your Harem Kc Use <code>/kcc</code> 🧊
-||{drop_card['name']}||"""
+Name: <b>{drop_card['name']}</b>"""
 
     if drop_card['type'] == 'photo':
         sent_msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
@@ -1690,9 +1690,11 @@ Status: Successful ✅
                     late_text = f"""Too Late ! ❄
 He Already Catch This Character
 {winner_display}, Try Again Next Character Spawn In The Chat 🥒"""
-                    return await msg.reply_text(late_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+                    await msg.reply_text(late_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+                    return
 
-                if guessed_name == card['name'].strip().lower():
+                card_name_lower = card['name'].strip().lower()
+                if not guessed_name or guessed_name == card_name_lower:
                     target_drop["claimed"] = True
                     target_drop["winner_id"] = user.id
                     target_drop["winner_name"] = user.first_name
@@ -1726,7 +1728,11 @@ He Already Catch This Character
                         pass
                     return
                 else:
-                    return await msg.reply_text("❌ Wrong character name!", reply_to_message_id=msg.message_id)
+                    await msg.reply_text("❌ Wrong character name!", reply_to_message_id=msg.message_id)
+                    return
+            else:
+                await msg.reply_text("❌ Active card drop မရှိတော့ပါ သို့မဟုတ် ပြီးဆုံးသွားပါပြီ။", reply_to_message_id=msg.message_id)
+                return
 
         now = time.time()
         key = (chat_id, user.id)
