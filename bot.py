@@ -2626,8 +2626,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ON CONFLICT (chat_id) DO UPDATE SET title = COALESCE($2, groups.title)
                 """, chat_id, chat.title or "Group")
                 
-                group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat_id)
-                threshold = group_row['threshold'] if (group_row and group_row['threshold'] is not None) else group_threshold.get(chat_id, global_default_threshold)
+                # Group အားလုံးအတွက် စာကြောင်းရေ ၆၀ ကို အသေအမြဲ သတ်မှတ်ထားသည်
+                threshold = 60
 
                 row = await conn.fetchrow("""
                     UPDATE groups 
