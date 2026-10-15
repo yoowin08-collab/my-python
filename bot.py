@@ -118,10 +118,7 @@ async def init_db():
 
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
         for c in existing_cards:
-            if c['type'] == 'photo':
-                r = random.choice(["Hoshi", "Ten"])
-            else:
-                r = random.choice(["Kiwami", "Kami"])
+            r = random.choice(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"])
             await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
@@ -693,7 +690,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cards_info_list = []
     for c in user_card_rows[:5]:
         count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
-        rarity_emoji = "🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮"))
+        rarity_emoji = "🧬" if c.get('rarity') == 'Shinsei' else ("🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮")))
         cards_info_list.append(f"{rarity_emoji} {c['name']} ( <code>{c['card_id']}</code> ){count_str}")
 
     cards_info = "\n".join(cards_info_list) if cards_info_list else "<i>No cards yet.</i>"
@@ -899,11 +896,14 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🪞 Kiwami", callback_data=f"addrarity_{user.id}_Kiwami"),
-            InlineKeyboardButton("✨ Kami", callback_data=f"addrarity_{user.id}_Kami")
+            InlineKeyboardButton("🧬 Shinsei", callback_data=f"addrarity_{user.id}_Shinsei"),
+            InlineKeyboardButton("🪞 Kiwami", callback_data=f"addrarity_{user.id}_Kiwami")
         ],
         [
-            InlineKeyboardButton("⚜️ Hoshi", callback_data=f"addrarity_{user.id}_Hoshi"),
+            InlineKeyboardButton("✨ Kami", callback_data=f"addrarity_{user.id}_Kami"),
+            InlineKeyboardButton("⚜️ Hoshi", callback_data=f"addrarity_{user.id}_Hoshi")
+        ],
+        [
             InlineKeyboardButton("💮 Ten", callback_data=f"addrarity_{user.id}_Ten")
         ]
     ])
@@ -1098,7 +1098,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     cards_info_list = []
     for c in current_page_cards:
         count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else " 1x"
-        rarity_emoji = "🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮"))
+        rarity_emoji = "🧬" if c.get('rarity') == 'Shinsei' else ("🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮")))
         cards_info_list.append(f"🍀 {c['name']} {rarity_emoji} 🧩 [ <code>{c['card_id']}</code> ]{count_str}")
 
     cards_info = "\n".join(cards_info_list)
@@ -1198,7 +1198,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     results = []
     for c in user_cards:
         r = c.get('rarity', 'Ten')
-        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
         title = f"{c['name']} ({c['card_id']})"
         amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
 
@@ -1268,7 +1268,7 @@ async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TY
     for idx, c in enumerate(current_page_cards, start=start_idx + 1):
         type_emoji = "🖼" if c['type'] == 'photo' else "🎥"
         r = c.get('rarity', 'Ten')
-        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
         card_text_list.append(f"{idx}. {r_emoji} <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) [{type_emoji} {c['type'].upper()}]")
 
     cards_str = "\n".join(card_text_list)
@@ -1335,18 +1335,20 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owners_str = "☛ <i>No owners yet.</i>"
 
     r = card.get('rarity', 'Ten')
-    r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+    r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
-    if r == 'Hoshi':
-        coin_value = "500-950"
-    elif r == 'Ten':
-        coin_value = "450-650"
+    if r == 'Shinsei':
+        coin_value = "4000-8900"
     elif r == 'Kiwami':
-        coin_value = "2000-6800"
+        coin_value = "2000-5500"
     elif r == 'Kami':
-        coin_value = "1200-4000"
+        coin_value = "1000-2500"
+    elif r == 'Hoshi':
+        coin_value = "400-800"
+    elif r == 'Ten':
+        coin_value = "200-400"
     else:
-        coin_value = "450-650"
+        coin_value = "200-400"
 
     caption_text = f"""🎗 Card Information ♡
 
@@ -1700,7 +1702,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         return
 
     r = drop_card.get('rarity', 'Ten')
-    r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+    r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
     joined_names = []
     joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
@@ -1750,7 +1752,7 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         current_count = len(drop["joined_users"])
         r = drop["card"].get('rarity', 'Ten')
-        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
         joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
         joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
@@ -1804,7 +1806,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
             """, winner_id, card['card_id'])
 
         r = card.get('rarity', 'Ten')
-        r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
         win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
         
         keyboard = InlineKeyboardMarkup([
@@ -1992,7 +1994,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                 VALUES ($1, $2, $3, $4, $5)
             """, card_id, card_name, c_type, file_id, rarity)
 
-            added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else 80
+            added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else (80 if rarity in ["Kiwami", "Kami"] else 120)
 
             if is_card_admin and user.id != ADMIN_ID:
                 user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
@@ -2002,7 +2004,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
 
         del pending_card_adds[user.id]
 
-        r_emoji = "🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮"))
+        r_emoji = "🧬" if rarity == 'Shinsei' else ("🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮")))
         log_text = f"""New card added successfully
 
 ❀ Card Name : {card_name}
@@ -2068,7 +2070,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         else:
             current_count = len(drop["joined_users"])
             r = drop["card"].get('rarity', 'Ten')
-            r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
+            r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
             joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
             joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
