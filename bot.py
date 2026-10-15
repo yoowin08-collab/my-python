@@ -1951,17 +1951,9 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
 
     async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT coins, selected_card_id, name, vote_tickets FROM users WHERE user_id = $1", target_id)
-        coins = user_row['coins'] if user_row else 0
-        tickets = user_row['vote_tickets'] if user_row else 0
+        user_row = await conn.fetchrow("SELECT selected_card_id, name FROM users WHERE user_id = $1", target_id)
         selected_card_id = user_row['selected_card_id'] if user_row else None
         display_name = user_row['name'] if user_row else user.first_name
-
-        rank_row = await conn.fetchrow("SELECT COUNT(*) + 1 AS rank FROM users WHERE coins > $1", coins)
-        rank = rank_row['rank']
-
-        gem_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", target_id)
-        gem_count = gem_row['amount'] if gem_row else 0
 
         user_card_rows = await conn.fetch("""
             SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
@@ -1971,18 +1963,20 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
             ORDER BY c.card_id ASC
         """, target_id)
 
-    text_header = f"""❀ Name - {get_mention(target_id, display_name)}
-        ⬤ ID - <code>{target_id}</code>
-🩸 Kachi Coin - <b>{coins}</b>
-      💎 GemStone - <b>{gem_count}</b>
-🎟 Vote Tickets - <b>{tickets}</b>
-        
-❀ Global Rank - #{rank}"""
-
     total_owned_sum = sum(c['amount'] for c in user_card_rows)
 
+    per_page = 8
+    total_cards = len(user_card_rows)
+    total_pages = (total_cards + per_page - 1) // per_page if total_cards > 0 else 1
+    page = max(0, min(page, total_pages - 1))
+
+    page_str = f" ({page + 1}/{total_pages})"
+    text_header = f"""❀ 𝗡𝗮𝗺𝗲 - {get_mention(target_id, display_name)}
+
+𝗛𝗮𝗿𝗲𝗺 𝗣𝗮𝗴𝗲{page_str}"""
+
     if not user_card_rows:
-        full_text = f"{text_header}\n\n❄ <b>Owned Cards</b>\n<i>No cards yet.</i>"
+        full_text = f"{text_header}\n\n<i>No cards yet.</i>"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"Harem❄ ({total_owned_sum})", switch_inline_query_current_chat=f"harem.{target_id}"),
@@ -2000,24 +1994,18 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     if not active_card:
         active_card = user_card_rows[-1]
 
-    per_page = 8  # Updated to 8 cards per page as requested
-    total_cards = len(user_card_rows)
-    total_pages = (total_cards + per_page - 1) // per_page
-    page = max(0, min(page, total_pages - 1))
-
     start_idx = page * per_page
     end_idx = start_idx + per_page
     current_page_cards = user_card_rows[start_idx:end_idx]
 
     cards_info_list = []
     for c in current_page_cards:
-        count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else ""
+        count_str = f" <b>({c['amount']}x)</b>" if c['amount'] > 1 else " 1x"
         rarity_emoji = "🪞" if c.get('rarity') == 'Kiwami' else ("✨" if c.get('rarity') == 'Kami' else ("⚜️" if c.get('rarity') == 'Hoshi' else "💮"))
-        cards_info_list.append(f"{rarity_emoji} {c['name']} ( <code>{c['card_id']}</code> ){count_str}")
+        cards_info_list.append(f"🍀 {c['name']} {rarity_emoji} 🧩 [ <code>{c['card_id']}</code> ]{count_str}")
 
     cards_info = "\n".join(cards_info_list)
-    page_str = f" (Page {page + 1}/{total_pages})" if total_pages > 1 else ""
-    full_text = f"{text_header}\n\n❄ <b>Owned Cards{page_str}</b>\n\n{cards_info}"
+    full_text = f"{text_header}\n\n{cards_info}"
 
     keyboard_rows = []
     if total_pages > 1:
@@ -3037,13 +3025,13 @@ async def run_group_game_loop(context: ContextTypes.DEFAULT_TYPE, game_id: str):
             await conn.execute("UPDATE users SET total_games = total_games + 1 WHERE user_id = $1", uid)
 
             if choice == win_choice:
-                reward = 1300 if win_choice == "draw" else 1000  # Updated coin rewards: Draw=1300, Win=1000
+                reward = 1300 if win_choice == "draw" else 1000
                 await add_coins(uid, reward)
-                await conn.execute("UPDATE users SET wins = wins + 1, vote_tickets = vote_tickets + 30 WHERE user_id = $1", uid) # Vote tickets = 30
+                await conn.execute("UPDATE users SET wins = wins + 1, vote_tickets = vote_tickets + 30 WHERE user_id = $1", uid)
                 await conn.execute("""
                     INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, 'gemstone', 5)
                     ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 5
-                """, uid) # GemStone = 5 for winners
+                """, uid)
                 winners.append(f"{uname} (+{reward} 🩸 | +30 🎟️ | +5 💎)")
             else:
                 losers.append(uname)
@@ -3111,15 +3099,15 @@ async def run_spin_animation(bot, chat_id, user, query_message):
         r = won_card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-        # Updated win message format as requested
-        win_text = f"""🎉 𝘾𝙤𝙣𝙜𝙧𝙖𝙩𝙪𝙡𝙖𝙩𝙞𝙤𝙣𝙨 
+        # Updated /kbox win message format
+        win_text = f"""🎉 𝘾𝙤𝙣𝙜𝙧𝙖𝙩𝙪𝙡𝙖𝙩𝙞𝙤𝙣𝙨 {user.first_name}
 
-{user.id}
+USER ID {user.id}
 🩸 {rem_coins} 
 
 {won_card['name']} 
 🧶 {r_emoji} {r}
-  🎩  {won_card['card_id']}"""
+ {won_card['card_id']} 🎩"""
 
         if won_card['type'] == 'photo':
             await bot.send_photo(chat_id=chat_id, photo=won_card['file_id'], caption=win_text, parse_mode="HTML")
@@ -3153,11 +3141,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gem_count = gem_row['amount'] if gem_row else 0
 
         info_text = f"""❀ Name - {get_mention(target_id, display_name)}
-        ⬤ ID - <code>{target_id}</code>
+⬤ ID - <code>{target_id}</code>
 🩸 Kachi Coin - <b>{coins}</b>
-      💎 GemStone - <b>{gem_count}</b>
+💎 GemStone - <b>{gem_count}</b>
 🎟 Vote Tickets - <b>{tickets}</b>
-        
+
 ❀ Global Rank - #{rank}"""
 
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("Back ◀️", callback_data=f"kcpage_0_{target_id}")]])
