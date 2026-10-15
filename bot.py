@@ -108,7 +108,7 @@ TEAMS = [
 # Global Memory Stores
 group_threshold = {}
 active_games = {}       # game_id -> game_state
-dm_game_previews = {}   # message_id -> game_info
+dm_game_previews = {}   # game_id -> game_info (Multiple previews stored with unique IDs)
 last_results = {}
 active_cboxes = {}
 pending_gifts = {}
@@ -121,7 +121,7 @@ active_quizzes = {}
 last_game_times = {}
 game_media = None
 result_media = None
-global_default_threshold = 70
+global_default_threshold = 60  # Updated to 60 as requested
 bot_warned_groups = set()
 
 # Anti-Spam Tracking Stores
@@ -159,7 +159,7 @@ async def init_db():
                 title TEXT,
                 added_by_id BIGINT,
                 added_by_name TEXT,
-                threshold INT DEFAULT 70,
+                threshold INT DEFAULT 60,
                 msg_count INT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS group_members (
@@ -220,7 +220,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 70;")
+            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
@@ -807,7 +807,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = """⚡ <b>Admin Commands</b>
 
 👑 <b>List:</b>
-1. /game - Start game preview in Bot DM (Reply with /play to broadcast to all groups)
+1. /game - Generate 5 game previews in Bot DM (Use /play [id] to broadcast)
 2. /aa - Create trivia quiz
 3. /send - Broadcast quiz to groups (reply to /aa)
 4. /c [gpid] [count] - Set threshold for a specific group
@@ -1060,13 +1060,13 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global group_threshold, global_default_threshold
     group_threshold.clear()
-    global_default_threshold = 70
+    global_default_threshold = 60  # Reset to 60
 
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE groups SET threshold = 70, msg_count = 0")
+        await conn.execute("UPDATE groups SET threshold = 60, msg_count = 0")
         await conn.execute("DELETE FROM settings WHERE key = 'default_threshold'")
 
-    await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (70). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
+    await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (60). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /ktop Command
 @restricted_command
@@ -1175,7 +1175,7 @@ async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# Admin DM /game and /play Commands
+# Admin DM /game and /play Commands (Updated to generate 5 match pairs with IDs and /play [id])
 @restricted_command
 async def game_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1183,19 +1183,33 @@ async def game_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id != ADMIN_ID or update.effective_chat.type != "private":
         return await msg.reply_text("❌ This command can only be used by the Bot Admin in DM.", reply_to_message_id=msg.message_id)
 
-    home_team, away_team = random.sample(TEAMS, 2)
-    preview_text = f"""⚽ <b>Game Preview Ready</b>
+    # Sample 10 unique teams (5 pairs) from TEAMS
+    if len(TEAMS) < 10:
+        sampled = random.choices(TEAMS, k=10)
+    else:
+        sampled = random.sample(TEAMS, 10)
 
-🏖️ <b>{home_team['emoji']} {home_team['name']}</b> vs <b>{away_team['emoji']} {away_team['name']}</b>
-⛲ Stadium: {home_team['stadium']}
+    preview_lines = ["⚽ <b>Game Previews (5 Matches):</b>\n"]
+    
+    for i in range(5):
+        home_team = sampled[i * 2]
+        away_team = sampled[i * 2 + 1]
+        game_id = str(uuid.uuid4())[:6]
+        
+        dm_game_previews[game_id] = {
+            "home": home_team,
+            "away": away_team
+        }
+        
+        preview_lines.append(
+            f"<b>{i+1}.</b> {home_team['emoji']} <b>{home_team['name']}</b> vs {away_team['emoji']} <b>{away_team['name']}</b>\n"
+            f"   🏟️ Stadium: {home_team['stadium']}\n"
+            f"   🆔 ID: <code>{game_id}</code>\n"
+        )
 
-<i>Reply to this message with <code>/play</code> to broadcast this game to all groups.</i>"""
-
-    sent = await msg.reply_text(preview_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-    dm_game_previews[sent.message_id] = {
-        "home": home_team,
-        "away": away_team
-    }
+    preview_lines.append("\n<i>Reply to or use command with ID: <code>/play [id]</code> (e.g. /play ab12cd) to broadcast that match to all groups.</i>")
+    
+    await msg.reply_text("\n".join(preview_lines), parse_mode="HTML", reply_to_message_id=msg.message_id)
 
 @restricted_command
 async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1204,15 +1218,18 @@ async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id != ADMIN_ID or update.effective_chat.type != "private":
         return
 
-    reply = msg.reply_to_message
-    if not reply or reply.message_id not in dm_game_previews:
-        return await msg.reply_text("❌ Please reply to the game preview message with `/play`.", reply_to_message_id=msg.message_id)
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/play [game_id]` (e.g. `/play ab12cd`)", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
-    game_info = dm_game_previews.pop(reply.message_id)
-    game_id = str(uuid.uuid4())[:8]
+    game_id = context.args[0].strip()
+    if game_id not in dm_game_previews:
+        return await msg.reply_text(f"❌ Game ID <code>{game_id}</code> not found or expired.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+
+    game_info = dm_game_previews.pop(game_id)
+    unique_game_id = str(uuid.uuid4())[:8]
 
     game_state = {
-        "game_id": game_id,
+        "game_id": unique_game_id,
         "home": game_info["home"],
         "away": game_info["away"],
         "bets": {},
@@ -1221,7 +1238,7 @@ async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "group_messages": {}, # chat_id -> message_id
         "ended": False
     }
-    active_games[game_id] = game_state
+    active_games[unique_game_id] = game_state
 
     async with db_pool.acquire() as conn:
         groups = await conn.fetch("SELECT chat_id FROM groups")
@@ -1231,7 +1248,7 @@ async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = g['chat_id']
         try:
             caption = build_game_ui(game_state)
-            markup = build_game_buttons(game_state, game_id)
+            markup = build_game_buttons(game_state, unique_game_id)
             if game_media:
                 if game_media["type"] == "photo":
                     sent_msg = await context.bot.send_photo(chat_id, game_media["file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
@@ -1244,8 +1261,8 @@ async def play_cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    await msg.reply_text(f"✅ Game broadcasted to {success_count} groups successfully!", reply_to_message_id=msg.message_id)
-    asyncio.create_task(run_group_game_loop(context, game_id))
+    await msg.reply_text(f"✅ Game (ID: <code>{game_id}</code>) broadcasted to {success_count} groups successfully!", parse_mode="HTML", reply_to_message_id=msg.message_id)
+    asyncio.create_task(run_group_game_loop(context, unique_game_id))
 
 async def show_user_team(update_or_context, chat_id, team_code, bot=None, reply_to_msg_id=None):
     async with db_pool.acquire() as conn:
@@ -3099,7 +3116,6 @@ async def run_spin_animation(bot, chat_id, user, query_message):
         r = won_card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-        # Updated /kbox win message format
         win_text = f"""🎉 𝘾𝙤𝙣𝙜𝙧𝙖𝙩𝙪𝙡𝙖𝙩𝙞𝙤𝙣𝙨 {user.first_name}
 
 USER ID {user.id}
@@ -3128,6 +3144,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("kcinfo_"):
         target_id = int(data.split("_")[1])
+        if user.id != target_id:
+            return await query.answer("❌ This info button is only for the profile owner.", show_alert=True)
+            
         async with db_pool.acquire() as conn:
             user_row = await conn.fetchrow("SELECT coins, name, vote_tickets FROM users WHERE user_id = $1", target_id)
             coins = user_row['coins'] if user_row else 0
@@ -3251,12 +3270,12 @@ CHECK /kc Use Coin /kbox"""
         help_text = """📖 <b>အကူအညီနှင့် လမ်းညွှန်ချက်များ (Help & Guidelines)</b>
 
 - Bot ကို Group ထဲသို့ထည့်ပြီး စာပေးပို့ပါက သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်သည်နှင့် ကတ်များ အလိုအလျောက်ကျလာမည်ဖြစ်ပါသည်။
-- Admin များအနေဖြင့် Bot DM တွင် /game ဖြင့် Game Preview ထုတ်၍ /play ဖြင့် Group အားလုံးသို့ ပို့ဆောင်နိုင်ပါသည်။
+- Admin များအနေဖြင့် Bot DM တွင် /game ဖြင့် Game Previews ၅ ခုထုတ်၍ /play [id] ဖြင့် Group အားလုံးသို့ ပို့ဆောင်နိုင်ပါသည်။
 - ၁ မိနစ်အတွင်း Home, Away သို့မဟုတ် Draw ကို ရွေးချယ်ပါ။
 - အနိုင်ရပါက Kachi Coins နှင့် Vote Tickets များ ရရှိမည်ဖြစ်ပါသည်။
 - /kbox ဖြင့် ကတ်ပေါက်ရန် လှည့်ပါ၊ /kc ဖြင့် မိမိ၏ Harem ကို ကြည့်ပါ။
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
-- /kgtop - Group Leaderboard ကို ကြည့်ရန်။
+- /kgtop - Group Leaderboard ကို ကြည့်ရန်。
 - /popular - Popular အဖွဲ့ဝင်များ၏ ပရိုဖိုင်ကို ကြည့်ရန်။
 - /ksell [amount] - GemStones များကို Kachi Coins ဖြင့် ရောင်းချရန်။
 - /vote - Popular ပရိုဖိုင်တွင် စာရင်းသွင်းရန်နှင့် မဲပေးရန်။
@@ -3942,7 +3961,7 @@ def main():
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
     app.add_handler(CommandHandler("popular", popular_cmd))
 
-    # Admin & Card Admin Commands (Game triggered via DM /game and /play)
+    # Admin & Card Admin Commands (Game triggered via DM /game and /play [id])
     app.add_handler(CommandHandler("game", game_cmd_dm))
     app.add_handler(CommandHandler("play", play_cmd_dm))
     app.add_handler(CommandHandler("aa", aa_cmd))
