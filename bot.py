@@ -1470,7 +1470,7 @@ async def out_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
         if user.id == team['leader_id']:
-            return await update.message.reply_text("❌ Team leader cannot leave. Use `/dele` to delete team.", parse_mode="Markdown", reply_to_message_id=msg_id)
+            return await update.message.reply_text("❌ Team leader cannot leave. Use `/dele` to delete team.", reply_to_message_id=msg_id)
 
         await conn.execute("DELETE FROM team_members WHERE team_code = $1 AND user_id = $2", team_code, user.id)
 
@@ -1913,7 +1913,7 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             user_card = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", sender.id, card_id)
             if not user_card or user_card['amount'] <= 0:
-                return await update.message.reply_text(f"❌ You do not own Card ID <code>{card_id}</code> (<b>{card['name']}</b>).", parse_mode="HTML", reply_to_message_id=msg_id)
+                return await update.message.reply_text(f"❌ You do not own Card ID <code>{card_id}</code> (<b>{card['name']}</b>).", reply_to_message_id=msg_id)
 
         text = f"""🎁 <b>Kachi Card Gift Transfer</b>
 
@@ -1979,12 +1979,20 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         
 ❀ Global Rank - #{rank}"""
 
+    total_owned_sum = sum(c['amount'] for c in user_card_rows)
+
     if not user_card_rows:
         full_text = f"{text_header}\n\n❄ <b>Owned Cards</b>\n<i>No cards yet.</i>"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"Harem❄ ({total_owned_sum})", switch_inline_query_current_chat=f"harem.{target_id}"),
+                InlineKeyboardButton("INFO 🐙", callback_data=f"kcinfo_{target_id}")
+            ]
+        ])
         if isinstance(update_or_query, Update):
-            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_to_message_id=msg_id)
+            return await update_or_query.message.reply_text(full_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
         else:
-            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML")
+            return await update_or_query.edit_message_caption(caption=full_text, parse_mode="HTML", reply_markup=keyboard)
 
     active_card = None
     if selected_card_id:
@@ -1992,7 +2000,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     if not active_card:
         active_card = user_card_rows[-1]
 
-    per_page = 5
+    per_page = 8  # Updated to 8 cards per page as requested
     total_cards = len(user_card_rows)
     total_pages = (total_cards + per_page - 1) // per_page
     page = max(0, min(page, total_pages - 1))
@@ -2021,7 +2029,10 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         if nav_row:
             keyboard_rows.append(nav_row)
 
-    keyboard_rows.append([InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{target_id}")])
+    keyboard_rows.append([
+        InlineKeyboardButton(f"Harem❄ ({total_owned_sum})", switch_inline_query_current_chat=f"harem.{target_id}"),
+        InlineKeyboardButton("INFO 🐙", callback_data=f"kcinfo_{target_id}")
+    ])
     markup = InlineKeyboardMarkup(keyboard_rows)
 
     if isinstance(update_or_query, Update):
@@ -3026,22 +3037,16 @@ async def run_group_game_loop(context: ContextTypes.DEFAULT_TYPE, game_id: str):
             await conn.execute("UPDATE users SET total_games = total_games + 1 WHERE user_id = $1", uid)
 
             if choice == win_choice:
-                reward = 400 if win_choice == "draw" else 200
+                reward = 1300 if win_choice == "draw" else 1000  # Updated coin rewards: Draw=1300, Win=1000
                 await add_coins(uid, reward)
-                await conn.execute("UPDATE users SET wins = wins + 1, vote_tickets = vote_tickets + 10 WHERE user_id = $1", uid)
-                winners.append(f"{uname} (+{reward} 🩸 | +10 🎟️)")
+                await conn.execute("UPDATE users SET wins = wins + 1, vote_tickets = vote_tickets + 30 WHERE user_id = $1", uid) # Vote tickets = 30
+                await conn.execute("""
+                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, 'gemstone', 5)
+                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 5
+                """, uid) # GemStone = 5 for winners
+                winners.append(f"{uname} (+{reward} 🩸 | +30 🎟️ | +5 💎)")
             else:
                 losers.append(uname)
-
-        gemstone_winner_str = ""
-        if len(all_participants) >= 4:
-            random_gem_user = random.choice(all_participants)
-            gem_uname = game_state["user_names"][random_gem_user]
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, 'gemstone', 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, random_gem_user)
-            gemstone_winner_str = f"\n\n💎 <b>Random GemStone Winner:</b> {gem_uname} (+1 GemStone 💎)"
 
     win_str = "\n".join(winners) if winners else "—"
     loss_str = "\n".join(losers) if losers else "—"
@@ -3056,7 +3061,7 @@ async def run_group_game_loop(context: ContextTypes.DEFAULT_TYPE, game_id: str):
 {win_str}
 
 🐸 <b>Losers</b> -
-{loss_str}{gemstone_winner_str}"""
+{loss_str}"""
 
     leader_markup = get_leaderboard_buttons()
 
@@ -3097,26 +3102,24 @@ async def run_spin_animation(bot, chat_id, user, query_message):
             """, user.id, won_card['card_id'])
 
             rem_coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
-            new_amount = await conn.fetchval("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, won_card['card_id'])
 
         try:
             await query_message.delete()
         except Exception:
             pass
 
-        amount_notice = f"\n📦 <b>Total Owned:</b> {new_amount}x" if new_amount > 1 else ""
         r = won_card.get('rarity', 'Ten')
         r_emoji = "🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮"))
 
-        win_text = f"""🎉 <b>Congratulations {get_mention(user.id, user.first_name)}!</b>
+        # Updated win message format as requested
+        win_text = f"""🎉 𝘾𝙤𝙣𝙜𝙧𝙖𝙩𝙪𝙡𝙖𝙩𝙞𝙤𝙣𝙨 
 
-🆔 <b>User ID:</b> <code>{user.id}</code>
-💰 <b>Remaining Coins:</b> {rem_coins} 🩸
+{user.id}
+🩸 {rem_coins} 
 
-🎴 <b>Card Won:</b>
-🏷 <b>Name:</b> {won_card['name']}
-🌟 <b>Rarity:</b> {r_emoji} {r}
-🔢 <b>Card ID:</b> <code>{won_card['card_id']}</code>{amount_notice}"""
+{won_card['name']} 
+🧶 {r_emoji} {r}
+  🎩  {won_card['card_id']}"""
 
         if won_card['type'] == 'photo':
             await bot.send_photo(chat_id=chat_id, photo=won_card['file_id'], caption=win_text, parse_mode="HTML")
@@ -3134,6 +3137,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
+
+    if data.startswith("kcinfo_"):
+        target_id = int(data.split("_")[1])
+        async with db_pool.acquire() as conn:
+            user_row = await conn.fetchrow("SELECT coins, name, vote_tickets FROM users WHERE user_id = $1", target_id)
+            coins = user_row['coins'] if user_row else 0
+            tickets = user_row['vote_tickets'] if user_row else 0
+            display_name = user_row['name'] if user_row else user.first_name
+
+            rank_row = await conn.fetchrow("SELECT COUNT(*) + 1 AS rank FROM users WHERE coins > $1", coins)
+            rank = rank_row['rank']
+
+            gem_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = 'gemstone'", target_id)
+            gem_count = gem_row['amount'] if gem_row else 0
+
+        info_text = f"""❀ Name - {get_mention(target_id, display_name)}
+        ⬤ ID - <code>{target_id}</code>
+🩸 Kachi Coin - <b>{coins}</b>
+      💎 GemStone - <b>{gem_count}</b>
+🎟 Vote Tickets - <b>{tickets}</b>
+        
+❀ Global Rank - #{rank}"""
+
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("Back ◀️", callback_data=f"kcpage_0_{target_id}")]])
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption=info_text, parse_mode="HTML", reply_markup=markup)
+            else:
+                await query.edit_message_text(text=info_text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
 
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
