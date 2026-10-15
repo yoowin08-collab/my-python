@@ -108,7 +108,6 @@ async def init_db():
         except Exception:
             pass
 
-        # Cap coins at 1000 for users having > 1000
         await conn.execute("UPDATE users SET coins = 1000 WHERE coins > 1000;")
 
         db_groups = await conn.fetch("SELECT chat_id, threshold FROM groups")
@@ -125,7 +124,6 @@ async def init_db():
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
 
-# Bot-level Ban & Mute Restriction Decorator
 def restricted_command(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -247,13 +245,12 @@ async def get_weighted_random_card(conn):
     if not cards:
         return None
     
-    # Rarity Weights ( probability factor )
     rarity_weights = {
-        "Shinsei": 2,   # 🧬 2%
-        "Kiwami": 8,    # 🪞 8%
-        "Kami": 15,     # ✨ 15%
-        "Hoshi": 30,    # ⚜️ 30%
-        "Ten": 45       # 💮 45%
+        "Shinsei": 2,
+        "Kiwami": 8,
+        "Kami": 15,
+        "Hoshi": 30,
+        "Ten": 45
     }
     
     weights = [rarity_weights.get(c['rarity'], 45) for c in cards]
@@ -283,7 +280,6 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await update.callback_query.answer("❌ Please join the channel first.", show_alert=True)
         return False
 
-# Quiz Commands (/aa and /send)
 @restricted_command
 async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -400,7 +396,6 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups (members > 30) successfully!", reply_to_message_id=msg.message_id)
 
-# /start Command
 @restricted_command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -454,7 +449,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /addadmin Command
 @restricted_command
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -477,7 +471,6 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
-# /admin Command
 @restricted_command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -508,7 +501,42 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /spw Command (Admin Only)
+# Helper function for sending card drops with 🐌 animation & 4sec delay
+async def send_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int, specific_card=None):
+    anim_msg = await context.bot.send_message(chat_id, "🐌")
+    await asyncio.sleep(4)
+    try:
+        await context.bot.delete_message(chat_id, anim_msg.message_id)
+    except Exception:
+        pass
+
+    async with db_pool.acquire() as conn:
+        if specific_card:
+            drop_card = specific_card
+        else:
+            drop_card = await get_weighted_random_card(conn)
+    if not drop_card:
+        return
+
+    r = drop_card.get('rarity', 'Ten')
+    r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
+
+    # Fixed: Removed the card name from command text to avoid duplication, keeping it only in the spoiler ||name||
+    drop_text = f"""{r_emoji} A Kachi Character Has Spawned In The Chat 🍭
+Catch This Character Add To Your Harem Kc Use <code>/kcc</code> 🧊
+||{drop_card['name']}||"""
+
+    if drop_card['type'] == 'photo':
+        sent_msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
+    else:
+        sent_msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
+
+    active_card_drops[sent_msg.message_id] = {
+        "chat_id": chat_id,
+        "card": drop_card,
+        "claimed": False
+    }
+
 @restricted_command
 async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -522,35 +550,15 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     card_id_arg = context.args[0].strip() if context.args else None
 
-    async with db_pool.acquire() as conn:
-        if card_id_arg:
+    drop_card = None
+    if card_id_arg:
+        async with db_pool.acquire() as conn:
             drop_card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id = $1", card_id_arg)
             if not drop_card:
                 return await msg.reply_text(f"❌ Card ID <code>{card_id_arg}</code> not found.", parse_mode="HTML", reply_to_message_id=msg.message_id)
-        else:
-            drop_card = await get_weighted_random_card(conn)
-            if not drop_card:
-                return await msg.reply_text("❌ No cards available in database.", reply_to_message_id=msg.message_id)
 
-    r = drop_card.get('rarity', 'Ten')
-    r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
+    asyncio.create_task(send_card_drop(context, chat.id, drop_card))
 
-    drop_text = f"""{r_emoji} A Kachi Character Has Spawned In The Chat 🍭
-Catch This Character Add To Your Harem Kc Use <code>/kcc {drop_card['name']}</code> 🧊
-||{drop_card['name']}||"""
-
-    if drop_card['type'] == 'photo':
-        sent_msg = await context.bot.send_photo(chat.id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
-    else:
-        sent_msg = await context.bot.send_video(chat.id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
-
-    active_card_drops[sent_msg.message_id] = {
-        "chat_id": chat.id,
-        "card": drop_card,
-        "claimed": False
-    }
-
-# Bot-level Moderation Commands (/mute, /ban, /umute, /unban)
 def parse_time(time_str: str) -> int:
     time_str = time_str.lower().strip()
     mult = 1
@@ -1414,7 +1422,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🩸 Kachi Value ( {coin_value} )
    🐠 Global Drops - <b>{global_drop_count}</b>
 
-▱▱▰▰▱▱▰▰▱▱▰▰
+▰▰▰▰▱▱▰▰▰▰▰▰
 Top Owners 🐾
 {owners_str}"""
 
@@ -1659,25 +1667,35 @@ Status: Successful ✅
         text_content = msg.text or msg.caption or ""
 
         # Check /kcc [Card Name] guess
-        if text_content.startswith("/kcc "):
-            guessed_name = text_content[5:].strip().lower()
+        if text_content.startswith("/kcc"):
+            parts = text_content.split(" ", 1)
+            guessed_name = parts[1].strip().lower() if len(parts) > 1 else ""
+            
+            # Find target drop (via reply or latest active drop in chat)
+            target_drop = None
             reply_to = msg.reply_to_message
-
             if reply_to and reply_to.message_id in active_card_drops:
-                drop = active_card_drops[reply_to.message_id]
-                card = drop["card"]
+                target_drop = active_card_drops[reply_to.message_id]
+            else:
+                for m_id, drop in active_card_drops.items():
+                    if drop["chat_id"] == chat_id and not drop["claimed"]:
+                        target_drop = drop
+                        break
 
-                if drop["claimed"]:
-                    winner_display = get_mention(drop["winner_id"], drop["winner_name"])
+            if target_drop:
+                card = target_drop["card"]
+
+                if target_drop["claimed"]:
+                    winner_display = get_mention(target_drop["winner_id"], target_drop["winner_name"])
                     late_text = f"""Too Late ! ❄
 He Already Catch This Character
 {winner_display}, Try Again Next Character Spawn In The Chat 🥒"""
                     return await msg.reply_text(late_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
 
                 if guessed_name == card['name'].strip().lower():
-                    drop["claimed"] = True
-                    drop["winner_id"] = user.id
-                    drop["winner_name"] = user.first_name
+                    target_drop["claimed"] = True
+                    target_drop["winner_id"] = user.id
+                    target_drop["winner_name"] = user.first_name
 
                     async with db_pool.acquire() as conn:
                         await conn.execute("""
@@ -1688,6 +1706,14 @@ He Already Catch This Character
                     r = card.get('rarity', 'Ten')
                     r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
                     
+                    # Send 🌩 animation, wait 3 seconds, delete it, then reply with result
+                    anim_reply = await msg.reply_text("🌩", reply_to_message_id=msg.message_id)
+                    await asyncio.sleep(3)
+                    try:
+                        await anim_reply.delete()
+                    except Exception:
+                        pass
+
                     win_msg = f"⛩ Congratulations , {get_mention(user.id, user.first_name)} Now You Got A New Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
                     
                     keyboard = InlineKeyboardMarkup([
@@ -1784,40 +1810,12 @@ He Already Catch This Character
                 """, chat_id, threshold)
 
                 if row and row['should_drop']:
-                    asyncio.create_task(trigger_card_drop(context, chat_id))
+                    asyncio.create_task(send_card_drop(context, chat_id, None))
         except Exception as e:
             print(f"Error in group message handler: {e}")
 
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    anim_msg = await context.bot.send_message(chat_id, "🐌")
-    await asyncio.sleep(4)
-    try:
-        await context.bot.delete_message(chat_id, anim_msg.message_id)
-    except Exception:
-        pass
-
-    async with db_pool.acquire() as conn:
-        drop_card = await get_weighted_random_card(conn)
-    if not drop_card:
-        return
-
-    r = drop_card.get('rarity', 'Ten')
-    r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
-
-    drop_text = f"""{r_emoji} A Kachi Character Has Spawned In The Chat 🍭
-Catch This Character Add To Your Harem Kc Use <code>/kcc {drop_card['name']}</code> 🧊
-||{drop_card['name']}||"""
-
-    if drop_card['type'] == 'photo':
-        msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
-    else:
-        msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
-
-    active_card_drops[msg.message_id] = {
-        "chat_id": chat_id,
-        "card": drop_card,
-        "claimed": False
-    }
+    await send_card_drop(context, chat_id, None)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
