@@ -424,7 +424,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_info = await context.bot.get_me()
     text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
-🌺 Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊Տ မှ ကြိုဆိုပါတယ်!
+🌺 Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်!
 
 📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
 - Bot ကို Group ထဲသို့ ထည့်ပါ။
@@ -478,21 +478,20 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>List:</b>
 1. /aa - Create trivia quiz
 2. /send - Broadcast quiz to groups (reply to /aa)
-3. /c [gpid] [count] - Set threshold for a specific group
-4. /crest - Reset all thresholds & message counts
-5. /k [user_id] [amount] - Add/remove Kachi
-6. /addadmin [user_id] - Add Card Admin
-7. /add - Add new card (reply to media)
-8. /del [card_id] - Delete card
-9. /cardlist - View all cards
-10. /glist - View groups list
-11. /stats - View stats
-12. /broadcast - Broadcast message
-13. /check [user_id] - Check user profile info
-14. /mute [id] [time] [reason] - Mute user from bot usage
-15. /ban [id] [reason] - Ban user from bot usage
-16. /umute [id] - Unmute user from bot usage
-17. /unban [id] - Unban user from bot usage"""
+3. /crest - Reset all thresholds & message counts
+4. /k [user_id] [amount] - Add/remove Kachi
+5. /addadmin [user_id] - Add Card Admin
+6. /add - Add new card (reply to media)
+7. /del [card_id] - Delete card
+8. /cardlist - View all cards
+9. /glist - View groups list
+10. /stats - View stats
+11. /broadcast - Broadcast message
+12. /check [user_id] - Check user profile info
+13. /mute [id] [time] [reason] - Mute user from bot usage
+14. /ban [id] [reason] - Ban user from bot usage
+15. /umute [id] - Unmute user from bot usage
+16. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1674,16 +1673,17 @@ Status: Successful ✅
                     ON CONFLICT (chat_id) DO UPDATE SET title = COALESCE($2, groups.title)
                 """, chat_id, chat.title or "Group")
                 
-                threshold = 60
+                threshold = 60  # Fixed threshold to 60 for all groups
 
                 row = await conn.fetchrow("""
                     UPDATE groups 
-                    SET msg_count = CASE WHEN msg_count + 1 >= $2 THEN 0 ELSE msg_count + 1 END
-                    WHERE chat_id = $1
-                    RETURNING msg_count, (msg_count = 0) AS should_drop
-                """, chat_id, threshold)
+                    SET msg_count = msg_count + 1 
+                    WHERE chat_id = $1 
+                    RETURNING msg_count
+                """, chat_id)
 
-                if row and row['should_drop']:
+                if row and row['msg_count'] >= threshold:
+                    await conn.execute("UPDATE groups SET msg_count = 0 WHERE chat_id = $1", chat_id)
                     asyncio.create_task(trigger_card_drop(context, chat_id))
         except Exception as e:
             print(f"Error in group message handler: {e}")
