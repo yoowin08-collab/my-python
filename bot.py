@@ -1775,28 +1775,31 @@ async def kcc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     guessed_name = parts[1].strip().lower()
 
+    # Check if replied message is an active card drop, or find active drop in chat
     target_drop_msg_id = None
     drop_data = None
-    for m_id, drop in active_card_drops.items():
-        if drop["chat_id"] == chat_id:
-            target_drop_msg_id = m_id
-            drop_data = drop
-            break
+    
+    if msg.reply_to_message and msg.reply_to_message.message_id in active_card_drops:
+        target_drop_msg_id = msg.reply_to_message.message_id
+        drop_data = active_card_drops[target_drop_msg_id]
+    else:
+        for m_id, drop in active_card_drops.items():
+            if drop["chat_id"] == chat_id:
+                target_drop_msg_id = m_id
+                drop_data = drop
+                break
 
     if not drop_data:
+        return
+
+    # If the card drop is already claimed, ignore completely (do nothing / don't reply)
+    if drop_data["claimed"]:
         return
 
     card = drop_data["card"]
     card_name_clean = card["name"].strip().lower()
 
     if guessed_name == card_name_clean:
-        if drop_data["claimed"]:
-            winner_name = drop_data["winner_name"]
-            late_text = f"""Tᴏᴏ Lᴀᴛᴇ ! ❄
-He Already Catch this Character
-{winner_name} ,Tʀʏ ᴀɢᴀɪɴ Nᴇxᴛ Cʜᴀʀᴀᴄᴛᴇʀ Sᴘᴀᴡɴ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ 🥒"""
-            return await msg.reply_text(late_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-
         drop_data["claimed"] = True
         drop_data["winner_id"] = user.id
         drop_data["winner_name"] = user.first_name
@@ -1848,21 +1851,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, chat, context)
 
-    # Check if user sent or forwarded a card photo/video to get the /kcc command copyable text
-    file_id = None
-    if msg.photo:
-        file_id = msg.photo[-1].file_id
-    elif msg.video:
-        file_id = msg.video.file_id
+    # Check if user replied to a card photo/video with /k to get the /kcc command copyable text
+    if msg.text and msg.text.strip().lower() == "/k" and msg.reply_to_message:
+        reply_msg = msg.reply_to_message
+        file_id = None
+        if reply_msg.photo:
+            file_id = reply_msg.photo[-1].file_id
+        elif reply_msg.video:
+            file_id = reply_msg.video.file_id
 
-    if file_id:
-        async with db_pool.acquire() as conn:
-            card_row = await conn.fetchrow("SELECT name, card_id FROM cards WHERE file_id = $1", file_id)
-            if card_row:
-                card_name = card_row['name']
-                reply_text = f"USE THIS : <code>/kcc {card_name}</code>"
-                await msg.reply_text(reply_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-                return
+        if file_id:
+            async with db_pool.acquire() as conn:
+                card_row = await conn.fetchrow("SELECT name, card_id FROM cards WHERE file_id = $1", file_id)
+                if card_row:
+                    card_name = card_row['name']
+                    reply_text = f"USE THIS : <code>/kcc {card_name}</code>"
+                    await msg.reply_text(reply_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+                    return
 
     if chat.type == "private":
         if user.id in pending_kachi_transfers:
