@@ -1162,12 +1162,91 @@ async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display_name = user_row['name'] if user_row else user.first_name
 
     bot_info = await context.bot.get_me()
-    text = f"ɴᴀᴍᴇ : {display_name}\nᴋᴀᴄʜɪ ʙᴀ𝗹𝗮𝗻𝗰𝗲 : {kachi_amount}\nᴜsᴇʀ ɪᴅ : <code>{target_id}</code>"
+    text = f"Name : {display_name}\nKachi Balance : {kachi_amount}\nUser ID : <code>{target_id}</code>"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Sᴇɴᴅ 𝗞𝗮𝗰𝗵𝗶", url=f"https://t.me/{bot_info.username}?start=kachi_{target_id}")]
+        [InlineKeyboardButton(f"Send Kachi", url=f"https://t.me/{bot_info.username}?start=kachi_{target_id}")]
     ])
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+@restricted_command
+async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/klot [Kachiamount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        bet_amount = int(context.args[0])
+    except ValueError:
+        return await msg.reply_text("❌ Please enter a valid Kachi amount to trade.", reply_to_message_id=msg_id)
+
+    if bet_amount <= 0:
+        return await msg.reply_text("❌ Trade amount must be greater than 0.", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
+        current_coins = user_row['coins'] if user_row else 1000
+        display_name = user_row['name'] if user_row else user.first_name
+
+    if current_coins < bet_amount:
+        return await msg.reply_text(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+    # Determine win or loss (50/50 chance or based on random)
+    is_win = random.choice([True, False])
+    profit_loss = bet_amount if is_win else -bet_amount
+
+    if is_win:
+        new_balance = current_coins + bet_amount
+    else:
+        new_balance = max(0, current_coins - bet_amount)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
+
+    # 5 seconds progressive animation frames
+    steps = [
+        "📈 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Market Analyzing... [ 20% ]\n💎 Kachi Balance: {bal}",
+        "📉 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Price fluctuating up & down... [ 45% ]\n💎 Kachi Balance: {bal}",
+        "📈 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Calculating final position... [ 75% ]\n💎 Kachi Balance: {bal}",
+        "📉 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Almost done... [ 95% ]\n💎 Kachi Balance: {bal}"
+    ]
+
+    sent_msg = await msg.reply_text(steps[0].format(name=display_name, bal=current_coins), parse_mode="HTML", reply_to_message_id=msg_id)
+
+    for step_text in steps[1:]:
+        await asyncio.sleep(1.2)
+        try:
+            await sent_msg.edit_text(step_text.format(name=display_name, bal=current_coins), parse_mode="HTML")
+        except Exception:
+            pass
+
+    await asyncio.sleep(1.2)
+
+    # Final result message formatting
+    if is_win:
+        final_text = f"""Kachi Trader Name: {display_name}
+Trading Result: Profit 📈 (+{bet_amount} Kachi)
+Kachi Balance: {new_balance}
+
+🦕 How Luck ! Congregation For U {display_name} 🤍"""
+    else:
+        final_text = f"""Kachi Trader Name: {display_name}
+Trading Result: Loss 📉 (-{bet_amount} Kachi)
+Kachi Balance: {new_balance}
+
+🖤 GoodLuck Next Time🍀"""
+
+    try:
+        await sent_msg.edit_text(final_text, parse_mode="HTML")
+    except Exception:
+        pass
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
@@ -2195,6 +2274,7 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
+    app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
