@@ -614,10 +614,13 @@ async def cardsell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     u_row = await conn_u.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
                     current_coins = u_row['coins'] if u_row else 0
 
+            # ပြင်ဆင်ထားချက် - f-string ထဲတွင် backslash မပါစေရန် အပြင်ဘက်တွင် သီးသန့် variable အဖြစ် ပြောင်းထားပါသည်
+            sold_summary_text = "\n".join(sold_summary)
+
             summary_text = f"""💰 <b>Card Selling Receipt</b>
 
 👤 <b>Seller:</b> {get_mention(user.id, user.first_name)}
-{"\n".join(sold_summary)}
+{sold_summary_text}
 
 ━━━━━━━━━━━━━━━━━━━
 💎 <b>Total Earned:</b> +{total_earned} Kachi
