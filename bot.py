@@ -421,6 +421,16 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
+    if context.args and context.args[0] == "cardsell":
+        return await update.message.reply_text(
+            "💰 <b>Card Selling Center (Bot DM)</b>\n\n"
+            "ကဒ်များရောင်းချရန်အတွက် အောက်ပါပုံစံအတိုင်း ပို့ပေးပါ။\n"
+            "<b>ပုံစံ:</b> <code>/cardsell [id] [2x id] [id] [3x id]</code> (သို့) ကဒ်တူများအတွက် <code>/cardsell id id 2x id</code>\n\n"
+            "ဥပမာ - <code>/cardsell 1001 2x1002 1001</code>",
+            parse_mode="HTML",
+            reply_to_message_id=msg_id
+        )
+
     bot_info = await context.bot.get_me()
     text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
@@ -429,6 +439,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
 - Bot ကို Group ထဲသို့ ထည့်ပါ။
 - Group ထဲတွင် စာပေးပို့ပါ (သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်ပါက ကတ်များ အလိုအလျောက် ကျလာပါမည်)။
+- /kbox - Group ထဲတွင် ကတ်ဖောက်ရန် (300 Kachi ကျသင့်သည်)။
+- /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - ဦးဆောင်သူစာရင်းများကို ကြည့်ရန် /ktop ကို အသုံးပြုပါ။"""
 
     keyboard = InlineKeyboardMarkup([
@@ -442,6 +454,158 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+# /kbox Command (Group Only Card Box Pull)
+@restricted_command
+async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    await register_user_group(user, chat, context)
+
+    if not await check_force_join(update, context):
+        return
+
+    if chat.type not in ["group", "supergroup"]:
+        return await msg.reply_text("❌ `/kbox` command can only be used in groups.", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    text = f"""It costs 300 each time
+The rewards are 💮Ten to 🧬Shinsei
+
+GoodLuck⚡"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("CARD PULL 🦊", callback_data=f"kbox_pull_{user.id}")]
+    ])
+
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+
+# /cardsell Command (DM Selling & Group Info)
+@restricted_command
+async def cardsell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    await register_user_group(user, chat, context)
+
+    if not await check_force_join(update, context):
+        return
+
+    bot_info = await context.bot.get_me()
+
+    if chat.type in ["group", "supergroup"]:
+        text = f"""🎴 <b>Card Selling Center</b>
+
+👤 <b>User:</b> {get_mention(user.id, user.first_name)}
+🆔 <b>ID:</b> <code>{user.id}</code>
+
+<i>Click the button below to sell cards in Bot DM!</i>"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("SELL CARD 💰", url=f"https://t.me/{bot_info.username}?start=cardsell")]
+        ])
+        return await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+
+    if chat.type == "private":
+        args = context.args
+        if not args:
+            help_msg = """💰 <b>Card Selling Instructions</b>
+
+ကဒ်များရောင်းချရန်အတွက် အောက်ပါပုံစံအတိုင်း ပို့ပေးပါ။
+<b>ပုံစံ:</b> <code>/cardsell [id] [2x id] [id] [3x id]</code> (သို့) ကဒ်တူများအတွက် <code>/cardsell id id 2x id</code>
+
+ဥပမာ - <code>/cardsell 1001 2x1002 1001</code>"""
+            return await msg.reply_text(help_msg, parse_mode="HTML", reply_to_message_id=msg.message_id)
+
+        sell_requests = {}
+        i = 0
+        while i < len(args):
+            token = args[i].strip()
+            qty = 1
+            cid = None
+
+            if "x" in token.lower():
+                parts = token.lower().split("x")
+                if parts[0].isdigit() and parts[1].isdigit():
+                    qty = int(parts[0])
+                    cid = parts[1]
+                elif parts[0].isdigit() and parts[1] == "" and i + 1 < len(args) and args[i+1].isdigit():
+                    qty = int(parts[0])
+                    cid = args[i+1]
+                    i += 1
+            elif token.isdigit():
+                if i > 0 and args[i-1].lower().endswith('x') and args[i-1].replace('x','').isdigit():
+                    qty = int(args[i-1].replace('x',''))
+                    cid = token
+                else:
+                    cid = token
+
+            if cid:
+                sell_requests[cid] = sell_requests.get(cid, 0) + qty
+            i += 1
+
+        if not sell_requests:
+            return await msg.reply_text("❌ Invalid format. Use: `/cardsell 1001 2x1002`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+        async with db_pool.acquire() as conn:
+            total_earned = 0
+            sold_summary = []
+            
+            for cid, req_qty in sell_requests.items():
+                user_card = await conn.fetchrow("""
+                    SELECT uc.amount, c.name, c.rarity 
+                    FROM user_cards uc
+                    JOIN cards c ON uc.card_id = c.card_id
+                    WHERE uc.user_id = $1 AND uc.card_id = $2
+                """, user.id, cid)
+
+                if not user_card or user_card['amount'] < req_qty:
+                    available = user_card['amount'] if user_card else 0
+                    sold_summary.append(f"❌ Card ID <code>{cid}</code>: You only have {available}x (Requested {req_qty}x)")
+                    continue
+
+                rarity = user_card['rarity'] or 'Ten'
+                card_name = user_card['name']
+
+                card_total_earned = 0
+                for _ in range(req_qty):
+                    if rarity in ["Ten", "Hoshi"]:
+                        card_total_earned += random.randint(90, 200)
+                    elif rarity == "Kami":
+                        card_total_earned += random.randint(150, 300)
+                    elif rarity == "Kiwami":
+                        card_total_earned += random.randint(250, 400)
+                    elif rarity == "Shinsei":
+                        card_total_earned += random.randint(300, 450)
+                    else:
+                        card_total_earned += random.randint(90, 200)
+
+                new_amount = user_card['amount'] - req_qty
+                if new_amount <= 0:
+                    await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, cid)
+                else:
+                    await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amount, user.id, cid)
+
+                total_earned += card_total_earned
+                r_emoji = "🧬" if rarity == 'Shinsei' else ("🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮")))
+                sold_summary.append(f"✅ {card_name} ({cid}) {r_emoji} {rarity} x{req_qty} — <b>+{card_total_earned} Kachi</b>")
+
+            if total_earned > 0:
+                await add_coins(user.id, total_earned)
+
+            async with db_pool.acquire() as conn_u:
+                u_row = await conn_u.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+                current_coins = u_row['coins'] if u_row else 0
+
+        summary_text = f"""💰 <b>Card Selling Receipt</b>
+
+👤 <b>Seller:</b> {get_mention(user.id, user.first_name)}
+{"\n".join(sold_summary)}
+
+━━━━━━━━━━━━━━━━━━━
+💎 <b>Total Earned:</b> +{total_earned} Kachi
+💳 <b>Current Balance:</b> <b>{current_coins}</b> Kachi"""
+
+        await msg.reply_text(summary_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
 
 # /addadmin Command
 @restricted_command
@@ -1825,6 +1989,61 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
+    if data.startswith("kbox_pull_"):
+        target_uid = int(data.replace("kbox_pull_", ""))
+        if user.id != target_uid:
+            return await query.answer("❌ This is not your card box pull!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            u_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+            coins = u_row['coins'] if u_row else 0
+
+        if coins < 300:
+            return await query.answer("❌ You need at least 300 Kachi to pull a card!", show_alert=True)
+
+        await add_coins(user.id, -300)
+
+        try:
+            await query.edit_message_text("💥 Please wait 3 seconds. Giving you a card!❄", parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+
+        await asyncio.sleep(3)
+
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        async with db_pool.acquire() as conn:
+            cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards")
+            if not cards:
+                return await context.bot.send_message(chat_id, "❌ No cards available in the database yet!")
+
+            pulled_card = random.choice(cards)
+
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, user.id, pulled_card['card_id'])
+
+        r = pulled_card.get('rarity', 'Ten')
+        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
+
+        success_caption = f"""🎉 Congratulations! {get_mention(user.id, user.first_name)} You got a card!
+{pulled_card['name']}, <code>{pulled_card['card_id']}</code>, {r_emoji} {r}
+🔍 Check: /kc
+📖 Details: /card {pulled_card['card_id']}"""
+
+        try:
+            if pulled_card['type'] == 'photo':
+                await context.bot.send_photo(chat_id=chat_id, photo=pulled_card['file_id'], caption=success_caption, parse_mode="HTML")
+            else:
+                await context.bot.send_video(chat_id=chat_id, video=pulled_card['file_id'], caption=success_caption, parse_mode="HTML")
+        except Exception:
+            await context.bot.send_message(chat_id=chat_id, text=success_caption, parse_mode="HTML")
+        return
+
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
 
@@ -1914,6 +2133,8 @@ CHECK /kc Use Kachi"""
         help_text = """📖 <b>အကူအညီနှင့် လမ်းညွှန်ချက်များ (Help & Guidelines)</b>
 
 - Bot ကို Group ထဲသို့ထည့်ပြီး စာပေးပို့ပါက သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်သည်နှင့် ကတ်များ အလိုအလျောက်ကျလာမည်ဖြစ်ပါသည်။
+- /kbox - Group ထဲတွင် ကတ်ဖောက်ရန် (300 Kachi ကျသင့်သည်)။
+- /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
 - /kgtop - Group Leaderboard ကို ကြည့်ရန်။
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
@@ -1942,6 +2163,8 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
 📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
 - Bot ကို Group ထဲသို့ ထည့်ပါ။
 - Group ထဲတွင် စာပေးပို့ပါ (သတ်မှတ်ထားသော စာအရေအတွက်ပြည့်ပါက ကတ်များ အလိုအလျောက် ကျလာပါမည်)။
+- /kbox - Group ထဲတွင် ကတ်ဖောက်ရန် (300 Kachi ကျသင့်သည်)။
+- /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - ဦးဆောင်သူစာရင်းများကို ကြည့်ရန် /ktop ကို အသုံးပြုပါ။"""
         keyboard = InlineKeyboardMarkup([
             [
@@ -2186,6 +2409,8 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
+    app.add_handler(CommandHandler("kbox", kbox_cmd))
+    app.add_handler(CommandHandler("cardsell", cardsell_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
