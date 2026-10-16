@@ -1755,7 +1755,7 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "winner_name": None
     }
 
-# Dedicated /kcc Command Handler
+# Dedicated /kcc Command Handler (Supports /kcc name and /kcc@BotName name)
 @restricted_command
 async def kcc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -2200,7 +2200,7 @@ CHECK /kc Use Kachi"""
 - /kbox - Group ထဲတွင် ကတ်ဖောက်ရန် (300 Kachi ကျသင့်သည်)။
 - /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
-- /kgtop - Group Leaderboard ကို ကြည့်ရန်။
+- /kgtop - Group Leaderboard ကို ကြည့်ရန်።
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
 - /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
