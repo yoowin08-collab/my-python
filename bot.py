@@ -587,15 +587,15 @@ async def cardsell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     card_total_earned = 0
                     for _ in range(req_qty):
                         if rarity in ["Ten", "Hoshi"]:
-                            card_total_earned += random.randint(90, 200)
+                            card_total_earned += random.randint(30, 50)
                         elif rarity == "Kami":
-                            card_total_earned += random.randint(150, 300)
+                            card_total_earned += random.randint(50, 65)
                         elif rarity == "Kiwami":
-                            card_total_earned += random.randint(250, 400)
+                            card_total_earned += random.randint(65, 80)
                         elif rarity == "Shinsei":
-                            card_total_earned += random.randint(300, 450)
+                            card_total_earned += random.randint(75, 90)
                         else:
-                            card_total_earned += random.randint(90, 200)
+                            card_total_earned += random.randint(30, 50)
 
                     new_amount = user_card['amount'] - req_qty
                     if new_amount <= 0:
@@ -614,7 +614,6 @@ async def cardsell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     u_row = await conn_u.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
                     current_coins = u_row['coins'] if u_row else 0
 
-            # ပြင်ဆင်ထားချက် - f-string ထဲတွင် backslash မပါစေရန် အပြင်ဘက်တွင် သီးသန့် variable အဖြစ် ပြောင်းထားပါသည်
             sold_summary_text = "\n".join(sold_summary)
 
             summary_text = f"""💰 <b>Card Selling Receipt</b>
@@ -2163,7 +2162,7 @@ CHECK /kc Use Kachi"""
 - /kbox - Group ထဲတွင် ကတ်ဖောက်ရန် (300 Kachi ကျသင့်သည်)။
 - /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
-- /kgtop - Group Leaderboard ကို ကြည့်ရန်။
+- /kgtop - Group Leaderboard ကို ကြည့်ရန်።
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
 - /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
