@@ -81,7 +81,6 @@ async def init_db():
                 name TEXT,
                 type TEXT,
                 file_id TEXT,
-                file_unique_id TEXT,
                 rarity TEXT
             );
             CREATE TABLE IF NOT EXISTS user_cards (
@@ -106,7 +105,6 @@ async def init_db():
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
-            await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS file_unique_id TEXT;")
         except Exception:
             pass
 
@@ -1069,15 +1067,13 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if reply.photo:
         file_id = reply.photo[-1].file_id
-        file_unique_id = reply.photo[-1].file_unique_id
         c_type = "photo"
     else:
         file_id = reply.video.file_id
-        file_unique_id = reply.video.file_unique_id
         c_type = "video"
 
     async with db_pool.acquire() as conn:
-        existing_card = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1 OR file_id = $2 OR file_unique_id = $3", card_id, file_id, file_unique_id)
+        existing_card = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1 OR file_id = $2", card_id, file_id)
         if existing_card:
             return await update.message.reply_text(f"⚠️ Card ID (<code>{card_id}</code>) or media already exists.", parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1086,7 +1082,6 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "card_name": card_name,
         "type": c_type,
         "file_id": file_id,
-        "file_unique_id": file_unique_id,
         "is_card_admin": is_card_admin
     }
 
@@ -1760,36 +1755,30 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "winner_name": None
     }
 
-# Dedicated /kcc Command Handler (Supports /kcc name and /kcc@BotName name)
+# Dedicated /kcc Command Handler
 @restricted_command
 async def kcc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    msg = update.effective_message or update.message
-    if not chat or not user or not msg:
+    msg = update.message
+    if not chat or not msg or not user or user.is_bot:
         return
 
     await register_user_group(user, chat, context)
-    if not await check_force_join(update, context):
-        return
 
     if chat.type not in ["group", "supergroup"]:
-        return await msg.reply_text("❌ `/kcc` command can only be used in groups to catch cards.", parse_mode="Markdown")
-
-    guessed_name = " ".join(context.args).strip().lower() if context.args else ""
-    if not guessed_name:
-        text = msg.text or ""
-        parts = text.split(" ", 1)
-        if len(parts) > 1:
-            guessed_name = parts[1].strip().lower()
-
-    if not guessed_name:
         return
+
+    chat_id = chat.id
+    parts = msg.text.split(" ", 1)
+    if len(parts) < 2:
+        return
+    guessed_name = parts[1].strip().lower()
 
     target_drop_msg_id = None
     drop_data = None
     for m_id, drop in active_card_drops.items():
-        if drop["chat_id"] == chat.id and not drop["claimed"]:
+        if drop["chat_id"] == chat_id:
             target_drop_msg_id = m_id
             drop_data = drop
             break
@@ -1834,15 +1823,15 @@ He Already Catch this Character
         ])
 
         try:
-            await context.bot.delete_message(chat_id=chat.id, message_id=target_drop_msg_id)
+            await context.bot.delete_message(chat_id=chat_id, message_id=target_drop_msg_id)
         except Exception:
             pass
 
         try:
             if card['type'] == 'photo':
-                await context.bot.send_photo(chat.id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
             else:
-                await context.bot.send_video(chat.id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
         except Exception:
             await msg.reply_text(win_msg, parse_mode="HTML", reply_markup=keyboard)
 
@@ -1859,24 +1848,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, chat, context)
 
-    # Check if a card photo/video is forwarded/sent to the bot to get the copyable /kcc command
-    file_id_to_check = None
-    file_unique_id_to_check = None
+    # Check if user sent or forwarded a card photo/video to get the /kcc command copyable text
+    file_id = None
     if msg.photo:
-        file_id_to_check = msg.photo[-1].file_id
-        file_unique_id_to_check = msg.photo[-1].file_unique_id
+        file_id = msg.photo[-1].file_id
     elif msg.video:
-        file_id_to_check = msg.video.file_id
-        file_unique_id_to_check = msg.video.file_unique_id
+        file_id = msg.video.file_id
 
-    if file_id_to_check or file_unique_id_to_check:
+    if file_id:
         async with db_pool.acquire() as conn:
-            card_match = await conn.fetchrow(
-                "SELECT name, card_id, rarity FROM cards WHERE file_id = $1 OR file_unique_id = $2",
-                file_id_to_check, file_unique_id_to_check
-            )
-            if card_match:
-                card_name = card_match['name']
+            card_row = await conn.fetchrow("SELECT name, card_id FROM cards WHERE file_id = $1", file_id)
+            if card_row:
+                card_name = card_row['name']
                 reply_text = f"USE THIS : <code>/kcc {card_name}</code>"
                 await msg.reply_text(reply_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
                 return
@@ -1943,7 +1926,6 @@ Status: Successful ✅
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
-        
         now = time.time()
         key = (chat_id, user.id)
 
@@ -2212,7 +2194,7 @@ CHECK /kc Use Kachi"""
 - /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
 - /kgtop - Group Leaderboard ကို ကြည့်ရန်။
-- /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်።
+- /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
 - /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
         await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=markup)
@@ -2270,14 +2252,13 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         card_name = card_info["card_name"]
         c_type = card_info["type"]
         file_id = card_info["file_id"]
-        file_unique_id = card_info["file_unique_id"]
         is_card_admin = card_info["is_card_admin"]
 
         async with db_pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO cards (card_id, name, type, file_id, file_unique_id, rarity)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """, card_id, card_name, c_type, file_id, file_unique_id, rarity)
+                INSERT INTO cards (card_id, name, type, file_id, rarity)
+                VALUES ($1, $2, $3, $4, $5)
+            """, card_id, card_name, c_type, file_id, rarity)
 
             added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else (80 if rarity in ["Kiwami", "Kami"] else 120)
 
