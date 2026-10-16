@@ -108,9 +108,6 @@ async def init_db():
         except Exception:
             pass
 
-        # Reset all users' coins to 1000 as requested
-        await conn.execute("UPDATE users SET coins = 1000;")
-
         db_groups = await conn.fetch("SELECT chat_id, threshold FROM groups")
         for g in db_groups:
             if g['threshold'] is not None:
@@ -458,9 +455,8 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with db_pool.acquire() as conn:
             user_exists = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
             if not user_exists:
-                await conn.execute("INSERT INTO users (user_id, name, coins, is_card_admin) VALUES ($1, 'User', 1000, TRUE)", target_id)
-            else:
-                await conn.execute("UPDATE users SET is_card_admin = TRUE WHERE user_id = $1", target_id)
+                await conn.execute("INSERT INTO users (user_id, name, coins) VALUES ($1, 'User', 1000)", target_id)
+            await conn.execute("UPDATE users SET is_card_admin = TRUE WHERE user_id = $1", target_id)
 
         await update.message.reply_text(f"✅ User ID <code>{target_id}</code> is now a Card Admin.", parse_mode="HTML", reply_to_message_id=msg_id)
     except ValueError:
@@ -1198,7 +1194,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_coins < bet_amount:
         return await msg.reply_text(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-    # Determine win or loss (50/50 chance or based on random)
     is_win = random.choice([True, False])
     profit_loss = bet_amount if is_win else -bet_amount
 
@@ -1210,7 +1205,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
 
-    # 5 seconds progressive animation frames
     steps = [
         "📈 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Market Analyzing... [ 20% ]\n💎 Kachi Balance: {bal}",
         "📉 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Price fluctuating up & down... [ 45% ]\n💎 Kachi Balance: {bal}",
@@ -1229,7 +1223,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await asyncio.sleep(1.2)
 
-    # Final result message formatting
     if is_win:
         final_text = f"""Kachi Trader Name: {display_name}
 Trading Result: Profit 📈 (+{bet_amount} Kachi)
@@ -1247,6 +1240,23 @@ Kachi Balance: {new_balance}
         await sent_msg.edit_text(final_text, parse_mode="HTML")
     except Exception:
         pass
+
+# /kbox Command (Card Opening System)
+@restricted_command
+async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    text = "Welcome To Kbox 💤\nLet's Open 🔫"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("OPEN", callback_data=f"kbox_open_{user.id}")]
+    ])
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
@@ -1918,6 +1928,87 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
+    if data.startswith("kbox_open_"):
+        allowed_uid = int(data.split("_")[2])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not your Kbox button!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
+            current_coins = user_row['coins'] if user_row else 1000
+            display_name = user_row['name'] if user_row else user.first_name
+
+        if current_coins < 300:
+            return await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
+
+        # Deduct 300 Kachi
+        new_balance = current_coins - 300
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
+
+        # Progressive loading steps for 4 seconds
+        loading_steps = [
+            "Card Opening Wait\nLoading... [ 25% ]",
+            "Card Opening Wait\nLoading... [ 50% ]",
+            "Card Opening Wait\nLoading... [ 75% ]",
+            "Card Opening Wait\nLoading... [ 100% ]"
+        ]
+
+        try:
+            await query.edit_message_text(loading_steps[0], parse_mode="HTML")
+        except Exception:
+            pass
+
+        for step in loading_steps[1:]:
+            await asyncio.sleep(1)
+            try:
+                await query.edit_message_text(step, parse_mode="HTML")
+            except Exception:
+                pass
+
+        await asyncio.sleep(1)
+
+        # Get random card
+        async with db_pool.acquire() as conn:
+            card = await get_weighted_random_card(conn)
+            if not card:
+                # Fallback if no cards exist
+                return await query.edit_message_text("❌ No cards available in database yet!", parse_mode="HTML")
+
+            # Give card to user
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, user.id, card['card_id'])
+
+        r = card.get('rarity', 'Ten')
+        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
+
+        result_caption = f"""🎉 Congratulations! {get_mention(user.id, display_name)} You got a card!
+Card Name : {card['name']}
+Id : <code>{card['card_id']}</code>
+Rarity : {r_emoji} {r}
+
+🔍 Check: /kc
+📖 Details: /card {card['card_id']}"""
+
+        # Delete loading message and send photo/video with caption
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        try:
+            if card['type'] == 'photo':
+                await context.bot.send_photo(chat_id=chat_id, photo=card['file_id'], caption=result_caption, parse_mode="HTML")
+            else:
+                await context.bot.send_video(chat_id=chat_id, video=card['file_id'], caption=result_caption, parse_mode="HTML")
+        except Exception:
+            await context.bot.send_message(chat_id=chat_id, text=result_caption, parse_mode="HTML")
+
+        await query.answer("🎉 Card opened successfully!")
+        return
+
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
 
@@ -2275,6 +2366,7 @@ def main():
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
+    app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
