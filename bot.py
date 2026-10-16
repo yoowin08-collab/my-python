@@ -460,143 +460,161 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    msg = update.message
-    await register_user_group(user, chat, context)
-
-    if not await check_force_join(update, context):
+    msg = update.effective_message or update.message
+    if not chat or not user or not msg:
         return
 
-    if chat.type not in ["group", "supergroup"]:
-        return await msg.reply_text("❌ `/kbox` command can only be used in groups.", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+    try:
+        await register_user_group(user, chat, context)
 
-    text = f"""It costs 300 each time
+        if not await check_force_join(update, context):
+            return
+
+        if chat.type not in ["group", "supergroup"]:
+            await msg.reply_text("❌ `/kbox` command can only be used in groups.", parse_mode="Markdown")
+            return
+
+        text = f"""It costs 300 each time
 The rewards are 💮Ten to 🧬Shinsei
 
 GoodLuck⚡"""
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("CARD PULL 🦊", callback_data=f"kbox_pull_{user.id}")]
-    ])
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("CARD PULL 🦊", callback_data=f"kbox_pull_{user.id}")]
+        ])
 
-    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+        await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        print(f"Error in kbox_cmd: {e}")
+        try:
+            await msg.reply_text("❌ An error occurred while processing `/kbox`.", parse_mode="Markdown")
+        except Exception:
+            pass
 
 # /cardsell Command (DM Selling & Group Info)
 @restricted_command
 async def cardsell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    msg = update.message
-    await register_user_group(user, chat, context)
-
-    if not await check_force_join(update, context):
+    msg = update.effective_message or update.message
+    if not chat or not user or not msg:
         return
 
-    bot_info = await context.bot.get_me()
+    try:
+        await register_user_group(user, chat, context)
 
-    if chat.type in ["group", "supergroup"]:
-        text = f"""🎴 <b>Card Selling Center</b>
+        if not await check_force_join(update, context):
+            return
+
+        bot_info = await context.bot.get_me()
+
+        if chat.type in ["group", "supergroup"]:
+            text = f"""🎴 <b>Card Selling Center</b>
 
 👤 <b>User:</b> {get_mention(user.id, user.first_name)}
 🆔 <b>ID:</b> <code>{user.id}</code>
 
 <i>Click the button below to sell cards in Bot DM!</i>"""
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("SELL CARD 💰", url=f"https://t.me/{bot_info.username}?start=cardsell")]
-        ])
-        return await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("SELL CARD 💰", url=f"https://t.me/{bot_info.username}?start=cardsell")]
+            ])
+            await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+            return
 
-    if chat.type == "private":
-        args = context.args
-        if not args:
-            help_msg = """💰 <b>Card Selling Instructions</b>
+        if chat.type == "private":
+            args = context.args
+            if not args:
+                help_msg = """💰 <b>Card Selling Instructions</b>
 
 ကဒ်များရောင်းချရန်အတွက် အောက်ပါပုံစံအတိုင်း ပို့ပေးပါ။
 <b>ပုံစံ:</b> <code>/cardsell [id] [2x id] [id] [3x id]</code> (သို့) ကဒ်တူများအတွက် <code>/cardsell id id 2x id</code>
 
 ဥပမာ - <code>/cardsell 1001 2x1002 1001</code>"""
-            return await msg.reply_text(help_msg, parse_mode="HTML", reply_to_message_id=msg.message_id)
+                await msg.reply_text(help_msg, parse_mode="HTML")
+                return
 
-        sell_requests = {}
-        i = 0
-        while i < len(args):
-            token = args[i].strip()
-            qty = 1
-            cid = None
+            sell_requests = {}
+            i = 0
+            while i < len(args):
+                token = args[i].strip()
+                qty = 1
+                cid = None
 
-            if "x" in token.lower():
-                parts = token.lower().split("x")
-                if parts[0].isdigit() and parts[1].isdigit():
-                    qty = int(parts[0])
-                    cid = parts[1]
-                elif parts[0].isdigit() and parts[1] == "" and i + 1 < len(args) and args[i+1].isdigit():
-                    qty = int(parts[0])
-                    cid = args[i+1]
-                    i += 1
-            elif token.isdigit():
-                if i > 0 and args[i-1].lower().endswith('x') and args[i-1].replace('x','').isdigit():
-                    qty = int(args[i-1].replace('x',''))
-                    cid = token
-                else:
-                    cid = token
-
-            if cid:
-                sell_requests[cid] = sell_requests.get(cid, 0) + qty
-            i += 1
-
-        if not sell_requests:
-            return await msg.reply_text("❌ Invalid format. Use: `/cardsell 1001 2x1002`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
-
-        async with db_pool.acquire() as conn:
-            total_earned = 0
-            sold_summary = []
-            
-            for cid, req_qty in sell_requests.items():
-                user_card = await conn.fetchrow("""
-                    SELECT uc.amount, c.name, c.rarity 
-                    FROM user_cards uc
-                    JOIN cards c ON uc.card_id = c.card_id
-                    WHERE uc.user_id = $1 AND uc.card_id = $2
-                """, user.id, cid)
-
-                if not user_card or user_card['amount'] < req_qty:
-                    available = user_card['amount'] if user_card else 0
-                    sold_summary.append(f"❌ Card ID <code>{cid}</code>: You only have {available}x (Requested {req_qty}x)")
-                    continue
-
-                rarity = user_card['rarity'] or 'Ten'
-                card_name = user_card['name']
-
-                card_total_earned = 0
-                for _ in range(req_qty):
-                    if rarity in ["Ten", "Hoshi"]:
-                        card_total_earned += random.randint(90, 200)
-                    elif rarity == "Kami":
-                        card_total_earned += random.randint(150, 300)
-                    elif rarity == "Kiwami":
-                        card_total_earned += random.randint(250, 400)
-                    elif rarity == "Shinsei":
-                        card_total_earned += random.randint(300, 450)
+                if "x" in token.lower():
+                    parts = token.lower().split("x")
+                    if parts[0].isdigit() and parts[1].isdigit():
+                        qty = int(parts[0])
+                        cid = parts[1]
+                    elif parts[0].isdigit() and parts[1] == "" and i + 1 < len(args) and args[i+1].isdigit():
+                        qty = int(parts[0])
+                        cid = args[i+1]
+                        i += 1
+                elif token.isdigit():
+                    if i > 0 and args[i-1].lower().endswith('x') and args[i-1].replace('x','').isdigit():
+                        qty = int(args[i-1].replace('x',''))
+                        cid = token
                     else:
-                        card_total_earned += random.randint(90, 200)
+                        cid = token
 
-                new_amount = user_card['amount'] - req_qty
-                if new_amount <= 0:
-                    await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, cid)
-                else:
-                    await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amount, user.id, cid)
+                if cid:
+                    sell_requests[cid] = sell_requests.get(cid, 0) + qty
+                i += 1
 
-                total_earned += card_total_earned
-                r_emoji = "🧬" if rarity == 'Shinsei' else ("🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮")))
-                sold_summary.append(f"✅ {card_name} ({cid}) {r_emoji} {rarity} x{req_qty} — <b>+{card_total_earned} Kachi</b>")
+            if not sell_requests:
+                await msg.reply_text("❌ Invalid format. Use: `/cardsell 1001 2x1002`", parse_mode="Markdown")
+                return
 
-            if total_earned > 0:
-                await add_coins(user.id, total_earned)
+            async with db_pool.acquire() as conn:
+                total_earned = 0
+                sold_summary = []
+                
+                for cid, req_qty in sell_requests.items():
+                    user_card = await conn.fetchrow("""
+                        SELECT uc.amount, c.name, c.rarity 
+                        FROM user_cards uc
+                        JOIN cards c ON uc.card_id = c.card_id
+                        WHERE uc.user_id = $1 AND uc.card_id = $2
+                    """, user.id, cid)
 
-            async with db_pool.acquire() as conn_u:
-                u_row = await conn_u.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
-                current_coins = u_row['coins'] if u_row else 0
+                    if not user_card or user_card['amount'] < req_qty:
+                        available = user_card['amount'] if user_card else 0
+                        sold_summary.append(f"❌ Card ID <code>{cid}</code>: You only have {available}x (Requested {req_qty}x)")
+                        continue
 
-        summary_text = f"""💰 <b>Card Selling Receipt</b>
+                    rarity = user_card['rarity'] or 'Ten'
+                    card_name = user_card['name']
+
+                    card_total_earned = 0
+                    for _ in range(req_qty):
+                        if rarity in ["Ten", "Hoshi"]:
+                            card_total_earned += random.randint(90, 200)
+                        elif rarity == "Kami":
+                            card_total_earned += random.randint(150, 300)
+                        elif rarity == "Kiwami":
+                            card_total_earned += random.randint(250, 400)
+                        elif rarity == "Shinsei":
+                            card_total_earned += random.randint(300, 450)
+                        else:
+                            card_total_earned += random.randint(90, 200)
+
+                    new_amount = user_card['amount'] - req_qty
+                    if new_amount <= 0:
+                        await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, cid)
+                    else:
+                        await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amount, user.id, cid)
+
+                    total_earned += card_total_earned
+                    r_emoji = "🧬" if rarity == 'Shinsei' else ("🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮")))
+                    sold_summary.append(f"✅ {card_name} ({cid}) {r_emoji} {rarity} x{req_qty} — <b>+{card_total_earned} Kachi</b>")
+
+                if total_earned > 0:
+                    await add_coins(user.id, total_earned)
+
+                async with db_pool.acquire() as conn_u:
+                    u_row = await conn_u.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+                    current_coins = u_row['coins'] if u_row else 0
+
+            summary_text = f"""💰 <b>Card Selling Receipt</b>
 
 👤 <b>Seller:</b> {get_mention(user.id, user.first_name)}
 {"\n".join(sold_summary)}
@@ -605,7 +623,13 @@ async def cardsell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💎 <b>Total Earned:</b> +{total_earned} Kachi
 💳 <b>Current Balance:</b> <b>{current_coins}</b> Kachi"""
 
-        await msg.reply_text(summary_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+            await msg.reply_text(summary_text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Error in cardsell_cmd: {e}")
+        try:
+            await msg.reply_text("❌ An error occurred while processing `/cardsell`.", parse_mode="Markdown")
+        except Exception:
+            pass
 
 # /addadmin Command
 @restricted_command
