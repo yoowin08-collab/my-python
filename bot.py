@@ -682,7 +682,8 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 14. /mute [id] [time] [reason] - Mute user from bot usage
 15. /ban [id] [reason] - Ban user from bot usage
 16. /umute [id] - Unmute user from bot usage
-17. /unban [id] - Unban user from bot usage"""
+17. /unban [id] - Unban user from bot usage
+18. /spw [id] - Spawn card manually (Admin only)"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1707,6 +1708,53 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg.message_id
     ))
 
+# /spw Command (Admin Only Card Spawner)
+@restricted_command
+async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    if not user or not chat or not msg:
+        return
+
+    if user.id != ADMIN_ID:
+        return
+
+    if chat.type not in ["group", "supergroup"]:
+        return await msg.reply_text("❌ `/spw` command can only be used in groups.", parse_mode="Markdown")
+
+    target_card_id = context.args[0].strip() if context.args else None
+
+    async with db_pool.acquire() as conn:
+        if target_card_id:
+            drop_card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id = $1", target_card_id)
+            if not drop_card:
+                return await msg.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+        else:
+            drop_card = await get_weighted_random_card(conn)
+
+    if not drop_card:
+        return await msg.reply_text("❌ No cards available in database.", reply_to_message_id=msg.message_id)
+
+    r = drop_card.get('rarity', 'Ten')
+    r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
+
+    drop_text = f"""{r_emoji} ᴀ ᴋᴀᴄʜɪ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛｈᴇ ᴄʜᴀᴛ 🍭
+ᴄᴀᴛᴄʜ ᴛʜɪs ᴄʜᴀʀᴀᴄᴛᴇʀ ᴀᴅᴅ ᴛᴏ ʏᴏᴜʀ ʜᴀʀᴇᴍ ᴋᴄ ᴜsᴇ /kcc name  🧊"""
+
+    if drop_card['type'] == 'photo':
+        sent_drop = await context.bot.send_photo(chat.id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
+    else:
+        sent_drop = await context.bot.send_video(chat.id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
+
+    active_card_drops[sent_drop.message_id] = {
+        "chat_id": chat.id,
+        "card": drop_card,
+        "claimed": False,
+        "winner_id": None,
+        "winner_name": None
+    }
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -1778,6 +1826,81 @@ Status: Successful ✅
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
+        
+        # Check if message is /kcc [name] for card catching
+        if msg.text and msg.text.startswith("/kcc"):
+            parts = msg.text.split(" ", 1)
+            if len(parts) < 2:
+                return
+            guessed_name = parts[1].strip().lower()
+
+            # Find active card drop in this chat
+            target_drop_msg_id = None
+            drop_data = None
+            for m_id, drop in active_card_drops.items():
+                if drop["chat_id"] == chat_id:
+                    target_drop_msg_id = m_id
+                    drop_data = drop
+                    break
+
+            if not drop_data:
+                return
+
+            card = drop_data["card"]
+            card_name_clean = card["name"].strip().lower()
+
+            if guessed_name == card_name_clean:
+                if drop_data["claimed"]:
+                    winner_name = drop_data["winner_name"]
+                    late_text = f"""Tᴏᴏ Lᴀᴛᴇ ! ❄
+He Already Catch this Character
+{winner_name} ,Tʀʏ ᴀɢᴀɪɴ Nᴇxᴛ Cʜᴀʀᴀᴄᴛᴇʀ Sᴘᴀᴡɴ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ 🥒"""
+                    return await msg.reply_text(late_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+
+                drop_data["claimed"] = True
+                drop_data["winner_id"] = user.id
+                drop_data["winner_name"] = user.first_name
+
+                # Send animation 🦊 and reply
+                anim_reply = await msg.reply_text("🦊", reply_to_message_id=msg.message_id)
+                await asyncio.sleep(3)
+                try:
+                    await anim_reply.delete()
+                except Exception:
+                    pass
+
+                # Database insert
+                async with db_pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                    """, user.id, card['card_id'])
+
+                r = card.get('rarity', 'Ten')
+                r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
+                win_msg = f"⛩ Congratulations , {get_mention(user.id, user.first_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
+
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{user.id}")]
+                ])
+
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=target_drop_msg_id)
+                except Exception:
+                    pass
+
+                try:
+                    if card['type'] == 'photo':
+                        await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+                    else:
+                        await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+                except Exception:
+                    await msg.reply_text(win_msg, parse_mode="HTML", reply_markup=keyboard)
+
+                if target_drop_msg_id in active_card_drops:
+                    del active_card_drops[target_drop_msg_id]
+                return
+
         now = time.time()
         key = (chat_id, user.id)
 
@@ -1865,13 +1988,6 @@ Status: Successful ✅
             print(f"Error in group message handler: {e}")
 
 async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    anim_msg = await context.bot.send_message(chat_id, "🐌")
-    await asyncio.sleep(4)
-    try:
-        await context.bot.delete_message(chat_id, anim_msg.message_id)
-    except Exception:
-        pass
-
     async with db_pool.acquire() as conn:
         drop_card = await get_weighted_random_card(conn)
     if not drop_card:
@@ -1880,131 +1996,21 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     r = drop_card.get('rarity', 'Ten')
     r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
-    joined_names = []
-    joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
-
-    drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
-
-[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
- Card ❀
-
-{joined_str}
-
-GoodLuck 🍀 Time (50sec)"""
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("𝗝𝗢𝗜𝗡(0/5)", callback_data="join_card_drop")
-    ]])
+    drop_text = f"""{r_emoji} ᴀ ᴋᴀᴄʜɪ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ 🍭
+ᴄᴀᴛᴄʜ ᴛʜɪs ᴄʜᴀʀᴀᴄᴛᴇʀ ᴀᴅᴅ ᴛᴏ ʏᴏᴜʀ ʜᴀʀᴇᴍ ᴋᴄ ᴜsᴇ /kcc name  🧊"""
 
     if drop_card['type'] == 'photo':
-        msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+        msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
     else:
-        msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+        msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
 
     active_card_drops[msg.message_id] = {
         "chat_id": chat_id,
         "card": drop_card,
-        "joined_users": {},
-        "timer": 50,
-        "ended": False
+        "claimed": False,
+        "winner_id": None,
+        "winner_name": None
     }
-
-    asyncio.create_task(run_card_drop_timer(context, msg.message_id))
-
-async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
-    while msg_id in active_card_drops:
-        drop = active_card_drops[msg_id]
-        if drop["ended"]:
-            break
-
-        if drop["timer"] <= 0 or len(drop["joined_users"]) >= 5:
-            await finalize_card_drop(context, msg_id)
-            break
-
-        await asyncio.sleep(5)
-        drop["timer"] -= 5
-        if drop["ended"]:
-            break
-
-        current_count = len(drop["joined_users"])
-        r = drop["card"].get('rarity', 'Ten')
-        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
-
-        joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
-        joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
-
-        drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
-
-[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
- Card ❀
-
-{joined_str}
-
-GoodLuck 🍀 Time ({drop['timer']}sec)"""
-
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
-        ]])
-
-        try:
-            await context.bot.edit_message_caption(chat_id=drop["chat_id"], message_id=msg_id, caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
-        except Exception:
-            pass
-
-async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
-    drop = active_card_drops.get(msg_id)
-    if not drop or drop["ended"]:
-        return
-    drop["ended"] = True
-
-    chat_id = drop["chat_id"]
-    card = drop["card"]
-    joined = drop["joined_users"]
-
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-    except Exception:
-        pass
-
-    anim_msg = await context.bot.send_message(chat_id, "🐸")
-    await asyncio.sleep(4)
-    try:
-        await context.bot.delete_message(chat_id, anim_msg.message_id)
-    except Exception:
-        pass
-
-    if joined:
-        winner_id, winner_name = random.choice(list(joined.items()))
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, winner_id, card['card_id'])
-
-        r = card.get('rarity', 'Ten')
-        r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
-        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{winner_id}")]
-        ])
-
-        try:
-            if card['type'] == 'photo':
-                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
-            else:
-                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
-        except Exception:
-            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML", reply_markup=keyboard)
-    else:
-        win_msg = f"❌ Card drop for <b>{card['name']}</b> cancelled as no one joined."
-        try:
-            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
-        except Exception:
-            pass
-
-    if msg_id in active_card_drops:
-        del active_card_drops[msg_id]
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2162,7 +2168,7 @@ CHECK /kc Use Kachi"""
 - /kbox - Group ထဲတွင် ကတ်ဖောက်ရန် (300 Kachi ကျသင့်သည်)။
 - /cardsell - ကတ်များကို Kachi ဖြင့် ရောင်းချရန် (Bot DM တွင်သုံးရန်)။
 - /ktop - Global Leaderboard ကို ကြည့်ရန်။
-- /kgtop - Group Leaderboard ကို ကြည့်ရန်።
+- /kgtop - Group Leaderboard ကို ကြည့်ရန်။
 - /card [card_id] - ကတ်အသေးစိတ်နှင့် ပိုင်ရှင်များကို ကြည့်ရန်။
 - /set [card_id] - /kc တွင်ပြသရန် ပရိုဖိုင်ကတ်အဖြစ် သတ်မှတ်ရန်။"""
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="menu_back")]])
@@ -2282,49 +2288,6 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
             await query.answer("✅ Verified!", show_alert=True)
             try:
                 await query.message.edit_text("✅ Verified!", parse_mode="HTML")
-            except Exception:
-                pass
-        return
-
-    if data == "join_card_drop":
-        drop = active_card_drops.get(msg_id)
-        if not drop or drop["ended"]:
-            return await query.answer("❌ This card drop has ended.", show_alert=True)
-
-        if user.id in drop["joined_users"]:
-            return await query.answer("❌ You have already joined.", show_alert=True)
-
-        if len(drop["joined_users"]) >= 5:
-            return await query.answer("❌ Drop is full (5/5)!", show_alert=True)
-
-        drop["joined_users"][user.id] = user.first_name
-        await query.answer("✅ Successfully joined card drop!", show_alert=True)
-
-        if len(drop["joined_users"]) >= 5:
-            await finalize_card_drop(context, msg_id)
-        else:
-            current_count = len(drop["joined_users"])
-            r = drop["card"].get('rarity', 'Ten')
-            r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
-
-            joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
-            joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
-
-            drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
-
-[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
- Card ❀
-
-{joined_str}
-
-GoodLuck 🍀 Time ({drop['timer']}sec)"""
-
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
-            ]])
-
-            try:
-                await query.edit_message_caption(caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
             except Exception:
                 pass
         return
@@ -2452,6 +2415,7 @@ def main():
     app.add_handler(CommandHandler("add", card_detail_cmd if False else add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
+    app.add_handler(CommandHandler("spw", spw_cmd))
 
     # Bot-level Moderation Commands
     app.add_handler(CommandHandler("mute", mute_cmd))
