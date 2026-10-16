@@ -243,15 +243,6 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
-    rarities = ["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"]
-    weights = [3, 8, 20, 35, 37]
-    
-    for _ in range(5):
-        chosen_rarity = random.choices(rarities, weights=weights, k=1)[0]
-        cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE rarity = $1", chosen_rarity)
-        if cards:
-            return random.choice(cards)
-
     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards")
     if not all_cards:
         return None
@@ -433,7 +424,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_info = await context.bot.get_me()
     text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
 
-🌺 Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊𝙏 မှ ကြိုဆိုပါတယ်!
+🌺 Kachi Card 𝙂𝘼𝙈𝙀 𝘽𝙊Տ မှ ကြိုဆိုပါတယ်!
 
 📌 <b>အသုံးပြုပုံ ညွှန်ကြားချက်များ -</b>
 - Bot ကို Group ထဲသို့ ထည့်ပါ။
