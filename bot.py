@@ -118,7 +118,7 @@ async def init_db():
 
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
         for c in existing_cards:
-            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[3, 8, 20, 35, 37], k=1)[0]
+            r = random.choice(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"])
             await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
@@ -243,15 +243,6 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
-    rarities = ["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"]
-    weights = [3, 8, 20, 35, 37]
-    
-    for _ in range(5):
-        chosen_rarity = random.choices(rarities, weights=weights, k=1)[0]
-        cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards WHERE rarity = $1", chosen_rarity)
-        if cards:
-            return random.choice(cards)
-
     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards")
     if not all_cards:
         return None
@@ -1346,19 +1337,6 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = card.get('rarity', 'Ten')
     r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
-    if r == 'Shinsei':
-        coin_value = "4000-8900"
-    elif r == 'Kiwami':
-        coin_value = "2000-5500"
-    elif r == 'Kami':
-        coin_value = "1000-2500"
-    elif r == 'Hoshi':
-        coin_value = "400-800"
-    elif r == 'Ten':
-        coin_value = "200-400"
-    else:
-        coin_value = "200-400"
-
     caption_text = f"""🎗 Card Information ♡
 
 ▰▰▱▱▰▰▱▱
@@ -1366,10 +1344,9 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     🍀  ID - <code>{card['card_id']}</code>
 🎬 Type - {card['type'].upper()}
 🌟 Rarity - {r_emoji} {r}
-🩸 Kachi Value ( {coin_value} )
    🐠 Global Drops - <b>{global_drop_count}</b>
 
-▱▱▰▰▱▱▰▰▱▱▰▰
+▱▱▰▰▱▱▰▰▱▱▰▱
 Top Owners 🐾
 {owners_str}"""
 
@@ -2221,7 +2198,7 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
-    app.add_handler(CommandHandler("add", add_card_cmd))
+    app.add_handler(CommandHandler("add", card_detail_cmd if False else add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
 
