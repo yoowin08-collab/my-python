@@ -31,7 +31,6 @@ pending_card_adds = {}
 pending_quizzes = {}
 active_quizzes = {}
 pending_kachi_transfers = {}
-kol_sessions = {}
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -1163,40 +1162,12 @@ async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display_name = user_row['name'] if user_row else user.first_name
 
     bot_info = await context.bot.get_me()
-    text = f"ɴᴀᴍᴇ : {display_name}\nᴜsᴇʀ ɪᴅ : <code>{target_id}</code>"
+    text = f"ɴᴀᴍᴇ : {display_name}\nᴋᴀᴄʜɪ ʙᴀ𝗹𝗮𝗻𝗰𝗲 : {kachi_amount}\nᴜsᴇʀ ɪᴅ : <code>{target_id}</code>"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"Sᴇɴᴅ 𝗞𝗮𝗰𝗵𝗶", url=f"https://t.me/{bot_info.username}?start=kachi_{target_id}")]
     ])
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-
-# /kol Game Command & Handlers
-@restricted_command
-async def kol_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
-    user = update.effective_user
-    chat = update.effective_chat
-    msg_id = update.message.message_id
-    await register_user_group(user, chat, context)
-
-    text = "Hᴇʏʏ Wᴇʟᴄᴏᴍᴇ ᴛᴏ 𝗞𝗢𝗟 !\nᴄʜᴏᴏsᴇ ʏᴏᴜʀ ʙᴇᴛ ❀"
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("200🩸", callback_data=f"kolbet_{user.id}_200"),
-            InlineKeyboardButton("400Kachi🩸", callback_data=f"kolbet_{user.id}_400")
-        ],
-        [
-            InlineKeyboardButton("100Kachi🩸", callback_data=f"kolbet_{user.id}_100"),
-            InlineKeyboardButton("1000🩸", callback_data=f"kolbet_{user.id}_1000")
-        ]
-    ])
-
-    sent_msg = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-    kol_sessions[sent_msg.message_id] = {
-        "user_id": user.id,
-        "user_name": user.first_name
-    }
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
@@ -1868,58 +1839,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
-    if data.startswith("kolbet_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[1])
-        bet_amount = int(parts[2])
-
-        if user.id != allowed_uid:
-            return await query.answer("❌ This is not your game session!", show_alert=True)
-
-        async with db_pool.acquire() as conn:
-            u_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
-            current_coins = u_row['coins'] if u_row else 1000
-            user_name = u_row['name'] if u_row else user.first_name
-
-            if current_coins < bet_amount:
-                return await query.answer(f"❌ Kachi မလုံလောက်ပါ။ (လက်ရှိ: {current_coins})", show_alert=True)
-
-        if msg_id in kol_sessions:
-            del kol_sessions[msg_id]
-
-        await query.answer()
-
-        try:
-            await query.edit_message_text("🎰", parse_mode="HTML")
-        except Exception:
-            pass
-
-        await asyncio.sleep(4)
-
-        # 45% Win, 55% Lose probability
-        is_win = random.random() < 0.45
-        if is_win:
-            result_str = f"Win (+{bet_amount})"
-            new_balance = current_coins + bet_amount
-        else:
-            result_str = f"Lose (-{bet_amount})"
-            new_balance = max(0, current_coins - bet_amount)
-
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
-
-        final_text = f"""Pʟᴀʏᴇʀ ɴᴀᴍᴇ : {user_name}
-Pʟᴀʏᴇʀ ɪᴅ : <code>{user.id}</code>
-Pʟᴀʏᴇʀ Bᴇ𝘁 : {bet_amount}
-        𝗥𝗲𝘀𝘂𝗹𝘁 : {result_str}
-𝗞𝗮𝗰𝗵𝗶 𝗕𝗮𝗹𝗮𝗻𝗰𝗲 : {new_balance}"""
-
-        try:
-            await query.edit_message_text(final_text, parse_mode="HTML")
-        except Exception:
-            pass
-        return
-
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
 
@@ -2276,7 +2195,6 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
-    app.add_handler(CommandHandler("kol", kol_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
