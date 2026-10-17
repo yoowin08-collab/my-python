@@ -514,7 +514,7 @@ async def badmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
-# /buy Command (Card Buying System)
+# /buy Command (Card Buying System - Fixed for leading zeros and qty formats)
 @restricted_command
 async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -531,33 +531,68 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_buyer:
         return await msg.reply_text("❌ You are not authorized to use the /buy command.", reply_to_message_id=msg_id)
 
-    if len(context.args) < 2:
-        return await msg.reply_text("❌ Usage: `/buy [seller_id] [card_id] [card_id]x ...`", parse_mode="Markdown", reply_to_message_id=msg_id)
+    # Determine seller_id and raw_items
+    seller_id = None
+    raw_items = []
 
-    try:
-        seller_id = int(context.args[0])
-    except ValueError:
-        return await msg.reply_text("❌ Invalid Seller User ID.", reply_to_message_id=msg_id)
+    if context.args:
+        first_arg = context.args[0].strip()
+        if first_arg.isdigit() and len(first_arg) >= 5:
+            try:
+                seller_id = int(first_arg)
+                raw_items = context.args[1:]
+            except ValueError:
+                pass
+
+    if not seller_id:
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            seller_id = msg.reply_to_message.from_user.id
+            raw_items = context.args
+        else:
+            return await msg.reply_text(
+                "❌ ကျေးဇူးပြု၍ ရောင်းသူ၏ User ID ထည့်ပါ သို့မဟုတ် ရောင်းသူ၏စာကို Reply လုပ်၍ `/buy [card_id]` ဟု အသုံးပြုပါ။\n"
+                "ဥပမာ: `/buy 7940553702 0192x 1111` သို့မဟုတ် Reply လုပ်၍ `/buy 0192x`",
+                parse_mode="Markdown",
+                reply_to_message_id=msg_id
+            )
 
     if seller_id == user.id:
         return await msg.reply_text("❌ You cannot buy cards from yourself.", reply_to_message_id=msg_id)
 
-    raw_items = context.args[1:]
     items_to_buy = []
 
     for token in raw_items:
         token = token.strip()
         if not token:
             continue
+        c_id = None
+        qty = 1
         if 'x' in token.lower():
-            parts = token.lower().split('x')
-            c_id = parts[0].strip()
-            qty_str = parts[1].strip() if len(parts) > 1 and parts[1].strip().isdigit() else "1"
-            qty = int(qty_str) if qty_str.isdigit() else 1
-            if c_id:
-                items_to_buy.append({"card_id": c_id, "amount": qty})
+            parts = token.lower().split('x', 1)
+            p1 = parts[0].strip()
+            p2 = parts[1].strip()
+            if p1.isdigit() and p2.isdigit():
+                if len(p1) <= 2 and len(p2) >= 3:
+                    qty = int(p1)
+                    c_id = p2
+                else:
+                    c_id = p1
+                    qty = int(p2) if p2 else 1
+            elif p1.isdigit() and not p2:
+                c_id = p1
+                qty = 1
+            elif not p1.isdigit() and p2.isdigit():
+                qty = int(p2)
+                c_id = p1
+            else:
+                c_id = p1
+                qty = 1
         else:
-            items_to_buy.append({"card_id": token, "amount": 1})
+            c_id = token
+            qty = 1
+
+        if c_id:
+            items_to_buy.append({"card_id": c_id, "amount": qty})
 
     if not items_to_buy:
         return await msg.reply_text("❌ No valid cards specified to buy.", reply_to_message_id=msg_id)
@@ -572,22 +607,42 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verified_items = []
 
         for item in items_to_buy:
-            c_id = item['card_id']
+            input_c_id = item['card_id']
             req_amount = item['amount']
 
-            card_info = await conn.fetchrow("SELECT name, rarity FROM cards WHERE card_id = $1", c_id)
+            # Find card in DB handling leading zeros
+            card_info = await conn.fetchrow("""
+                SELECT card_id, name, rarity FROM cards 
+                WHERE card_id = $1 
+                   OR ltrim(card_id, '0') = ltrim($1, '0') 
+                   OR card_id = ltrim($1, '0') 
+                   OR ltrim(card_id, '0') = $1
+            """, input_c_id)
+
             if not card_info:
-                missing_cards.append(f"Card ID <code>{c_id}</code> (Not found in DB)")
+                missing_cards.append(f"Card ID <code>{input_c_id}</code> (Not found in DB)")
                 continue
 
-            user_card_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+            actual_card_id = card_info['card_id']
+
+            # Find user card handling leading zeros
+            user_card_row = await conn.fetchrow("""
+                SELECT uc.amount FROM user_cards uc
+                WHERE uc.user_id = $1 AND (
+                    uc.card_id = $2 
+                    OR ltrim(uc.card_id, '0') = ltrim($2, '0')
+                    OR uc.card_id = ltrim($2, '0')
+                    OR ltrim(uc.card_id, '0') = $2
+                )
+            """, seller_id, actual_card_id)
+
             owned_amount = user_card_row['amount'] if user_card_row else 0
 
             if owned_amount < req_amount:
-                missing_cards.append(f"<b>{card_info['name']}</b> (ID: <code>{c_id}</code>) - Needed: {req_amount}x, Owned: {owned_amount}x")
+                missing_cards.append(f"<b>{card_info['name']}</b> (ID: <code>{actual_card_id}</code>) - Needed: {req_amount}x, Owned: {owned_amount}x")
             else:
                 verified_items.append({
-                    "card_id": c_id,
+                    "card_id": actual_card_id,
                     "name": card_info['name'],
                     "rarity": card_info['rarity'],
                     "amount": req_amount
@@ -2209,7 +2264,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in buy_info["items"]:
                 c_id = item['card_id']
                 req_amount = item['amount']
-                uc_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+                uc_row = await conn.fetchrow("""
+                    SELECT amount FROM user_cards WHERE user_id = $1 AND (
+                        card_id = $2 OR ltrim(card_id, '0') = ltrim($2, '0')
+                    )
+                """, seller_id, c_id)
                 owned = uc_row['amount'] if uc_row else 0
                 if owned < req_amount:
                     missing_cards.append(c_id)
@@ -2221,13 +2280,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in buy_info["items"]:
                 c_id = item['card_id']
                 req_amount = item['amount']
-                uc_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
-                current_amt = uc_row['amount'] if uc_row else 0
+                uc_row = await conn.fetchrow("""
+                    SELECT card_id, amount FROM user_cards WHERE user_id = $1 AND (
+                        card_id = $2 OR ltrim(card_id, '0') = ltrim($2, '0')
+                    )
+                """, seller_id, c_id)
+                if not uc_row:
+                    continue
+                actual_c_id = uc_row['card_id']
+                current_amt = uc_row['amount']
                 new_amt = current_amt - req_amount
                 if new_amt <= 0:
-                    await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+                    await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, actual_c_id)
                 else:
-                    await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amt, seller_id, c_id)
+                    await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amt, seller_id, actual_c_id)
 
         del pending_card_buys[msg_id]
 
