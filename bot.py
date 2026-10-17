@@ -23,10 +23,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
-# Main Group Link for /kbox and /klot restriction
+# Main Group Link for /kbox, /klot, /koll, and /kdaily restriction
 MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
 
-# Global Memory Stores
+# Global Memory Stores (User-isolated for concurrency)
 group_threshold = {}
 pending_gifts = {}
 active_card_drops = {}
@@ -52,7 +52,6 @@ db_pool = None
 
 async def init_db():
     global db_pool, global_default_threshold
-    # Optimized pool size for high concurrency (thousands of users)
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=10, max_size=50)
     
     async with db_pool.acquire() as conn:
@@ -68,7 +67,8 @@ async def init_db():
                 banned BOOLEAN DEFAULT FALSE,
                 ban_reason TEXT,
                 muted_until BIGINT DEFAULT 0,
-                mute_reason TEXT
+                mute_reason TEXT,
+                last_kdaily BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -111,6 +111,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -242,11 +243,10 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
 
 async def add_coins(user_id, amount):
     async with db_pool.acquire() as conn:
-        # Atomic coin update using GREATEST to prevent negative balance and race conditions
-        await conn.execute("""
-            INSERT INTO users (user_id, coins) VALUES ($1, GREATEST(0, 1000 + $2))
-            ON CONFLICT (user_id) DO UPDATE SET coins = GREATEST(0, users.coins + $2)
-        """, user_id, amount)
+        user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
+        current_coins = user_row['coins'] if user_row else 1000
+        new_coins = max(0, current_coins + amount)
+        await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user_id)
 
 def get_mention(user_id, name):
     clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
@@ -297,10 +297,10 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
             restriction_text = (
                 "This Command Will Work In This Main Group\n"
                 "Heyy သူများGpမှာမဖောက်ပါနဲ့နော် သူများမျက်စိနှောက်လိမ့်မယ် "
-                "အဲ့/kbox နဲ့ /klot ကိုတော့ ဒီGroupမှာပဲ လာဖောက်ပေးပါ"
+                "အဲ့ဒီ command တွေကိုတော့ ဒီGroupမှာပဲ လာဖောက်ပေးပါနော် ✨"
             )
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Group", url=MAIN_GROUP_LINK)]
+                [InlineKeyboardButton("Main Group 🏰", url=MAIN_GROUP_LINK)]
             ])
             await msg.reply_text(restriction_text, reply_markup=keyboard, reply_to_message_id=msg.message_id)
             return False
@@ -476,6 +476,54 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+# /kdaily Command
+@restricted_command
+async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_main_group_restriction(update, context):
+        return
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    now = int(time.time())
+    cooldown = 86400  # 24 hours
+
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT last_kdaily, coins, name FROM users WHERE user_id = $1", user.id)
+        last_claim = user_row['last_kdaily'] if user_row else 0
+        current_coins = user_row['coins'] if user_row else 1000
+        display_name = user_row['name'] if user_row else user.first_name
+
+        if now - last_claim < cooldown:
+            remaining = cooldown - (now - last_claim)
+            hours = remaining // 3600
+            mins = (remaining % 3600) // 60
+            secs = remaining % 60
+            time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
+            return await msg.reply_text(
+                f"⏳ မင်္ဂလာပါ {get_mention(user.id, display_name)}၊ /kdaily ဆုလက်ဆောင်ကို 24 နာရီမှ တစ်ကြိမ်သာ ထုတ်ယူနိုင်ပါသည်။\n"
+                f"⏱ ကျန်ရှိသောအချိန်: <b>{time_str}</b>",
+                parse_mode="HTML",
+                reply_to_message_id=msg_id
+            )
+
+        new_coins = current_coins + 2000
+        await conn.execute("UPDATE users SET coins = $1, last_kdaily = $2 WHERE user_id = $3", new_coins, now, user.id)
+
+    await msg.reply_text(
+        f"🎁 <b>Daily Kachi Claimed Successfully!</b>\n\n"
+        f"👤 User: {get_mention(user.id, display_name)}\n"
+        f"💎 Reward: <b>+2000 Kachi</b> 🩸\n"
+        f"💰 Total Balance: <b>{new_coins}</b> Kachi\n\n"
+        f"<i>ကျေးဇူးတင်ပါတယ်! မနက်ဖြန်လည်း ထပ်မံလာရောက် ထုတ်ယူနိုင်ပါပြီ ✨</i>",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
 
 # /addadmin Command
 @restricted_command
@@ -1395,6 +1443,9 @@ async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /koll Command
 @restricted_command
 async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_main_group_restriction(update, context):
+        return
+
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -1403,11 +1454,11 @@ async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
-    # Check if this specific user already has an active game in progress
+    # Check if a game is already in progress for this user
     if user.id in active_kolls:
         return await msg.reply_text("The previous game is still in progress. Send /kout to quit", reply_to_message_id=msg_id)
 
-    # Check cooldowns per user
+    # Check cooldowns
     now = time.time()
     if user.id in koll_cooldowns and koll_cooldowns[user.id] > now:
         remaining = int(koll_cooldowns[user.id] - now)
@@ -1423,8 +1474,9 @@ async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_coins < 500:
             return await msg.reply_text(f"❌ Insufficient Kachi balance! You need 500 Kachi per spin (Current: {current_coins}).", reply_to_message_id=msg_id)
 
-        # Deduct 500 Kachi atomically
-        await conn.execute("UPDATE users SET coins = coins - 500 WHERE user_id = $1", user.id)
+        # Deduct 500 Kachi
+        new_coins = current_coins - 500
+        await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user.id)
 
         card = await get_weighted_random_card(conn)
         if not card:
@@ -1435,7 +1487,7 @@ async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🐩 𝗥𝗲𝗮𝗱𝘆 𝗧𝗼 𝗞𝗼𝗹𝗹 \n\n"
         "🩸𝘐𝘵 𝘤𝘰𝘴𝘵𝘴 500 𝘬𝘢𝘤𝘩𝘪 𝘱𝘦𝘳 𝘴𝘱𝘪𝘯 \n"
         "✨𝘍𝘦𝘢𝘵𝘶𝘳𝘪𝘯𝘨 𝗧𝗲𝗻 𝗧𝗼 𝗦𝗵𝗶𝗻𝘀𝘦𝗶\n\n"
-        "🍀𝘎𝘰𝘰𝘥𝚕𝘶𝗰𝐤,𝘢nd 𝚖𝚊𝚢 𝚏𝚊𝚝𝚎 𝚋𝚎 𝚘𝚗 𝚢𝚘𝚞𝚛 𝚜𝚒𝚍𝚎!"
+        "🍀𝘎𝘰𝘰𝘥𝚕𝘶𝗰𝚔, 𝚊𝚗𝚍 𝚖𝚊𝚢 𝚏𝚊𝚝𝚎 𝚋𝚎 𝚘𝚗 𝚢𝚘𝚞𝚛 𝚜𝚒𝚍𝚎!"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -2101,7 +2153,7 @@ Status: Successful ✅
         if not is_bot_admin:
             if chat_id not in bot_warned_groups:
                 bot_warned_groups.add(chat_id)
-                warning_text = "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကိုAdmin ပေး​ပါက Media ကောင်းကောင်းအလုပ်ပါမည် ဒီတိုင်းဆို ပုံမပါဘူးဖြစ်နေမယ်ဗျ Admin ပေးပေးဦးနော်"
+                warning_text = "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်။"
                 try:
                     await context.bot.send_message(chat_id, warning_text)
                 except Exception:
@@ -2452,12 +2504,12 @@ Cᴀʀᴅ Nᴀᴍᴇ - {card_name}
 
                 result_text = f"""🥀 𝗦𝗼𝗿𝗿𝘆 𝗮𝗯𝗼𝘂𝘁 𝘁𝗵𝗮𝘁 , 𝗗𝗼𝗻'𝘁 𝗹𝗼𝘀𝗲 𝗵𝗼𝗽𝗲 -- 𝗧𝗿𝘆 𝗮𝗴𝗮𝗶𝗻 𝗻𝗲𝘅𝘁 𝘁𝗶𝗺𝗲✨
 
-▰𝙺𝚊𝚌𝚑𝚒 𝙱𝚊𝚕𝚊𝚗𝚌𝚎▰
+▰𝗞𝗮𝗰𝗵𝗶 𝗕𝗮𝗹𝗮𝗻𝗰𝗲▰
 [ {current_bal} ]
-▰𝙷𝚎𝚛𝚎 𝚈𝚘𝚞 𝚊𝚛𝚎 𝚁𝚎𝚏𝚞𝚗𝚍▰
-[ 250 𝙺𝚊𝚌𝚑𝚒 ]
+▰𝗛𝗲𝗿𝗲 𝗬𝗼𝘂 𝗮𝗿𝗲 𝗥𝗲𝗳𝘂𝗻𝗱▰
+[ 250 𝗞𝗮𝗰𝗵𝗶 ]
 
-𝐠𝐨𝐨𝐝𝗹𝘂𝚌𝚔 𝐧𝐞𝘅𝘁 𝘁𝗶𝗺𝗲 🌺"""
+𝗴𝗼𝗼𝗱𝗹𝘂𝗰𝗸 𝗻𝗲𝘅𝘁 𝘁𝗶𝗺𝗲 🌺"""
 
         try:
             if query.message.caption:
@@ -2907,6 +2959,7 @@ def main():
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
+    app.add_handler(CommandHandler("kdaily", kdaily_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
