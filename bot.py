@@ -1662,9 +1662,10 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = drop_card.get('rarity', 'Ten')
     r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
+    # Fixed card name format so it can be easily copied/clicked or typed
     drop_text = f"""{r_emoji} Kachi Character Has Spawn In The Chat ❄
 
-🪁 Catch First Use /katch {drop_card['name']}"""
+🪁 Catch First Use /katch <code>{drop_card['name']}</code>"""
 
     if drop_card['type'] == 'photo':
         sent_drop = await context.bot.send_photo(chat.id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
@@ -1691,7 +1692,7 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat or chat.type not in ["group", "supergroup"]:
         return
 
-    # Check if there is an active card drop in this chat
+    # Check active card drop in this chat
     active_drop_key = None
     for m_id, drop_info in active_card_drops.items():
         if drop_info["chat_id"] == chat.id and not drop_info["ended"]:
@@ -1699,7 +1700,12 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     if not active_drop_key:
-        # Check if any user tries to claim an already claimed or non-existent card
+        # Check if there's any recent drop already ended in this chat to reply "Too Late"
+        for m_id, drop_info in active_card_drops.items():
+            if drop_info["chat_id"] == chat.id and drop_info.get("ended"):
+                winner_name = drop_info.get("winner_name", "Someone")
+                too_late_msg = f"🧊 Too Late He {winner_name} Catch First This Character Try Next Time 🦇"
+                return await msg.reply_text(too_late_msg, parse_mode="HTML", reply_to_message_id=msg_id)
         return
 
     drop = active_card_drops[active_drop_key]
@@ -1711,7 +1717,7 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_typed_name = " ".join(context.args).strip().lower()
     
-    # If already ended or someone else caught it, notify "Too Late"
+    # If already ended, reply "Too Late"
     if drop["ended"]:
         winner_name = drop.get("winner_name", "Someone")
         too_late_msg = f"🧊 Too Late He {winner_name} Catch First This Character Try Next Time 🦇"
@@ -1725,9 +1731,6 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     drop["winner_name"] = user.first_name
     winner_id = user.id
     winner_name = user.first_name
-
-    # Remove the active drop so no one else can claim
-    del active_card_drops[active_drop_key]
 
     # Delete the drop message if possible
     try:
@@ -1939,7 +1942,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     drop_text = f"""{r_emoji} Kachi Character Has Spawn In The Chat ❄
 
-🪁 Catch First Use /katch {drop_card['name']}"""
+🪁 Catch First Use /katch <code>{drop_card['name']}</code>"""
 
     if drop_card['type'] == 'photo':
         msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
