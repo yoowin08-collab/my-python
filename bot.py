@@ -128,7 +128,7 @@ async def init_db():
 
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
         for c in existing_cards:
-            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[3, 8, 20, 35, 37], k=1)[0]
+            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 3, 10, 30, 56], k=1)[0]
             await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
@@ -256,7 +256,23 @@ async def get_weighted_random_card(conn):
     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity FROM cards")
     if not all_cards:
         return None
-    return random.choice(all_cards)
+    
+    # Rarity အလိုက် ကျရောက်နိုင်ချေ (Weights) - ရှားပါးကတ်များ ပို၍ကျရန်ခက်စေရန် ပြင်ဆင်ထားသည်
+    weights = []
+    for c in all_cards:
+        r = c.get('rarity', 'Ten')
+        if r == 'Shinsei':
+            weights.append(1)   # အရှားဆုံး
+        elif r == 'Kiwami':
+            weights.append(3)
+        elif r == 'Kami':
+            weights.append(10)
+        elif r == 'Hoshi':
+            weights.append(30)
+        else:
+            weights.append(56)  # အပေါဆုံး Ten
+            
+    return random.choices(all_cards, weights=weights, k=1)[0]
 
 async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
@@ -512,13 +528,13 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=msg_id
             )
 
-        new_coins = current_coins + 2000
+        new_coins = current_coins + 600
         await conn.execute("UPDATE users SET coins = $1, last_kdaily = $2 WHERE user_id = $3", new_coins, now, user.id)
 
     await msg.reply_text(
         f"🎁 <b>Daily Kachi Claimed Successfully!</b>\n\n"
         f"👤 User: {get_mention(user.id, display_name)}\n"
-        f"💎 Reward: <b>+2000 Kachi</b> 🩸\n"
+        f"💎 Reward: <b>+600 Kachi</b> 🩸\n"
         f"💰 Total Balance: <b>{new_coins}</b> Kachi\n\n"
         f"<i>ကျေးဇူးတင်ပါတယ်! မနက်ဖြန်လည်း ထပ်မံလာရောက် ထုတ်ယူနိုင်ပါပြီ ✨</i>",
         parse_mode="HTML",
@@ -2429,7 +2445,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if query.message.caption:
                 await query.edit_message_caption(caption=cancel_text, parse_mode="HTML", reply_markup=None)
             else:
-                await query.edit_message_text(text=cancel_text, parse_mode="HTML", reply_markup=None)
+                await query.edit_message_text(text=cancel_text, reply_markup=None)
         except Exception:
             pass
 
@@ -2468,7 +2484,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await asyncio.sleep(1.2)
 
-        is_win = random.choices([True, False], weights=[40, 60], k=1)[0]
+        is_win = random.choices([True, False], weights=[20, 80], k=1)[0]
 
         async with db_pool.acquire() as conn:
             if is_win:
