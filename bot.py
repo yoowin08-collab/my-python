@@ -52,7 +52,8 @@ db_pool = None
 
 async def init_db():
     global db_pool, global_default_threshold
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
+    # Optimized pool size for high concurrency (thousands of users)
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=10, max_size=50)
     
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -241,10 +242,11 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
 
 async def add_coins(user_id, amount):
     async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
-        current_coins = user_row['coins'] if user_row else 1000
-        new_coins = max(0, current_coins + amount)
-        await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user_id)
+        # Atomic coin update using GREATEST to prevent negative balance and race conditions
+        await conn.execute("""
+            INSERT INTO users (user_id, coins) VALUES ($1, GREATEST(0, 1000 + $2))
+            ON CONFLICT (user_id) DO UPDATE SET coins = GREATEST(0, users.coins + $2)
+        """, user_id, amount)
 
 def get_mention(user_id, name):
     clean_name = (name or "User").replace("<", "&lt;").replace(">", "&gt;")
@@ -1401,11 +1403,11 @@ async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
-    # Check if a game is already in progress
+    # Check if this specific user already has an active game in progress
     if user.id in active_kolls:
         return await msg.reply_text("The previous game is still in progress. Send /kout to quit", reply_to_message_id=msg_id)
 
-    # Check cooldowns
+    # Check cooldowns per user
     now = time.time()
     if user.id in koll_cooldowns and koll_cooldowns[user.id] > now:
         remaining = int(koll_cooldowns[user.id] - now)
@@ -1421,9 +1423,8 @@ async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_coins < 500:
             return await msg.reply_text(f"❌ Insufficient Kachi balance! You need 500 Kachi per spin (Current: {current_coins}).", reply_to_message_id=msg_id)
 
-        # Deduct 500 Kachi
-        new_coins = current_coins - 500
-        await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user.id)
+        # Deduct 500 Kachi atomically
+        await conn.execute("UPDATE users SET coins = coins - 500 WHERE user_id = $1", user.id)
 
         card = await get_weighted_random_card(conn)
         if not card:
