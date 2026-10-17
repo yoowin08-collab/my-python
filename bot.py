@@ -24,7 +24,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
-# Main Group Link for /kbox, /klot, /koll, and /kdaily restriction
+# Main Group Link for /kbox, /klot, and /kdaily restriction
 MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
 
 # Global Memory Stores & Concurrency Locks
@@ -38,11 +38,6 @@ pending_kachi_transfers = {}
 pending_card_buys = {}
 global_default_threshold = 60
 bot_warned_groups = set()
-
-# Koll Game Memory Stores
-active_kolls = {}          # user_id -> msg_id
-koll_cooldowns = {}        # user_id -> expiry_timestamp
-user_active_koll_data = {} # msg_id -> dict
 
 # Anti-Spam Tracking Stores
 user_message_timestamps = {}
@@ -205,7 +200,6 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
         user_id = user.id if user and not user.is_bot else None
         chat_id = chat.id if chat and chat.type in ["group", "supergroup"] else None
 
-        # Quick memory check to prevent redundant high-frequency DB writes
         async with state_lock:
             user_cached = user_id in seen_registered_users if user_id else True
             group_cached = chat_id in seen_registered_groups if chat_id else True
@@ -549,11 +543,190 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Gift 🎁", callback_data="menu_kgift")
         ],
         [
+            InlineKeyboardButton("Sell Card 💸", callback_data="menu_ksellcard")
+        ],
+        [
             InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
         ]
     ])
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+# /ksellcard Command
+@restricted_command
+async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    if chat.type in ["group", "supergroup"]:
+        return await msg.reply_text("❌ This command can only be used in Private Chat with the bot.", reply_to_message_id=msg_id)
+
+    if not context.args:
+        return await msg.reply_text(
+            "❌ <b>ကတ်ရောင်းချလိုပါက အောက်ပါပုံစံအတိုင်း ရိုက်ထည့်ပေးပါ -</b>\n"
+            "ဥပမာ: `/ksellcard 1296 827x2`",
+            parse_mode="HTML",
+            reply_to_message_id=msg_id
+        )
+
+    raw_items = context.args
+    items_to_sell = []
+
+    for token in raw_items:
+        token = token.strip()
+        if not token:
+            continue
+        c_id = None
+        qty = 1
+        if 'x' in token.lower():
+            parts = token.lower().split('x', 1)
+            p1 = parts[0].strip()
+            p2 = parts[1].strip()
+            if p1.isdigit() and p2.isdigit():
+                if len(p1) <= 2 and len(p2) >= 3:
+                    qty = int(p1)
+                    c_id = p2
+                else:
+                    c_id = p1
+                    qty = int(p2) if p2 else 1
+            elif p1.isdigit() and not p2:
+                c_id = p1
+                qty = 1
+            elif not p1.isdigit() and p2.isdigit():
+                qty = int(p2)
+                c_id = p1
+            else:
+                c_id = p1
+                qty = 1
+        else:
+            c_id = token
+            qty = 1
+
+        if c_id:
+            items_to_sell.append({"card_id": c_id, "amount": qty})
+
+    if not items_to_sell:
+        return await msg.reply_text("❌ No valid cards specified to sell.", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            missing_cards = []
+            verified_sales = []
+            total_earned_coins = 0
+
+            for item in items_to_sell:
+                input_c_id = item['card_id']
+                req_amount = item['amount']
+
+                card_info = await conn.fetchrow("""
+                    SELECT card_id, name, rarity FROM cards 
+                    WHERE card_id = $1 
+                       OR ltrim(card_id, '0') = ltrim($1, '0') 
+                       OR card_id = ltrim($1, '0') 
+                       OR ltrim(card_id, '0') = $1
+                """, input_c_id)
+
+                if not card_info:
+                    missing_cards.append(f"Card ID <code>{input_c_id}</code> (Not found in DB)")
+                    continue
+
+                actual_card_id = card_info['card_id']
+                rarity = card_info['rarity'] or 'Ten'
+
+                user_card_row = await conn.fetchrow("""
+                    SELECT uc.amount FROM user_cards uc
+                    WHERE uc.user_id = $1 AND (
+                        uc.card_id = $2 
+                        OR ltrim(uc.card_id, '0') = ltrim($2, '0')
+                        OR uc.card_id = ltrim($2, '0')
+                        OR ltrim(uc.card_id, '0') = $2
+                    ) FOR UPDATE
+                """, user.id, actual_card_id)
+
+                owned_amount = user_card_row['amount'] if user_card_row else 0
+
+                if owned_amount < req_amount:
+                    missing_cards.append(f"<b>{card_info['name']}</b> (ID: <code>{actual_card_id}</code>) - Needed: {req_amount}x, Owned: {owned_amount}x")
+                else:
+                    # Calculate random selling price per card based on rarity
+                    item_coins_total = 0
+                    for _ in range(req_amount):
+                        if rarity == 'Shinsei':
+                            item_coins_total += random.randint(300, 500)
+                        elif rarity == 'Kiwami':
+                            item_coins_total += random.randint(150, 250)
+                        elif rarity == 'Kami':
+                            item_coins_total += random.randint(100, 150)
+                        elif rarity == 'Hoshi':
+                            item_coins_total += random.randint(70, 90)
+                        else:  # Ten
+                            item_coins_total += random.randint(70, 90)
+
+                    total_earned_coins += item_coins_total
+                    verified_sales.append({
+                        "card_id": actual_card_id,
+                        "name": card_info['name'],
+                        "rarity": rarity,
+                        "amount": req_amount,
+                        "earned": item_coins_total
+                    })
+
+            if missing_cards:
+                missing_str = "\n".join(missing_cards)
+                return await msg.reply_text(
+                    f"❌ <b>You do not own the required cards or amounts!</b>\n\n{missing_str}",
+                    parse_mode="HTML",
+                    reply_to_message_id=msg_id
+                )
+
+            # Deduct cards from user inventory
+            for vs in verified_sales:
+                c_id = vs['card_id']
+                req_amount = vs['amount']
+                uc_row = await conn.fetchrow("""
+                    SELECT card_id, amount FROM user_cards WHERE user_id = $1 AND card_id = $2 FOR UPDATE
+                """, user.id, c_id)
+                if not uc_row:
+                    continue
+                current_amt = uc_row['amount']
+                new_amt = current_amt - req_amount
+                if new_amt <= 0:
+                    await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", user.id, c_id)
+                else:
+                    await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amt, user.id, c_id)
+
+            # Add earned coins to user
+            await conn.execute("""
+                UPDATE users 
+                SET coins = coins + $1 
+                WHERE user_id = $2
+            """, total_earned_coins, user.id)
+
+            user_updated = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+            current_balance = user_updated['coins'] if user_updated else total_earned_coins
+
+    sales_desc_list = []
+    for vs in verified_sales:
+        r_emoji = "🧬" if vs['rarity'] == 'Shinsei' else ("🪞" if vs['rarity'] == 'Kiwami' else ("✨" if vs['rarity'] == 'Kami' else ("⚜️" if vs['rarity'] == 'Hoshi' else "💮")))
+        sales_desc_list.append(f"• {r_emoji} {vs['name']} (ID: <code>{vs['card_id']}</code>) — <b>{vs['amount']}x</b> (+{vs['earned']} Kachi)")
+    sales_desc_str = "\n".join(sales_desc_list)
+
+    success_receipt = f"""💸 <b>Card Sale Successful!</b>
+
+👤 <b>Seller:</b> {get_mention(user.id, user.first_name)}
+
+🎴 <b>Sold Cards:</b>
+{sales_desc_str}
+
+💎 <b>Total Earned:</b> +<b>{total_earned_coins}</b> Kachi 🩸
+💰 <b>Current Balance:</b> <b>{current_balance}</b> Kachi ✨"""
+
+    await msg.reply_text(success_receipt, parse_mode="HTML", reply_to_message_id=msg_id)
 
 # /kdaily Command
 @restricted_command
@@ -1528,113 +1701,6 @@ async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /koll Command
-@restricted_command
-async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_main_group_restriction(update, context):
-        return
-
-    if not await check_force_join(update, context):
-        return
-    user = update.effective_user
-    chat = update.effective_chat
-    msg = update.message
-    msg_id = msg.message_id
-    await register_user_group(user, chat, context)
-
-    async with state_lock:
-        if user.id in active_kolls:
-            return await msg.reply_text("The previous game is still in progress. Send /kout to quit", reply_to_message_id=msg_id)
-
-        now = time.time()
-        if user.id in koll_cooldowns and koll_cooldowns[user.id] > now:
-            remaining = int(koll_cooldowns[user.id] - now)
-            mins = remaining // 60
-            secs = remaining % 60
-            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-            return await msg.reply_text(f"⏳ Please wait {time_str} before using /koll again.", reply_to_message_id=msg_id)
-
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user.id)
-            current_coins = user_row['coins'] if user_row else 1000
-
-            if current_coins < 500:
-                return await msg.reply_text(f"❌ Insufficient Kachi balance! You need 500 Kachi per spin (Current: {current_coins}).", reply_to_message_id=msg_id)
-
-            new_coins = current_coins - 500
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user.id)
-
-        card = await get_weighted_random_card(conn)
-        if not card:
-            await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
-            return await msg.reply_text("❌ No cards available in database yet!", reply_to_message_id=msg_id)
-
-    caption = (
-        "🐩 𝗥𝗲𝗮𝗱𝘆 𝗧𝗼 𝗞𝗼𝗹𝗹 \n\n"
-        "🩸𝘐𝘵 𝘤𝘰𝘴𝘵𝘴 500 𝘬𝘢𝘤𝘩𝘪 𝘱𝘦𝘳 𝘴𝘱𝘪𝘯 \n"
-        "✨𝘍𝘦𝘢𝘵𝘶𝘳𝘪𝘯𝘨 𝗧𝗲𝗻 𝗧𝗼 𝗦𝗵𝗶𝗻𝘀𝘦𝗶\n\n"
-        "🍀𝘎𝘰𝘰𝘥𝚕𝘶𝗰𝚔, 𝚊𝚗𝚍 𝚖𝚊𝚢 𝚏𝚊𝚝𝚎 𝚋𝚎 𝚘𝚗 𝚢𝚘𝚞𝚛 𝚜𝚒𝚍𝚎!"
-    )
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Cancel ❌", callback_data=f"koll_cancel_{user.id}"),
-            InlineKeyboardButton("Koll 💥", callback_data=f"koll_spin_{user.id}")
-        ]
-    ])
-
-    try:
-        if card['type'] == 'photo':
-            sent_msg = await msg.reply_photo(photo=card['file_id'], caption=caption, parse_mode="HTML", reply_markup=keyboard)
-        else:
-            sent_msg = await msg.reply_video(video=card['file_id'], caption=caption, parse_mode="HTML", reply_markup=keyboard)
-    except Exception as e:
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
-        return await msg.reply_text(f"❌ Error sending card: {e}", reply_to_message_id=msg_id)
-
-    async with state_lock:
-        active_kolls[user.id] = sent_msg.message_id
-        user_active_koll_data[sent_msg.message_id] = {
-            "user_id": user.id,
-            "card": card
-        }
-
-# /kout Command
-@restricted_command
-async def kout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg = update.message
-    msg_id = msg.message_id
-
-    async with state_lock:
-        if user.id not in active_kolls:
-            return await msg.reply_text("❌ You do not have any active game in progress.", reply_to_message_id=msg_id)
-
-        target_msg_id = active_kolls[user.id]
-        del active_kolls[user.id]
-        if target_msg_id in user_active_koll_data:
-            del user_active_koll_data[target_msg_id]
-
-        koll_cooldowns[user.id] = time.time() + 30
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
-
-    try:
-        await context.bot.edit_message_caption(
-            chat_id=msg.chat_id,
-            message_id=target_msg_id,
-            caption="Cancel ❌ Here Your Kachi 500 Refund",
-            parse_mode="HTML",
-            reply_markup=None
-        )
-    except Exception:
-        pass
-
-    await msg.reply_text("✅ Game quit successfully. Refunded 500 Kachi.", reply_to_message_id=msg_id)
-
 async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount):
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -1920,17 +1986,17 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r_emoji = "🧬" if r == 'Shinsei' else ("🪞" if r == 'Kiwami' else ("✨" if r == 'Kami' else ("⚜️" if r == 'Hoshi' else "💮")))
 
     if r == 'Shinsei':
-        coin_value = "4000-8900"
+        coin_value = "2000-3000"
     elif r == 'Kiwami':
-        coin_value = "2000-5500"
+        coin_value = "1500-1900"
     elif r == 'Kami':
-        coin_value = "1000-2500"
+        coin_value = "800-1200"
     elif r == 'Hoshi':
-        coin_value = "400-800"
+        coin_value = "350-500"
     elif r == 'Ten':
-        coin_value = "200-400"
+        coin_value = "150-300"
     else:
-        coin_value = "200-400"
+        coin_value = "150-300"
 
     caption_text = f"""🎗 Card Information ♡
 
@@ -2540,121 +2606,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
-    # Koll Cancel Callback
-    if data.startswith("koll_cancel_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[2])
-
-        if user.id != allowed_uid:
-            return await query.answer("❌ This is not your game!", show_alert=True)
-
-        async with state_lock:
-            if allowed_uid in active_kolls:
-                del active_kolls[allowed_uid]
-            if msg_id in user_active_koll_data:
-                del user_active_koll_data[msg_id]
-            koll_cooldowns[user.id] = time.time() + 30
-
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
-
-        cancel_text = "Cancel ❌ Here Your Kachi 500 Refund"
-        try:
-            if query.message.caption:
-                await query.edit_message_caption(caption=cancel_text, parse_mode="HTML", reply_markup=None)
-            else:
-                await query.edit_message_text(text=cancel_text, reply_markup=None)
-        except Exception:
-            pass
-
-        return await query.answer("❌ Cancelled! 500 Kachi refunded.", show_alert=True)
-
-    # Koll Spin Callback
-    if data.startswith("koll_spin_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[2])
-
-        if user.id != allowed_uid:
-            return await query.answer("❌ This is not your game!", show_alert=True)
-
-        async with state_lock:
-            if allowed_uid in active_kolls:
-                del active_kolls[allowed_uid]
-            if msg_id in user_active_koll_data:
-                del user_active_koll_data[msg_id]
-            koll_cooldowns[user.id] = time.time() + 120
-
-        steps = [
-            "𝗪𝗮𝗸𝗲 𝗨𝗽 ! 𝗧𝗼 𝗥𝗲𝗮𝗹𝗶𝘁𝘆 🌏",
-            "𝗛𝗲𝘆𝘆𝘆 ! 𝗠𝗮𝘆 𝗟𝘂𝗰𝗸 𝗕𝗲 𝗪𝗶𝘁𝗵 𝗬𝗼𝘂 🦢",
-            "🌓 𝗪𝗮𝗻𝗻𝗮 𝗞𝗻𝗼𝘄 𝗛𝗼𝘄 𝗜𝘁 𝗔𝗹𝗹 𝗘𝗻𝗱𝘀?"
-        ]
-
-        try:
-            for step_text in steps:
-                await asyncio.sleep(1.2)
-                if query.message.caption:
-                    await query.edit_message_caption(caption=step_text, parse_mode="HTML", reply_markup=None)
-                else:
-                    await query.edit_message_text(text=step_text, parse_mode="HTML", reply_markup=None)
-        except Exception:
-            pass
-
-        await asyncio.sleep(1.2)
-
-        is_win = random.choices([True, False], weights=[20, 80], k=1)[0]
-
-        async with db_pool.acquire() as conn:
-            if is_win:
-                card = await get_weighted_random_card(conn)
-                if card:
-                    await conn.execute("""
-                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                    """, user.id, card['card_id'])
-                    card_name = card['name']
-                    card_id_str = card['card_id']
-                    rarity = card.get('rarity', 'Ten')
-                    r_emoji = "🧬" if rarity == 'Shinsei' else ("🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮")))
-                else:
-                    card_name = "Special Card"
-                    card_id_str = "0000"
-                    rarity = "Ten"
-                    r_emoji = "💮"
-
-                await conn.execute("UPDATE users SET coins = coins + 750 WHERE user_id = $1", user.id)
-
-                result_text = f"""🎃 Heyy Congratulations ✨ For You {user.first_name}
-Cᴀʀᴅ Nᴀᴍᴇ - {card_name}
-  Cᴀʀᴅ  ID - {card_id_str}
-    Rᴀʀɪᴛʏ - {r_emoji} {rarity}
-
-🏝 𝗕𝗢𝗡𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗 - 750 Kachi 🩸"""
-
-            else:
-                await conn.execute("UPDATE users SET coins = coins + 250 WHERE user_id = $1", user.id)
-                user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
-                current_bal = user_row['coins'] if user_row else 250
-
-                result_text = f"""🥀 𝗦𝗼𝗿𝗿𝘆 𝗮𝗯𝗼𝘂𝘁 𝘁𝗵𝗮𝘁 , 𝗗𝗼𝗻'𝘁 𝗹𝗼𝘀𝗲 𝗵𝗼𝗽𝗲 -- 𝗧𝗿𝘆 𝗮𝗴𝗮𝗶𝗻 𝗻𝗲𝘅𝘁 𝘁𝗶𝗺𝗲✨
-
-▰𝗞𝗮𝗰𝗵𝗶 𝗕𝗮𝗹𝗮𝗻𝗰𝗲▰
-[ {current_bal} ]
-▰𝗛𝗲𝗿𝗲 𝗬𝗼𝘂 𝗮𝗿𝗲 𝗥𝗲𝗳𝘂𝗻𝗱▰
-[ 250 𝗞𝗮𝗰𝗵𝗶 ]
-
-𝗴𝗼𝗼𝗱𝗹𝘂𝗰𝗸 𝗻𝗲𝘅𝘁 𝘁𝗶𝗺𝗲 🌺"""
-
-        try:
-            if query.message.caption:
-                await query.edit_message_caption(caption=result_text, parse_mode="HTML", reply_markup=None)
-            else:
-                await query.edit_message_text(text=result_text, parse_mode="HTML", reply_markup=None)
-        except Exception:
-            pass
-
-        return await query.answer("🎲 Koll spin completed!")
-
     if data.startswith("buy_confirm_"):
         parts = data.split("_")
         allowed_buyer_id = int(parts[2])
@@ -2873,6 +2824,24 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         await query.answer()
         return
 
+    if data == "menu_ksellcard":
+        bot_info = await context.bot.get_me()
+        ksell_text = f"""💸 <b>Heyy Wanna Sell Card? So Come Dm</b>
+
+ကဒ်ရောင်းလိုပါက Bot ၏ DM (Private Chat) သို့သွားရောက်၍ အောက်ပါပုံစံအတိုင်း ရိုက်ထည့်ပေးပါ -
+👉 `/ksellcard [card_id] [card_id]x[amount]`
+ဥပမာ: `/ksellcard 1296 827x2`"""
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Sell Card 💸", url=f"https://t.me/{bot_info.username}?start=sellcard")],
+            [InlineKeyboardButton("◀️ Back", callback_data="menu_back")]
+        ])
+        try:
+            await query.edit_message_text(ksell_text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
     if data == "menu_back":
         bot_info = await context.bot.get_me()
         text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
@@ -2887,6 +2856,9 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
             [
                 InlineKeyboardButton("Help 📖", callback_data="menu_help"),
                 InlineKeyboardButton("Gift 🎁", callback_data="menu_kgift")
+            ],
+            [
+                InlineKeyboardButton("Sell Card 💸", callback_data="menu_ksellcard")
             ],
             [
                 InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
@@ -3153,11 +3125,10 @@ def main():
     app.add_handler(CommandHandler("kdaily", kdaily_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
+    app.add_handler(CommandHandler("ksellcard", ksellcard_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
-    app.add_handler(CommandHandler("koll", koll_cmd))
-    app.add_handler(CommandHandler("kout", kout_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
