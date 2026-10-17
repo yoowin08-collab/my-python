@@ -23,6 +23,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
+# Main Group Link for /kbox and /klot restriction
+MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
+
 # Global Memory Stores
 group_threshold = {}
 pending_gifts = {}
@@ -31,6 +34,7 @@ pending_card_adds = {}
 pending_quizzes = {}
 active_quizzes = {}
 pending_kachi_transfers = {}
+pending_card_buys = {}
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -53,6 +57,7 @@ async def init_db():
                 coins BIGINT DEFAULT 1000,
                 selected_card_id TEXT,
                 is_card_admin BOOLEAN DEFAULT FALSE,
+                is_card_buyer BOOLEAN DEFAULT FALSE,
                 started_in_pm BOOLEAN DEFAULT FALSE,
                 banned BOOLEAN DEFAULT FALSE,
                 ban_reason TEXT,
@@ -94,6 +99,7 @@ async def init_db():
         try:
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_card_id TEXT;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_admin BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_buyer BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS started_in_pm BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;")
@@ -157,30 +163,6 @@ def restricted_command(func):
                                 reply_to_message_id=msg.message_id
                             )
                         return
-        return await func(update, context)
-    return wrapper
-
-# Main Group Restriction Decorator for /kbox and /klot
-def main_group_restricted(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat = update.effective_chat
-        msg = update.effective_message
-        is_main = False
-        if chat and chat.type in ["group", "supergroup"]:
-            if chat.username and chat.username.lower() == "Kachi_sGroup".lower():
-                is_main = True
-
-        if not is_main:
-            text = (
-                "This Command Will Work In This Main Group\n"
-                "Heyy သူများGpမှာမဖောက်ပါနဲ့နော် သူများမျက်စိနှောက်လိမ့်မယ် အဲ့/kbox နဲ့ /klot ကိုတော့ ဒီGroupမှာပဲ လာဖောက်ပေးပါ"
-            )
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Group", url="https://t.me/Kachi_sGroup")]
-            ])
-            if msg:
-                await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-            return
         return await func(update, context)
     return wrapper
 
@@ -292,6 +274,30 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif update.callback_query:
             await update.callback_query.answer("❌ Please join the channel first.", show_alert=True)
         return False
+
+async def check_main_group_restriction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    msg = update.message
+    if not chat or not msg:
+        return True
+    
+    if chat.type in ["group", "supergroup"]:
+        is_main_group = False
+        if chat.username and chat.username.lower() == "kachi_sgroup".lower():
+            is_main_group = True
+        
+        if not is_main_group:
+            restriction_text = (
+                "This Command Will Work In This Main Group\n"
+                "Heyy သူများGpမှာမဖောက်ပါနဲ့နော် သူများမျက်စိနှောက်လိမ့်မယ် "
+                "အဲ့/kbox နဲ့ /klot ကိုတော့ ဒီGroupမှာပဲ လာဖောက်ပေးပါ"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Group", url=MAIN_GROUP_LINK)]
+            ])
+            await msg.reply_text(restriction_text, reply_markup=keyboard, reply_to_message_id=msg.message_id)
+            return False
+    return True
 
 # Quiz Commands (/aa and /send)
 @restricted_command
@@ -486,6 +492,143 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
+# /badmin Command
+@restricted_command
+async def badmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: `/badmin [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        target_id = int(context.args[0])
+        async with db_pool.acquire() as conn:
+            user_exists = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+            if not user_exists:
+                await conn.execute("INSERT INTO users (user_id, name, coins) VALUES ($1, 'User', 1000)", target_id)
+            await conn.execute("UPDATE users SET is_card_buyer = TRUE WHERE user_id = $1", target_id)
+
+        await update.message.reply_text(f"✅ User ID <code>{target_id}</code> is now designated as the Card Buyer.", parse_mode="HTML", reply_to_message_id=msg_id)
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
+
+# /buy Command (Card Buying System)
+@restricted_command
+async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    msg_id = msg.message_id
+
+    is_buyer = (user.id == ADMIN_ID)
+    if not is_buyer:
+        async with db_pool.acquire() as conn:
+            u_info = await conn.fetchrow("SELECT is_card_buyer FROM users WHERE user_id = $1", user.id)
+            if u_info and u_info['is_card_buyer']:
+                is_buyer = True
+
+    if not is_buyer:
+        return await msg.reply_text("❌ You are not authorized to use the /buy command.", reply_to_message_id=msg_id)
+
+    if len(context.args) < 2:
+        return await msg.reply_text("❌ Usage: `/buy [seller_id] [card_id] [card_id]x ...`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        seller_id = int(context.args[0])
+    except ValueError:
+        return await msg.reply_text("❌ Invalid Seller User ID.", reply_to_message_id=msg_id)
+
+    if seller_id == user.id:
+        return await msg.reply_text("❌ You cannot buy cards from yourself.", reply_to_message_id=msg_id)
+
+    raw_items = context.args[1:]
+    items_to_buy = []
+
+    for token in raw_items:
+        token = token.strip()
+        if not token:
+            continue
+        if 'x' in token.lower():
+            parts = token.lower().split('x')
+            c_id = parts[0].strip()
+            qty_str = parts[1].strip() if len(parts) > 1 and parts[1].strip().isdigit() else "1"
+            qty = int(qty_str) if qty_str.isdigit() else 1
+            if c_id:
+                items_to_buy.append({"card_id": c_id, "amount": qty})
+        else:
+            items_to_buy.append({"card_id": token, "amount": 1})
+
+    if not items_to_buy:
+        return await msg.reply_text("❌ No valid cards specified to buy.", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        seller_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", seller_id)
+        if not seller_row:
+            return await msg.reply_text(f"❌ Seller ID <code>{seller_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
+        seller_name = seller_row['name'] or "User"
+
+        missing_cards = []
+        verified_items = []
+
+        for item in items_to_buy:
+            c_id = item['card_id']
+            req_amount = item['amount']
+
+            card_info = await conn.fetchrow("SELECT name, rarity FROM cards WHERE card_id = $1", c_id)
+            if not card_info:
+                missing_cards.append(f"Card ID <code>{c_id}</code> (Not found in DB)")
+                continue
+
+            user_card_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+            owned_amount = user_card_row['amount'] if user_card_row else 0
+
+            if owned_amount < req_amount:
+                missing_cards.append(f"<b>{card_info['name']}</b> (ID: <code>{c_id}</code>) - Needed: {req_amount}x, Owned: {owned_amount}x")
+            else:
+                verified_items.append({
+                    "card_id": c_id,
+                    "name": card_info['name'],
+                    "rarity": card_info['rarity'],
+                    "amount": req_amount
+                })
+
+        if missing_cards:
+            missing_str = "\n".join(missing_cards)
+            return await msg.reply_text(
+                f"❌ <b>Seller does not have the required cards or amounts!</b>\n\n{missing_str}",
+                parse_mode="HTML",
+                reply_to_message_id=msg_id
+            )
+
+    items_desc_list = []
+    for vi in verified_items:
+        items_desc_list.append(f"• {vi['name']} (ID: <code>{vi['card_id']}</code>) — <b>{vi['amount']}x</b>")
+    items_desc_str = "\n".join(items_desc_list)
+
+    buy_text = f"""🛒 <b>Card Purchase Confirmation</b>
+
+👤 <b>Buyer:</b> {get_mention(user.id, user.first_name)}
+👤 <b>Seller:</b> {get_mention(seller_id, seller_name)}
+
+🎴 <b>Cards to Remove:</b>
+{items_desc_str}
+
+<i>Click the button below to confirm.</i>"""
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("ဝယ်မည် ✅", callback_data=f"buy_confirm_{user.id}_{seller_id}")
+    ]])
+
+    sent_msg = await msg.reply_text(buy_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+    pending_card_buys[sent_msg.message_id] = {
+        "buyer_id": user.id,
+        "seller_id": seller_id,
+        "seller_name": seller_name,
+        "items": verified_items
+    }
+
 # /admin Command
 @restricted_command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -502,17 +645,19 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. /crest - Reset all thresholds & message counts
 5. /k [user_id] [amount] - Add/remove Kachi
 6. /addadmin [user_id] - Add Card Admin
-7. /add - Add new card (reply to media)
-8. /del [card_id] - Delete card
-9. /cardlist - View all cards
-10. /glist - View groups list
-11. /stats - View stats
-12. /broadcast - Broadcast message
-13. /check [user_id] - Check user profile info
-14. /mute [id] [time] [reason] - Mute user from bot usage
-15. /ban [id] [reason] - Ban user from bot usage
-16. /umute [id] - Unmute user from bot usage
-17. /unban [id] - Unban user from bot usage"""
+7. /badmin [user_id] - Set Card Buyer
+8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
+9. /add - Add new card (reply to media)
+10. /del [card_id] - Delete card
+11. /cardlist - View all cards
+12. /glist - View groups list
+13. /stats - View stats
+14. /broadcast - Broadcast message
+15. /check [user_id] - Check user profile info
+16. /mute [id] [time] [reason] - Mute user from bot usage
+17. /ban [id] [reason] - Ban user from bot usage
+18. /umute [id] - Unmute user from bot usage
+19. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1189,7 +1334,6 @@ async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# Background task for /klot (လူအများ တစ်ပြိုင်နက်တည်း ဆော့နိုင်ရန် ပြင်ဆင်ထားသည်)
 async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
@@ -1251,8 +1395,10 @@ Kachi Balance: {new_balance}
         pass
 
 @restricted_command
-@main_group_restricted
 async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_main_group_restriction(update, context):
+        return
+
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -1280,13 +1426,13 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_coins < bet_amount:
         return await msg.reply_text(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-    # လူအများတစ်ပြိုင်နက်တည်း သီးခြားစီဆော့နိုင်ရန် asyncio.create_task ဖြင့် run ပေးသည်
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-# /kbox Command (Card Opening System)
 @restricted_command
-@main_group_restricted
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_main_group_restriction(update, context):
+        return
+
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -1492,7 +1638,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🩸 Kachi Value ( {coin_value} )
    🐠 Global Drops - <b>{global_drop_count}</b>
 
-▱▱▰▰▱▱▰▰▱▱▰▰
+▰▰▱▱▰▰▱▱▰▰
 Top Owners 🐾
 {owners_str}"""
 
@@ -1962,7 +2108,6 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     if msg_id in active_card_drops:
         del active_card_drops[msg_id]
 
-# Background task for /kbox (လူအများ တစ်ပြိုင်နက်တည်း ကတ်ဖောက်နိုင်ရန် ပြင်ဆင်ထားသည်)
 async def run_kbox_task(bot, chat_id, query, user_id, display_name):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
@@ -1975,7 +2120,6 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
             pass
         return
 
-    # Deduct 300 Kachi
     new_balance = current_coins - 300
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
@@ -2048,6 +2192,58 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
+    if data.startswith("buy_confirm_"):
+        parts = data.split("_")
+        allowed_buyer_id = int(parts[2])
+        seller_id = int(parts[3])
+
+        if user.id != allowed_buyer_id and user.id != ADMIN_ID:
+            return await query.answer("❌ Only the authorized buyer can click this.", show_alert=True)
+
+        buy_info = pending_card_buys.get(msg_id)
+        if not buy_info:
+            return await query.answer("❌ Purchase session expired or already completed.", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            missing_cards = []
+            for item in buy_info["items"]:
+                c_id = item['card_id']
+                req_amount = item['amount']
+                uc_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+                owned = uc_row['amount'] if uc_row else 0
+                if owned < req_amount:
+                    missing_cards.append(c_id)
+
+            if missing_cards:
+                del pending_card_buys[msg_id]
+                return await query.answer("❌ Seller no longer owns the required cards/amounts!", show_alert=True)
+
+            for item in buy_info["items"]:
+                c_id = item['card_id']
+                req_amount = item['amount']
+                uc_row = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+                current_amt = uc_row['amount'] if uc_row else 0
+                new_amt = current_amt - req_amount
+                if new_amt <= 0:
+                    await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", seller_id, c_id)
+                else:
+                    await conn.execute("UPDATE user_cards SET amount = $1 WHERE user_id = $2 AND card_id = $3", new_amt, seller_id, c_id)
+
+        del pending_card_buys[msg_id]
+
+        success_text = f"""✅ <b>Purchase Successful & Cards Removed!</b>
+
+👤 <b>Buyer:</b> {get_mention(buy_info['buyer_id'], user.first_name)}
+👤 <b>Seller:</b> {get_mention(seller_id, buy_info['seller_name'])}
+
+🎴 Cards successfully removed from seller's inventory."""
+
+        try:
+            await query.edit_message_text(text=success_text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+        return await query.answer("✅ Cards purchased and removed successfully!")
+
     if data.startswith("kbox_open_"):
         allowed_uid = int(data.split("_")[2])
         if user.id != allowed_uid:
@@ -2061,7 +2257,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_coins < 300:
             return await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
 
-        # လူအများတစ်ပြိုင်နက်တည်း သီးခြားစီ ကတ်ဖောက်နိုင်ရန် asyncio.create_task ဖြင့် run ပေးသည်
         asyncio.create_task(run_kbox_task(context.bot, chat_id, query, user.id, display_name))
         await query.answer("🎉 Opening Kbox...")
         return
@@ -2441,6 +2636,8 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
+    app.add_handler(CommandHandler("badmin", badmin_cmd))
+    app.add_handler(CommandHandler("buy", buy_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
