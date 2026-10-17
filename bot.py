@@ -38,6 +38,11 @@ pending_card_buys = {}
 global_default_threshold = 60
 bot_warned_groups = set()
 
+# Koll Game Memory Stores
+active_kolls = {}          # user_id -> msg_id
+koll_cooldowns = {}        # user_id -> expiry_timestamp
+user_active_koll_data = {} # msg_id -> dict
+
 # Anti-Spam Tracking Stores
 user_message_timestamps = {}
 spam_ignores = {}
@@ -514,7 +519,7 @@ async def badmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
-# /buy Command (Card Buying System - Fixed for leading zeros and qty formats)
+# /buy Command
 @restricted_command
 async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -531,7 +536,6 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_buyer:
         return await msg.reply_text("❌ You are not authorized to use the /buy command.", reply_to_message_id=msg_id)
 
-    # Determine seller_id and raw_items
     seller_id = None
     raw_items = []
 
@@ -610,7 +614,6 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             input_c_id = item['card_id']
             req_amount = item['amount']
 
-            # Find card in DB handling leading zeros
             card_info = await conn.fetchrow("""
                 SELECT card_id, name, rarity FROM cards 
                 WHERE card_id = $1 
@@ -625,7 +628,6 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             actual_card_id = card_info['card_id']
 
-            # Find user card handling leading zeros
             user_card_row = await conn.fetchrow("""
                 SELECT uc.amount FROM user_cards uc
                 WHERE uc.user_id = $1 AND (
@@ -716,7 +718,6 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# Bot-level Moderation Commands (/mute, /ban, /umute, /unban)
 def parse_time(time_str: str) -> int:
     time_str = time_str.lower().strip()
     mult = 1
@@ -1388,6 +1389,111 @@ async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+# /koll Command
+@restricted_command
+async def koll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    # Check if a game is already in progress
+    if user.id in active_kolls:
+        return await msg.reply_text("The previous game is still in progress. Send /kout to quit", reply_to_message_id=msg_id)
+
+    # Check cooldowns
+    now = time.time()
+    if user.id in koll_cooldowns and koll_cooldowns[user.id] > now:
+        remaining = int(koll_cooldowns[user.id] - now)
+        mins = remaining // 60
+        secs = remaining % 60
+        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+        return await msg.reply_text(f"⏳ Please wait {time_str} before using /koll again.", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+        current_coins = user_row['coins'] if user_row else 1000
+
+        if current_coins < 500:
+            return await msg.reply_text(f"❌ Insufficient Kachi balance! You need 500 Kachi per spin (Current: {current_coins}).", reply_to_message_id=msg_id)
+
+        # Deduct 500 Kachi
+        new_coins = current_coins - 500
+        await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user.id)
+
+        card = await get_weighted_random_card(conn)
+        if not card:
+            await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
+            return await msg.reply_text("❌ No cards available in database yet!", reply_to_message_id=msg_id)
+
+    caption = (
+        "🐩 𝗥𝗲𝗮𝗱𝘆 𝗧𝗼 𝗞𝗼𝗹𝗹 \n\n"
+        "🩸𝘐𝘵 𝘤𝘰𝘴𝘵𝘴 500 𝘬𝘢𝘤𝘩𝘪 𝘱𝘦𝘳 𝘴𝘱𝘪𝘯 \n"
+        "✨𝘍𝘦𝘢𝘵𝘶𝘳𝘪𝘯𝘨 𝗧𝗲𝗻 𝗧𝗼 𝗦𝗵𝗶𝗻𝘀𝘦𝗶\n\n"
+        "🍀𝘎𝘰𝘰𝘥𝚕𝘶𝗰𝐤,𝘢nd 𝚖𝚊𝚢 𝚏𝚊𝚝𝚎 𝚋𝚎 𝚘𝚗 𝚢𝚘𝚞𝚛 𝚜𝚒𝚍𝚎!"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Cancel ❌", callback_data=f"koll_cancel_{user.id}"),
+            InlineKeyboardButton("Koll 💥", callback_data=f"koll_spin_{user.id}")
+        ]
+    ])
+
+    try:
+        if card['type'] == 'photo':
+            sent_msg = await msg.reply_photo(photo=card['file_id'], caption=caption, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            sent_msg = await msg.reply_video(video=card['file_id'], caption=caption, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
+        return await msg.reply_text(f"❌ Error sending card: {e}", reply_to_message_id=msg_id)
+
+    active_kolls[user.id] = sent_msg.message_id
+    user_active_koll_data[sent_msg.message_id] = {
+        "user_id": user.id,
+        "card": card
+    }
+
+# /kout Command
+@restricted_command
+async def kout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    msg_id = msg.message_id
+
+    if user.id not in active_kolls:
+        return await msg.reply_text("❌ You do not have any active game in progress.", reply_to_message_id=msg_id)
+
+    target_msg_id = active_kolls[user.id]
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
+
+    if user.id in active_kolls:
+        del active_kolls[user.id]
+    if target_msg_id in user_active_koll_data:
+        del user_active_koll_data[target_msg_id]
+
+    koll_cooldowns[user.id] = time.time() + 30
+
+    try:
+        await context.bot.edit_message_caption(
+            chat_id=msg.chat_id,
+            message_id=target_msg_id,
+            caption="Cancel ❌ Here Your Kachi 500 Refund",
+            parse_mode="HTML",
+            reply_markup=None
+        )
+    except Exception:
+        pass
+
+    await msg.reply_text("✅ Game quit successfully. Refunded 500 Kachi.", reply_to_message_id=msg_id)
 
 async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount):
     async with db_pool.acquire() as conn:
@@ -2247,6 +2353,121 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
+    # Koll Cancel Callback
+    if data.startswith("koll_cancel_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[2])
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not your game!", show_alert=True)
+
+        if allowed_uid in active_kolls:
+            del active_kolls[allowed_uid]
+        if msg_id in user_active_koll_data:
+            del user_active_koll_data[msg_id]
+
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET coins = coins + 500 WHERE user_id = $1", user.id)
+
+        koll_cooldowns[user.id] = time.time() + 30
+
+        cancel_text = "Cancel ❌ Here Your Kachi 500 Refund"
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption=cancel_text, parse_mode="HTML", reply_markup=None)
+            else:
+                await query.edit_message_text(text=cancel_text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+
+        return await query.answer("❌ Cancelled! 500 Kachi refunded.", show_alert=True)
+
+    # Koll Spin Callback
+    if data.startswith("koll_spin_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[2])
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not your game!", show_alert=True)
+
+        if allowed_uid in active_kolls:
+            del active_kolls[allowed_uid]
+        if msg_id in user_active_koll_data:
+            del user_active_koll_data[msg_id]
+
+        koll_cooldowns[user.id] = time.time() + 120
+
+        steps = [
+            "𝗪𝗮𝗸𝗲 𝗨𝗽 ! 𝗧𝗼 𝗥𝗲𝗮𝗹𝗶𝘁𝘆 🌏",
+            "𝗛𝗲𝘆𝘆𝘆 ! 𝗠𝗮𝘆 𝗟𝘂𝗰𝗸 𝗕𝗲 𝗪𝗶𝘁𝗵 𝗬𝗼𝘂 🦢",
+            "🌓 𝗪𝗮𝗻𝗻𝗮 𝗞𝗻𝗼𝘄 𝗛𝗼𝘄 𝗜𝘁 𝗔𝗹𝗹 𝗘𝗻𝗱𝘀?"
+        ]
+
+        try:
+            for step_text in steps:
+                await asyncio.sleep(1.2)
+                if query.message.caption:
+                    await query.edit_message_caption(caption=step_text, parse_mode="HTML", reply_markup=None)
+                else:
+                    await query.edit_message_text(text=step_text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+
+        await asyncio.sleep(1.2)
+
+        is_win = random.choices([True, False], weights=[40, 60], k=1)[0]
+
+        async with db_pool.acquire() as conn:
+            if is_win:
+                card = await get_weighted_random_card(conn)
+                if card:
+                    await conn.execute("""
+                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                    """, user.id, card['card_id'])
+                    card_name = card['name']
+                    card_id_str = card['card_id']
+                    rarity = card.get('rarity', 'Ten')
+                    r_emoji = "🧬" if rarity == 'Shinsei' else ("🪞" if rarity == 'Kiwami' else ("✨" if rarity == 'Kami' else ("⚜️" if rarity == 'Hoshi' else "💮")))
+                else:
+                    card_name = "Special Card"
+                    card_id_str = "0000"
+                    rarity = "Ten"
+                    r_emoji = "💮"
+
+                await conn.execute("UPDATE users SET coins = coins + 750 WHERE user_id = $1", user.id)
+
+                result_text = f"""🎃 Heyy Congratulations ✨ For You {user.first_name}
+Cᴀʀᴅ Nᴀᴍᴇ - {card_name}
+  Cᴀʀᴅ  ID - {card_id_str}
+    Rᴀʀɪᴛʏ - {r_emoji} {rarity}
+
+🏝 𝗕𝗢𝗡𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗 - 750 Kachi 🩸"""
+
+            else:
+                await conn.execute("UPDATE users SET coins = coins + 250 WHERE user_id = $1", user.id)
+                user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+                current_bal = user_row['coins'] if user_row else 250
+
+                result_text = f"""🥀 𝗦𝗼𝗿𝗿𝘆 𝗮𝗯𝗼𝘂𝘁 𝘁𝗵𝗮𝘁 , 𝗗𝗼𝗻'𝘁 𝗹𝗼𝘀𝗲 𝗵𝗼𝗽𝗲 -- 𝗧𝗿𝘆 𝗮𝗴𝗮𝗶𝗻 𝗻𝗲𝘅𝘁 𝘁𝗶𝗺𝗲✨
+
+▰𝙺𝚊𝚌𝚑𝚒 𝙱𝚊𝚕𝚊𝚗𝚌𝚎▰
+[ {current_bal} ]
+▰𝙷𝚎𝚛𝚎 𝚈𝚘𝚞 𝚊𝚛𝚎 𝚁𝚎𝚏𝚞𝚗𝚍▰
+[ 250 𝙺𝚊𝚌𝚑𝚒 ]
+
+𝐠𝐨𝐨𝐝𝗹𝘂𝚌𝚔 𝐧𝐞𝘅𝘁 𝘁𝗶𝗺𝗲 🌺"""
+
+        try:
+            if query.message.caption:
+                await query.edit_message_caption(caption=result_text, parse_mode="HTML", reply_markup=None)
+            else:
+                await query.edit_message_text(text=result_text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+
+        return await query.answer("🎲 Koll spin completed!")
+
     if data.startswith("buy_confirm_"):
         parts = data.split("_")
         allowed_buyer_id = int(parts[2])
@@ -2690,6 +2911,8 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
+    app.add_handler(CommandHandler("koll", koll_cmd))
+    app.add_handler(CommandHandler("kout", kout_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
@@ -2703,7 +2926,7 @@ def main():
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("badmin", badmin_cmd))
-    app.add_handler(CommandHandler("buy", buy_cmd))
+    app.add_handler(CommandHandler:("buy", buy_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
