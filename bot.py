@@ -160,6 +160,30 @@ def restricted_command(func):
         return await func(update, context)
     return wrapper
 
+# Main Group Restriction Decorator for /kbox and /klot
+def main_group_restricted(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat = update.effective_chat
+        msg = update.effective_message
+        is_main = False
+        if chat and chat.type in ["group", "supergroup"]:
+            if chat.username and chat.username.lower() == "Kachi_sGroup".lower():
+                is_main = True
+
+        if not is_main:
+            text = (
+                "This Command Will Work In This Main Group\n"
+                "Heyy သူများGpမှာမဖောက်ပါနဲ့နော် သူများမျက်စိနှောက်လိမ့်မယ် အဲ့/kbox နဲ့ /klot ကိုတော့ ဒီGroupမှာပဲ လာဖောက်ပေးပါ"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Group", url="https://t.me/Kachi_sGroup")]
+            ])
+            if msg:
+                await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+            return
+        return await func(update, context)
+    return wrapper
+
 async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = None):
     if not db_pool:
         return
@@ -1227,6 +1251,7 @@ Kachi Balance: {new_balance}
         pass
 
 @restricted_command
+@main_group_restricted
 async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
@@ -1260,6 +1285,7 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /kbox Command (Card Opening System)
 @restricted_command
+@main_group_restricted
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
