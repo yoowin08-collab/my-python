@@ -2926,7 +2926,7 @@ def main():
     app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("badmin", badmin_cmd))
-    app.add_handler(CommandHandler:("buy", buy_cmd))
+    app.add_handler(CommandHandler("buy", buy_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
