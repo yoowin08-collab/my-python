@@ -142,6 +142,8 @@ async def init_db():
         for g in db_groups:
             if g['threshold'] is not None:
                 group_threshold[g['chat_id']] = g['threshold']
+                # Mark as already warned to prevent duplicate alerts upon restart if group exists
+                bot_warned_groups.add(g['chat_id'])
 
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
         for c in existing_cards:
@@ -585,7 +587,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /ksearch Command (Updated to not put "all cards" behind/in query string)
+# /ksearch Command
 @restricted_command
 async def ksearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -897,7 +899,7 @@ async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /lock Command (Added per request)
+# /lock Command
 @restricted_command
 async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
