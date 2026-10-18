@@ -1927,6 +1927,9 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         target_id = user_id
 
+    offset = int(query.offset) if query.offset and query.offset.isdigit() else 0
+    limit = 50
+
     async with db_pool.acquire() as conn:
         owner_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
         owner_name = owner_row['name'] if owner_row and owner_row['name'] else user_name
@@ -1937,7 +1940,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             JOIN cards c ON uc.card_id = c.card_id 
             WHERE uc.user_id = $1 AND uc.amount > 0
             ORDER BY c.card_id ASC
-        """, target_id)
+            LIMIT $2 OFFSET $3
+        """, target_id, limit, offset)
 
     results = []
     for c in user_cards:
@@ -1983,7 +1987,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
 
     try:
-        await query.answer(results, cache_time=1)
+        next_offset = str(offset + limit) if len(user_cards) == limit else ""
+        await query.answer(results, next_offset=next_offset, cache_time=1)
     except Exception:
         pass
 
