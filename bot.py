@@ -861,6 +861,41 @@ async def badmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
+# /got Command (Bot Admin Only)
+@restricted_command
+async def got_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+
+    if user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: `/got [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    target_card_id = context.args[0].strip()
+
+    async with db_pool.acquire() as conn:
+        card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id = $1", target_card_id)
+        if not card:
+            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+        async with conn.transaction():
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, ADMIN_ID, target_card_id)
+            await check_and_auto_lock_card(conn, target_card_id)
+
+    r = card.get('rarity', 'Ten')
+    r_emoji = get_rarity_emoji(r)
+
+    await update.message.reply_text(
+        f"✅ Successfully added card <b>{card['name']}</b> (ID: <code>{card['card_id']}</code>, Rarity: {r_emoji} {r}) to your inventory!",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
 # /unlock Command
 @restricted_command
 async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1106,19 +1141,20 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 6. /addadmin [user_id] - Add Card Admin
 7. /badmin [user_id] - Set Card Buyer
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
-9. /add - Add new card (reply to media)
-10. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
-11. /lock [card_id] - Lock card
-12. /del [card_id] - Delete card
-13. /cardlist - View all cards
-14. /glist - View groups list
-15. /stats - View stats
-16. /broadcast - Broadcast message
-17. /check [user_id] - Check user profile info
-18. /mute [id] [time] [reason] - Mute user from bot usage
-19. /ban [id] [reason] - Ban user from bot usage
-20. /umute [id] - Unmute user from bot usage
-21. /unban [id] - Unban user from bot usage"""
+9. /got [card_id] - Get card directly to your inventory (Admin only)
+10. /add - Add new card (reply to media)
+11. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
+12. /lock [card_id] - Lock card
+13. /del [card_id] - Delete card
+14. /cardlist - View all cards
+15. /glist - View groups list
+16. /stats - View stats
+17. /broadcast - Broadcast message
+18. /check [user_id] - Check user profile info
+19. /mute [id] [time] [reason] - Mute user from bot usage
+20. /ban [id] [reason] - Ban user from bot usage
+21. /umute [id] - Unmute user from bot usage
+22. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -3246,6 +3282,7 @@ def main():
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("badmin", badmin_cmd))
     app.add_handler(CommandHandler("buy", buy_cmd))
+    app.add_handler(CommandHandler("got", got_card_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("unlock", unlock_card_cmd))
     app.add_handler(CommandHandler("lock", lock_card_cmd))
