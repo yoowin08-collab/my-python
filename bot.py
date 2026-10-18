@@ -413,7 +413,7 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
             return False
     return True
 
-# /pre Command Implementation
+# /pre Command Implementation (Updated limit to 3 times per day)
 @restricted_command
 async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_main_group_restriction(update, context):
@@ -443,14 +443,14 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pre_count = 0
                 last_pre_reset = now
 
-            if pre_count >= 8:
+            if pre_count >= 3:
                 remaining = cooldown - (now - last_pre_reset)
                 hours = remaining // 3600
                 mins = (remaining % 3600) // 60
                 secs = remaining % 60
                 time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
                 return await msg.reply_text(
-                    f"⏳ မင်္ဂလာပါ {get_mention(user.id, display_name)}၊ /pre ကို တစ်နေ့လျှင် 8 ကြိမ်သာ ဖောက်ယူနိုင်ပါသည်။\n"
+                    f"⏳ မင်္ဂလာပါ {get_mention(user.id, display_name)}၊ /pre ကို တစ်နေ့လျှင် 3 ကြိမ်သာ ဖောက်ယူနိုင်ပါသည်။\n"
                     f"⏱ ကျန်ရှိသောအချိန်: <b>{time_str}</b>",
                     parse_mode="HTML",
                     reply_to_message_id=msg_id
@@ -1278,7 +1278,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 10. /add - Add new card (reply to media)
 11. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
 12. /lock [card_id] - Lock card
-13. /del [card_id] - Delete card
+13. /del [card_id_or_name] - Delete card by ID or Name
 14. /cardlist - View all cards
 15. /glist - View groups list
 16. /stats - View stats
@@ -1634,6 +1634,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Usage: `/k [user_id] [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
+# /add Command (Updated to validate English letters in card ID)
 @restricted_command
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1661,6 +1662,14 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         part1, _, part2 = raw_args.partition(".")
         card_id = part1.strip()
         card_name = part2.strip()
+        
+        # Check if card_id contains English letters
+        if any(c.isalpha() for c in card_id):
+            return await update.message.reply_text(
+                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)။",
+                parse_mode="HTML",
+                reply_to_message_id=msg_id
+            )
     else:
         async with db_pool.acquire() as conn:
             while True:
@@ -1717,6 +1726,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# /del Command (Updated to support deletion by ID or Name)
 @restricted_command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1724,20 +1734,26 @@ async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await update.message.reply_text("❌ Usage: `/del [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Usage: `/del [card_id or card_name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-    target_card_id = context.args[0].strip()
+    target_query = " ".join(context.args).strip()
 
     async with db_pool.acquire() as conn:
-        card = await conn.fetchrow("SELECT name FROM cards WHERE card_id = $1", target_card_id)
+        card = await conn.fetchrow("SELECT card_id, name FROM cards WHERE card_id = $1 OR name = $2", target_query, target_query)
         if not card:
-            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+            card = await conn.fetchrow("SELECT card_id, name FROM cards WHERE card_id = $1 OR name ILIKE $1", target_query)
+
+        if not card:
+            return await update.message.reply_text(f"❌ Card (ID or Name) <code>{target_query}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+        target_card_id = card['card_id']
+        card_name = card['name']
 
         await conn.execute("DELETE FROM user_cards WHERE card_id = $1", target_card_id)
         await conn.execute("DELETE FROM cards WHERE card_id = $1", target_card_id)
         await conn.execute("UPDATE users SET selected_card_id = NULL WHERE selected_card_id = $1", target_card_id)
 
-    await update.message.reply_text(f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
+    await update.message.reply_text(f"✅ Card ID <code>{target_card_id}</code> (<b>{card_name}</b>) deleted successfully.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 @restricted_command
 async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
