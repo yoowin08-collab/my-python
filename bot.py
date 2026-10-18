@@ -24,7 +24,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
-# Main Group Link for /kbox, /klot, and /kdaily restriction
+# Main Group Link for /kbox, /klot, /kdaily, and /pre restriction
 MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
 
 # Global Memory Stores & Concurrency Locks
@@ -147,7 +147,7 @@ async def init_db():
 
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
         for c in existing_cards:
-            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 30, 10, 30, 30], k=1)[0]
+            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 30, 30, 30, 30], k=1)[0]
             await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
@@ -348,11 +348,11 @@ async def get_weighted_random_card(conn):
         elif r == 'Kiwami':
             weights.append(30) # Equal weight with Ten
         elif r == 'Kami':
-            weights.append(10) # 10%
+            weights.append(30) # Equal weight with Ten
         elif r == 'Hoshi':
-            weights.append(30) # 30%
+            weights.append(30) # Equal weight with Ten
         else:
-            weights.append(30) # Ten (Equal weight with Kiwami)
+            weights.append(30) # Ten
             
     return random.choices(all_cards, weights=weights, k=1)[0]
 
@@ -416,6 +416,8 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
 # /pre Command Implementation
 @restricted_command
 async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_main_group_restriction(update, context):
+        return
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -474,7 +476,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif r == 'Kiwami':
                     weights.append(30)
                 elif r == 'Kami':
-                    weights.append(10)
+                    weights.append(30)
                 elif r == 'Hoshi':
                     weights.append(30)
                 else:
