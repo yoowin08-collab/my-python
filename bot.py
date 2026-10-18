@@ -24,7 +24,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
-# Main Group Link for /kbox, /klot, and /kdaily restriction
+# Main Group Link for /kbox, /klot, /kslot, and /kdaily restriction
 MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
 
 # Global Memory Stores & Concurrency Locks
@@ -575,6 +575,22 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ])
 
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+# /ksearch Command
+@restricted_command
+async def ksearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat, context)
+
+    text = "Welcome To Ksearch\nYou Can Watch All Character in Bot"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("All Character", switch_inline_query_current_chat="all_cards")]
+    ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # /ksellcard Command
@@ -1849,6 +1865,114 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
+async def run_kslot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount):
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+            current_coins = user_row['coins'] if user_row else 1000
+
+            if current_coins < bet_amount:
+                try:
+                    await bot.send_message(chat_id, f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
+                except Exception:
+                    pass
+                return
+
+            symbols = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣"]
+            r1 = random.choice(symbols)
+            r2 = random.choice(symbols)
+            r3 = random.choice(symbols)
+
+            if r1 == r2 == r3:
+                multiplier = 5 if r1 in ["💎", "7️⃣"] else 3
+                win_amount = bet_amount * multiplier
+                new_balance = current_coins + win_amount
+                is_win = True
+            elif r1 == r2 or r2 == r3 or r1 == r3:
+                win_amount = bet_amount * 2
+                new_balance = current_coins + win_amount
+                is_win = True
+            else:
+                is_win = False
+                win_amount = bet_amount
+                new_balance = max(0, current_coins - win_amount)
+
+            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
+
+    steps = [
+        f"🎰 <b>Kachi Slot:</b> <b>{display_name}</b>\nSpinning... [ 🎰 | 🔄 | 🔄 ]\n💎 Bet: {bet_amount}",
+        f"🎰 <b>Kachi Slot:</b> <b>{display_name}</b>\nSpinning... [ {r1} | 🎰 | 🔄 ]\n💎 Bet: {bet_amount}",
+        f"🎰 <b>Kachi Slot:</b> <b>{display_name}</b>\nSpinning... [ {r1} | {r2} | 🎰 ]\n💎 Bet: {bet_amount}"
+    ]
+
+    try:
+        sent_msg = await bot.send_message(chat_id, steps[0], parse_mode="HTML", reply_to_message_id=msg_id)
+    except Exception:
+        return
+
+    for step_text in steps[1:]:
+        await asyncio.sleep(1.0)
+        try:
+            await sent_msg.edit_text(step_text, parse_mode="HTML")
+        except Exception:
+            pass
+
+    await asyncio.sleep(1.0)
+
+    if is_win:
+        final_text = f"""🎰 <b>Kachi Slot Machine</b> 🎰
+
+👤 Player: {display_name}
+🎯 Result: [ {r1} | {r2} | {r3} ]
+🎉 <b>JACKPOT! You Won!</b> (+{win_amount} Kachi) 💎
+💰 New Balance: <b>{new_balance}</b> Kachi ✨"""
+    else:
+        final_text = f"""🎰 <b>Kachi Slot Machine</b> 🎰
+
+👤 Player: {display_name}
+🎯 Result: [ {r1} | {r2} | {r3} ]
+😢 <b>You Lost!</b> (-{win_amount} Kachi) 📉
+💰 New Balance: <b>{new_balance}</b> Kachi 🖤"""
+
+    try:
+        await sent_msg.edit_text(final_text, parse_mode="HTML")
+    except Exception:
+        pass
+
+@restricted_command
+async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_main_group_restriction(update, context):
+        return
+    if not await check_force_join(update, context):
+        return
+
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/kslot [Kachi amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        bet_amount = int(context.args[0])
+    except ValueError:
+        return await msg.reply_text("❌ Please enter a valid Kachi amount for slot game.", reply_to_message_id=msg_id)
+
+    if bet_amount <= 0:
+        return await msg.reply_text("❌ Bet amount must be greater than 0.", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
+        current_coins = user_row['coins'] if user_row else 1000
+        display_name = user_row['name'] if user_row else user.first_name
+
+    if current_coins < bet_amount:
+        return await msg.reply_text(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+    asyncio.create_task(run_kslot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
+
 @restricted_command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_main_group_restriction(update, context):
@@ -1874,65 +1998,104 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
     user_name = query.from_user.first_name
 
-    if text.startswith("harem."):
-        try:
-            target_id = int(text.split(".")[1])
-        except Exception:
-            target_id = user_id
-    else:
-        target_id = user_id
-
-    async with db_pool.acquire() as conn:
-        owner_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
-        owner_name = owner_row['name'] if owner_row and owner_row['name'] else user_name
-
-        user_cards = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
-            FROM user_cards uc
-            JOIN cards c ON uc.card_id = c.card_id 
-            WHERE uc.user_id = $1 AND uc.amount > 0
-            ORDER BY c.card_id ASC
-        """, target_id)
-
     results = []
-    for c in user_cards:
-        r = c.get('rarity', 'Ten')
-        r_emoji = get_rarity_emoji(r)
-        title = f"{c['name']} ({c['card_id']})"
-        amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
+    async with db_pool.acquire() as conn:
+        if text == "all_cards":
+            all_db_cards = await conn.fetch("""
+                SELECT card_id, name, type, file_id, rarity FROM cards ORDER BY card_id ASC
+            """)
+            for c in all_db_cards:
+                r = c.get('rarity', 'Ten')
+                r_emoji = get_rarity_emoji(r)
+                title = f"{c['name']} ({c['card_id']})"
 
-        async with db_pool.acquire() as conn:
-            global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+                global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
 
-        owner_mention = get_mention(target_id, owner_name)
-        caption = f"""❀ Harem Owner ❝ {owner_mention} ❞
+                caption = f"""❀ All Bot Characters 🌟
+
+✿ Card Name - <b>{c['name']}</b>
+      ☘ ID - <code>{c['card_id']}</code>
+✿ Rarity - {r_emoji} {r}
+
+⌘ Global Drops - <b>{global_drop_count}</b>"""
+
+                if c['type'] == 'photo':
+                    results.append(
+                        InlineQueryResultCachedPhoto(
+                            id=str(uuid.uuid4()),
+                            photo_file_id=c['file_id'],
+                            title=title,
+                            caption=caption,
+                            parse_mode="HTML"
+                        )
+                    )
+                else:
+                    results.append(
+                        InlineQueryResultCachedVideo(
+                            id=str(uuid.uuid4()),
+                            video_file_id=c['file_id'],
+                            title=title,
+                            caption=caption,
+                            parse_mode="HTML"
+                        )
+                    )
+        else:
+            if text.startswith("harem."):
+                try:
+                    target_id = int(text.split(".")[1])
+                except Exception:
+                    target_id = user_id
+            else:
+                target_id = user_id
+
+            owner_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+            owner_name = owner_row['name'] if owner_row and owner_row['name'] else user_name
+
+            user_cards = await conn.fetch("""
+                SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, uc.amount 
+                FROM user_cards uc
+                JOIN cards c ON uc.card_id = c.card_id 
+                WHERE uc.user_id = $1 AND uc.amount > 0
+                ORDER BY c.card_id ASC
+            """, target_id)
+
+            for c in user_cards:
+                r = c.get('rarity', 'Ten')
+                r_emoji = get_rarity_emoji(r)
+                title = f"{c['name']} ({c['card_id']})"
+                amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
+
+                global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+
+                owner_mention = get_mention(target_id, owner_name)
+                caption = f"""❀ Harem Owner ❝ {owner_mention} ❞
 
 ✿ Card Name - <b>{c['name']}</b>{amount_str}
       ☘ ID - <code>{c['card_id']}</code>
 ✿ Rarity - {r_emoji} {r}
 
 ⌘ Global Drops - <b>{global_drop_count}</b>"""
-        
-        if c['type'] == 'photo':
-            results.append(
-                InlineQueryResultCachedPhoto(
-                    id=str(uuid.uuid4()),
-                    photo_file_id=c['file_id'],
-                    title=title,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-            )
-        else:
-            results.append(
-                InlineQueryResultCachedVideo(
-                    id=str(uuid.uuid4()),
-                    video_file_id=c['file_id'],
-                    title=title,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-            )
+                
+                if c['type'] == 'photo':
+                    results.append(
+                        InlineQueryResultCachedPhoto(
+                            id=str(uuid.uuid4()),
+                            photo_file_id=c['file_id'],
+                            title=title,
+                            caption=caption,
+                            parse_mode="HTML"
+                        )
+                    )
+                else:
+                    results.append(
+                        InlineQueryResultCachedVideo(
+                            id=str(uuid.uuid4()),
+                            video_file_id=c['file_id'],
+                            title=title,
+                            caption=caption,
+                            parse_mode="HTML"
+                        )
+                    )
 
     try:
         await query.answer(results, cache_time=1)
@@ -3209,8 +3372,10 @@ def main():
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
+    app.add_handler(CommandHandler("kslot", kslot_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("kdaily", kdaily_cmd))
+    app.add_handler(CommandHandler("ksearch", ksearch_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("ksellcard", ksellcard_cmd))
