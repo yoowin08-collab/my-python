@@ -85,7 +85,7 @@ async def init_db():
                 added_by_name TEXT,
                 threshold INT DEFAULT 60,
                 msg_count INT DEFAULT 0,
-                warned_sent BOOLEAN DEFAULT FALSE
+                admin_warned BOOLEAN DEFAULT FALSE
             );
             CREATE TABLE IF NOT EXISTS group_members (
                 chat_id BIGINT,
@@ -129,7 +129,7 @@ async def init_db():
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS warned_sent BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS admin_warned BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE;")
@@ -165,10 +165,10 @@ def get_rarity_emoji(r):
     else:
         return "💮"
 
-# Auto-lock Yugen cards if global drops reach 25
-async def check_and_autolock_yugen(conn, card_id):
-    card_row = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
-    if card_row and card_row['rarity'] == 'Yugen' and not card_row['is_locked']:
+# Helper for Yugen Auto-Lock (25 Drops)
+async def check_and_auto_lock_card(conn, card_id):
+    card_info = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
+    if card_info and card_info['rarity'] == 'Yugen' and not card_info['is_locked']:
         total_drops = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card_id)
         if total_drops >= 25:
             await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", card_id)
@@ -247,7 +247,7 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                 added_id = user.id if user and not user.is_bot else None
                 added_name = user.first_name if user and not user.is_bot else None
                 
-                is_new = await conn.fetchrow("SELECT chat_id FROM groups WHERE chat_id = $1", chat_id)
+                is_new = await conn.fetchrow("SELECT chat_id, admin_warned FROM groups WHERE chat_id = $1", chat_id)
                 
                 await conn.execute("""
                     INSERT INTO groups (chat_id, title, added_by_id, added_by_name) 
@@ -261,10 +261,20 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                 async with state_lock:
                     seen_registered_groups.add(chat_id)
 
-                group_row = await conn.fetchrow("SELECT threshold FROM groups WHERE chat_id = $1", chat_id)
+                group_row = await conn.fetchrow("SELECT threshold, admin_warned FROM groups WHERE chat_id = $1", chat_id)
                 if group_row and group_row['threshold'] is not None:
                     async with state_lock:
                         group_threshold[chat_id] = group_row['threshold']
+
+                if group_row and not group_row['admin_warned']:
+                    await conn.execute("UPDATE groups SET admin_warned = TRUE WHERE chat_id = $1", chat_id)
+                    try:
+                        await context.bot.send_message(
+                            chat_id,
+                            "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်。"
+                        )
+                    except Exception:
+                        pass
 
                 if not is_new and context and added_id:
                     try:
@@ -296,23 +306,6 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                         await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
                     except Exception:
                         pass
-
-                # Send admin warning once when added to group if not sent yet
-                row_w = await conn.fetchrow("SELECT warned_sent FROM groups WHERE chat_id = $1", chat_id)
-                if row_w and not row_w['warned_sent']:
-                    try:
-                        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-                        is_bot_admin = bot_member.status in ["administrator", "creator"]
-                    except Exception:
-                        is_bot_admin = False
-
-                    if not is_bot_admin:
-                        warning_text = "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်။"
-                        try:
-                            await context.bot.send_message(chat_id, warning_text)
-                            await conn.execute("UPDATE groups SET warned_sent = TRUE WHERE chat_id = $1", chat_id)
-                        except Exception:
-                            pass
 
                 if user and not user.is_bot:
                     await conn.execute("""
@@ -896,7 +889,7 @@ async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /lock Command (Admin only)
+# /lock Command (Bot Admin Only)
 @restricted_command
 async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -919,7 +912,7 @@ async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", target_card_id)
 
     await update.message.reply_text(
-        f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) has been successfully locked.",
+        f"🔒 Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) has been successfully locked and will no longer drop in drops & Kboxes!",
         parse_mode="HTML",
         reply_to_message_id=msg_id
     )
@@ -1115,7 +1108,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
 9. /add - Add new card (reply to media)
 10. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
-11. /lock [card_id] - Lock card (Admin only)
+11. /lock [card_id] - Lock card
 12. /del [card_id] - Delete card
 13. /cardlist - View all cards
 14. /glist - View groups list
@@ -1950,7 +1943,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     for c in user_cards:
         r = c.get('rarity', 'Ten')
         r_emoji = get_rarity_emoji(r)
-        title = f"{c['name']} ({c['card_id']})"
+        title = f"{c['name']} ({c['card_id']})"[:64]
+        description = f"ID: {c['card_id']} | Rarity: {r}"
         amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
 
         async with db_pool.acquire() as conn:
@@ -1971,6 +1965,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     id=str(uuid.uuid4()),
                     photo_file_id=c['file_id'],
                     title=title,
+                    description=description,
                     caption=caption,
                     parse_mode="HTML"
                 )
@@ -1981,6 +1976,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     id=str(uuid.uuid4()),
                     video_file_id=c['file_id'],
                     title=title,
+                    description=description,
                     caption=caption,
                     parse_mode="HTML"
                 )
@@ -2585,8 +2581,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
                     INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
                     ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
                 """, winner_id, card['card_id'])
-                # Check auto-lock for Yugen cards on 25 drops
-                await check_and_autolock_yugen(conn, card['card_id'])
+                await check_and_auto_lock_card(conn, card['card_id'])
 
         r = card.get('rarity', 'Ten')
         r_emoji = get_rarity_emoji(r)
@@ -2664,8 +2659,7 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
                 INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
                 ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
             """, user_id, card['card_id'])
-            # Check auto-lock for Yugen cards on 25 drops
-            await check_and_autolock_yugen(conn, card['card_id'])
+            await check_and_auto_lock_card(conn, card['card_id'])
 
     r = card.get('rarity', 'Ten')
     r_emoji = get_rarity_emoji(r)
@@ -3169,6 +3163,7 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
                         INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
                         ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
                     """, receiver_id, card_id)
+                    await check_and_auto_lock_card(conn, card_id)
 
                     success_text = f"✅ {get_mention(sender_id, user.first_name)} sent <b>{card_name}</b> (ID: <code>{card_id}</code>) to {get_mention(receiver_id, receiver_name)}!"
 
