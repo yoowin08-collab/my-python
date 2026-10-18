@@ -84,8 +84,7 @@ async def init_db():
                 added_by_id BIGINT,
                 added_by_name TEXT,
                 threshold INT DEFAULT 60,
-                msg_count INT DEFAULT 0,
-                warned_sent BOOLEAN DEFAULT FALSE
+                msg_count INT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS group_members (
                 chat_id BIGINT,
@@ -129,7 +128,6 @@ async def init_db():
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS warned_sent BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
             await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE;")
@@ -164,14 +162,6 @@ def get_rarity_emoji(r):
         return "⚜️"
     else:
         return "💮"
-
-# Auto-lock Yugen cards if global drops reach 25
-async def check_and_autolock_yugen(conn, card_id):
-    card_row = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
-    if card_row and card_row['rarity'] == 'Yugen' and not card_row['is_locked']:
-        total_drops = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card_id)
-        if total_drops >= 25:
-            await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", card_id)
 
 # Bot-level Ban & Mute Restriction Decorator
 def restricted_command(func):
@@ -297,23 +287,6 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                     except Exception:
                         pass
 
-                # Send admin warning once when added to group if not sent yet
-                row_w = await conn.fetchrow("SELECT warned_sent FROM groups WHERE chat_id = $1", chat_id)
-                if row_w and not row_w['warned_sent']:
-                    try:
-                        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-                        is_bot_admin = bot_member.status in ["administrator", "creator"]
-                    except Exception:
-                        is_bot_admin = False
-
-                    if not is_bot_admin:
-                        warning_text = "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်။"
-                        try:
-                            await context.bot.send_message(chat_id, warning_text)
-                            await conn.execute("UPDATE groups SET warned_sent = TRUE WHERE chat_id = $1", chat_id)
-                        except Exception:
-                            pass
-
                 if user and not user.is_bot:
                     await conn.execute("""
                         INSERT INTO group_members (chat_id, user_id) VALUES ($1, $2)
@@ -335,6 +308,7 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
+    # Only fetch unlocked cards for random drops / Kboxes
     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, is_locked FROM cards WHERE is_locked = FALSE")
     if not all_cards:
         all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, is_locked FROM cards")
@@ -896,34 +870,6 @@ async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /lock Command (Admin only)
-@restricted_command
-async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
-        return await update.message.reply_text("❌ Usage: `/lock [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    target_card_id = context.args[0].strip()
-
-    async with db_pool.acquire() as conn:
-        card = await conn.fetchrow("SELECT name, rarity, is_locked FROM cards WHERE card_id = $1", target_card_id)
-        if not card:
-            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
-
-        if card['is_locked']:
-            return await update.message.reply_text(f"ℹ️ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) is already locked.", parse_mode="HTML", reply_to_message_id=msg_id)
-
-        await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", target_card_id)
-
-    await update.message.reply_text(
-        f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) has been successfully locked.",
-        parse_mode="HTML",
-        reply_to_message_id=msg_id
-    )
-
 # /buy Command
 @restricted_command
 async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1115,17 +1061,16 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
 9. /add - Add new card (reply to media)
 10. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
-11. /lock [card_id] - Lock card (Admin only)
-12. /del [card_id] - Delete card
-13. /cardlist - View all cards
-14. /glist - View groups list
-15. /stats - View stats
-16. /broadcast - Broadcast message
-17. /check [user_id] - Check user profile info
-18. /mute [id] [time] [reason] - Mute user from bot usage
-19. /ban [id] [reason] - Ban user from bot usage
-20. /umute [id] - Unmute user from bot usage
-21. /unban [id] - Unban user from bot usage"""
+11. /del [card_id] - Delete card
+12. /cardlist - View all cards
+13. /glist - View groups list
+14. /stats - View stats
+15. /broadcast - Broadcast message
+16. /check [user_id] - Check user profile info
+17. /mute [id] [time] [reason] - Mute user from bot usage
+18. /ban [id] [reason] - Ban user from bot usage
+19. /umute [id] - Unmute user from bot usage
+20. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -2421,6 +2366,25 @@ Status: Successful ✅
             return
 
         try:
+            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+            is_bot_admin = bot_member.status in ["administrator", "creator"]
+        except Exception:
+            is_bot_admin = False
+
+        if not is_bot_admin:
+            async with state_lock:
+                needs_warning = chat_id not in bot_warned_groups
+                if needs_warning:
+                    bot_warned_groups.add(chat_id)
+
+            if needs_warning:
+                warning_text = "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်။"
+                try:
+                    await context.bot.send_message(chat_id, warning_text)
+                except Exception:
+                    pass
+
+        try:
             async with db_pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO groups (chat_id, title, msg_count) VALUES ($1, $2, 0)
@@ -2580,13 +2544,10 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     if joined:
         winner_id, winner_name = random.choice(list(joined.items()))
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("""
-                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                """, winner_id, card['card_id'])
-                # Check auto-lock for Yugen cards on 25 drops
-                await check_and_autolock_yugen(conn, card['card_id'])
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, winner_id, card['card_id'])
 
         r = card.get('rarity', 'Ten')
         r_emoji = get_rarity_emoji(r)
@@ -2651,21 +2612,18 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
     await asyncio.sleep(1)
 
     async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            card = await get_weighted_random_card(conn)
-            if not card:
-                try:
-                    await query.edit_message_text("❌ No cards available in database yet!", parse_mode="HTML")
-                except Exception:
-                    pass
-                return
+        card = await get_weighted_random_card(conn)
+        if not card:
+            try:
+                await query.edit_message_text("❌ No cards available in database yet!", parse_mode="HTML")
+            except Exception:
+                pass
+            return
 
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, user_id, card['card_id'])
-            # Check auto-lock for Yugen cards on 25 drops
-            await check_and_autolock_yugen(conn, card['card_id'])
+        await conn.execute("""
+            INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+            ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+        """, user_id, card['card_id'])
 
     r = card.get('rarity', 'Ten')
     r_emoji = get_rarity_emoji(r)
@@ -2993,6 +2951,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         file_id = card_info["file_id"]
         is_card_admin = card_info["is_card_admin"]
         
+        # Yugen cards are locked by default
         is_locked = True if rarity == 'Yugen' else False
 
         async with db_pool.acquire() as conn:
@@ -3248,7 +3207,6 @@ def main():
     app.add_handler(CommandHandler("buy", buy_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("unlock", unlock_card_cmd))
-    app.add_handler(CommandHandler("lock", lock_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
 
