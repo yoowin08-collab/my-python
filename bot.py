@@ -76,7 +76,9 @@ async def init_db():
                 ban_reason TEXT,
                 muted_until BIGINT DEFAULT 0,
                 mute_reason TEXT,
-                last_kdaily BIGINT DEFAULT 0
+                last_kdaily BIGINT DEFAULT 0,
+                kbox_count INT DEFAULT 0,
+                kbox_last_day BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -124,6 +126,8 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_last_day BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -308,7 +312,6 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
-    # Only fetch unlocked cards for random drops / Kboxes
     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, is_locked FROM cards WHERE is_locked = FALSE")
     if not all_cards:
         all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, is_locked FROM cards")
@@ -319,17 +322,17 @@ async def get_weighted_random_card(conn):
     for c in all_cards:
         r = c.get('rarity', 'Ten')
         if r == 'Yugen':
-            weights.append(1)  # 1%
+            weights.append(1)
         elif r == 'Shinsei':
-            weights.append(1)  # 1%
+            weights.append(1)
         elif r == 'Kiwami':
-            weights.append(3)  # 3%
+            weights.append(3)
         elif r == 'Kami':
-            weights.append(10) # 10%
+            weights.append(10)
         elif r == 'Hoshi':
-            weights.append(30) # 30%
+            weights.append(30)
         else:
-            weights.append(55) # 55% (Ten)
+            weights.append(55)
             
     return random.choices(all_cards, weights=weights, k=1)[0]
 
@@ -687,7 +690,7 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             item_coins_total += random.randint(100, 150)
                         elif rarity == 'Hoshi':
                             item_coins_total += random.randint(70, 90)
-                        else:  # Ten
+                        else:
                             item_coins_total += random.randint(70, 90)
 
                     total_earned_coins += item_coins_total
@@ -763,7 +766,7 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     now = int(time.time())
-    cooldown = 86400  # 24 hours
+    cooldown = 86400
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -2369,7 +2372,7 @@ Status: Successful ✅
             bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
             is_bot_admin = bot_member.status in ["administrator", "creator"]
         except Exception:
-            is_bot_admin = False
+            is_bot_admin = True
 
         if not is_bot_admin:
             async with state_lock:
@@ -2575,10 +2578,24 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
             pass
 
 async def run_kbox_task(bot, chat_id, query, user_id, display_name):
+    current_day = int(time.time() // 86400)
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+            user_row = await conn.fetchrow("SELECT coins, kbox_count, kbox_last_day FROM users WHERE user_id = $1 FOR UPDATE", user_id)
             current_coins = user_row['coins'] if user_row else 1000
+            db_kbox_count = user_row['kbox_count'] if user_row and user_row['kbox_count'] is not None else 0
+            db_kbox_last_day = user_row['kbox_last_day'] if user_row and user_row['kbox_last_day'] is not None else 0
+
+            if db_kbox_last_day != current_day:
+                db_kbox_count = 0
+                db_kbox_last_day = current_day
+
+            if db_kbox_count >= 10:
+                try:
+                    await query.answer("❌ You have reached the maximum limit of 10 Kbox openings for today! Come back tomorrow. ⏳", show_alert=True)
+                except Exception:
+                    pass
+                return
 
             if current_coins < 300:
                 try:
@@ -2588,7 +2605,8 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
                 return
 
             new_balance = current_coins - 300
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
+            new_kbox_count = db_kbox_count + 1
+            await conn.execute("UPDATE users SET coins = $1, kbox_count = $2, kbox_last_day = $3 WHERE user_id = $4", new_balance, new_kbox_count, current_day, user_id)
 
     loading_steps = [
         "Card Opening Wait\nLoading... [ 25% ]",
@@ -2736,10 +2754,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id != allowed_uid:
             return await query.answer("❌ This is not your Kbox button!", show_alert=True)
 
+        current_day = int(time.time() // 86400)
         async with db_pool.acquire() as conn:
-            user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
+            user_row = await conn.fetchrow("SELECT coins, name, kbox_count, kbox_last_day FROM users WHERE user_id = $1", user.id)
             current_coins = user_row['coins'] if user_row else 1000
             display_name = user_row['name'] if user_row else user.first_name
+            db_kbox_count = user_row['kbox_count'] if user_row and user_row['kbox_count'] is not None else 0
+            db_kbox_last_day = user_row['kbox_last_day'] if user_row and user_row['kbox_last_day'] is not None else 0
+
+            if db_kbox_last_day != current_day:
+                db_kbox_count = 0
+
+        if db_kbox_count >= 10:
+            return await query.answer("❌ You have reached the maximum limit of 10 Kbox openings for today! Come back tomorrow. ⏳", show_alert=True)
 
         if current_coins < 300:
             return await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
@@ -2951,7 +2978,6 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         file_id = card_info["file_id"]
         is_card_admin = card_info["is_card_admin"]
         
-        # Yugen cards are locked by default
         is_locked = True if rarity == 'Yugen' else False
 
         async with db_pool.acquire() as conn:
