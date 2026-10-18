@@ -76,7 +76,9 @@ async def init_db():
                 ban_reason TEXT,
                 muted_until BIGINT DEFAULT 0,
                 mute_reason TEXT,
-                last_kdaily BIGINT DEFAULT 0
+                last_kdaily BIGINT DEFAULT 0,
+                pre_count INT DEFAULT 0,
+                last_pre_reset BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -125,6 +127,8 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pre_count INT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -143,7 +147,7 @@ async def init_db():
 
         existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
         for c in existing_cards:
-            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 3, 10, 30, 56], k=1)[0]
+            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 30, 10, 30, 30], k=1)[0]
             await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
@@ -342,13 +346,13 @@ async def get_weighted_random_card(conn):
         elif r == 'Shinsei':
             weights.append(1)  # 1%
         elif r == 'Kiwami':
-            weights.append(3)  # 3%
+            weights.append(30) # Equal weight with Ten
         elif r == 'Kami':
             weights.append(10) # 10%
         elif r == 'Hoshi':
             weights.append(30) # 30%
         else:
-            weights.append(55) # 55% (Ten)
+            weights.append(30) # Ten (Equal weight with Kiwami)
             
     return random.choices(all_cards, weights=weights, k=1)[0]
 
@@ -408,6 +412,133 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
                 pass
             return False
     return True
+
+# /pre Command Implementation
+@restricted_command
+async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    now = int(time.time())
+    cooldown = 86400  # 24 hours
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            user_row = await conn.fetchrow(
+                "SELECT pre_count, last_pre_reset, name FROM users WHERE user_id = $1 FOR UPDATE",
+                user.id
+            )
+            pre_count = user_row['pre_count'] if user_row else 0
+            last_pre_reset = user_row['last_pre_reset'] if user_row else 0
+            display_name = user_row['name'] if user_row else user.first_name
+
+            if now - last_pre_reset >= cooldown:
+                pre_count = 0
+                last_pre_reset = now
+
+            if pre_count >= 8:
+                remaining = cooldown - (now - last_pre_reset)
+                hours = remaining // 3600
+                mins = (remaining % 3600) // 60
+                secs = remaining % 60
+                time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
+                return await msg.reply_text(
+                    f"⏳ မင်္ဂလာပါ {get_mention(user.id, display_name)}၊ /pre ကို တစ်နေ့လျှင် 8 ကြိမ်သာ ဖောက်ယူနိုင်ပါသည်။\n"
+                    f"⏱ ကျန်ရှိသောအချိန်: <b>{time_str}</b>",
+                    parse_mode="HTML",
+                    reply_to_message_id=msg_id
+                )
+
+            all_cards = await conn.fetch(
+                "SELECT card_id, name, type, file_id, rarity, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten') AND is_locked = FALSE"
+            )
+            if not all_cards:
+                all_cards = await conn.fetch(
+                    "SELECT card_id, name, type, file_id, rarity, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten')"
+                )
+                if not all_cards:
+                    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, is_locked FROM cards")
+                    if not all_cards:
+                        return await msg.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
+
+            weights = []
+            for c in all_cards:
+                r = c.get('rarity', 'Ten')
+                if r == 'Shinsei':
+                    weights.append(1)
+                elif r == 'Kiwami':
+                    weights.append(30)
+                elif r == 'Kami':
+                    weights.append(10)
+                elif r == 'Hoshi':
+                    weights.append(30)
+                else:
+                    weights.append(30)
+
+            card = random.choices(all_cards, weights=weights, k=1)[0]
+
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, user.id, card['card_id'])
+
+            pre_count += 1
+            await conn.execute(
+                "UPDATE users SET pre_count = $1, last_pre_reset = $2 WHERE user_id = $3",
+                pre_count, last_pre_reset, user.id
+            )
+
+    async with db_pool.acquire() as conn:
+        global_drop_count = await conn.fetchval(
+            "SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card['card_id']
+        )
+
+    r = card.get('rarity', 'Ten')
+    r_emoji = get_rarity_emoji(r)
+
+    if r == 'Shinsei':
+        coin_value = "2000-3000"
+    elif r == 'Kiwami':
+        coin_value = "1500-1900"
+    elif r == 'Kami':
+        coin_value = "800-1200"
+    elif r == 'Hoshi':
+        coin_value = "350-500"
+    else:
+        coin_value = "150-300"
+
+    caption_text = f"""🎗 Congratulations , {get_mention(user.id, display_name)} You Got A New Character in Pre 
+
+▰▰▱▱▰▰▱▱
+🍀 Name - {card['name']}
+    🍀  ID - <code>{card['card_id']}</code> 
+
+🌟 Rarity - {r_emoji} {r}
+🩸 Kachi Value ({coin_value})
+   🐠 Global Drops - <b>{global_drop_count}</b> 
+
+▰▰▱▱▰▰▱▱
+❄Check /kc ❄"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{user.id}")]
+    ])
+
+    if card['type'] == 'photo':
+        try:
+            await msg.reply_photo(photo=card['file_id'], caption=caption_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+        except Exception:
+            await msg.reply_text(caption_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+    else:
+        try:
+            await msg.reply_video(video=card['file_id'], caption=caption_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+        except Exception:
+            await msg.reply_text(caption_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # Quiz Commands (/aa and /send)
 @restricted_command
@@ -3257,6 +3388,7 @@ def main():
 
     # Public User Commands
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("pre", pre_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
