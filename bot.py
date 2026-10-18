@@ -167,6 +167,14 @@ def get_rarity_emoji(r):
     else:
         return "💮"
 
+# Helper to Check and Auto-lock Yugen Cards upon 30 Drops
+async def check_and_autolock_yugen(conn, card_id):
+    card_info = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
+    if card_info and card_info['rarity'] == 'Yugen' and not card_info['is_locked']:
+        total_drops = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card_id)
+        if total_drops >= 30:
+            await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", card_id)
+
 # Bot-level Ban & Mute Restriction Decorator
 def restricted_command(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,7 +585,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /ksearch Command
+# /ksearch Command (Updated to not put "all cards" behind/in query string)
 @restricted_command
 async def ksearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -589,7 +597,7 @@ async def ksearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "Welcome To Ksearch\nYou Can Watch All Character in Bot"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("All Character", switch_inline_query_current_chat="all_cards")]
+        [InlineKeyboardButton("All Character", switch_inline_query_current_chat="")]
     ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
@@ -889,6 +897,46 @@ async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# /lock Command (Added per request)
+@restricted_command
+async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+    
+    is_allowed = (user.id == ADMIN_ID)
+    if not is_allowed:
+        try:
+            async with db_pool.acquire() as conn:
+                u_info = await conn.fetchrow("SELECT is_card_admin FROM users WHERE user_id = $1", user.id)
+                if u_info and u_info['is_card_admin']:
+                    is_allowed = True
+        except Exception:
+            pass
+
+    if not is_allowed:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: `/lock [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    target_card_id = context.args[0].strip()
+
+    async with db_pool.acquire() as conn:
+        card = await conn.fetchrow("SELECT name, rarity, is_locked FROM cards WHERE card_id = $1", target_card_id)
+        if not card:
+            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+        if card['is_locked']:
+            return await update.message.reply_text(f"ℹ️ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) is already locked.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+        await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", target_card_id)
+
+    await update.message.reply_text(
+        f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) has been successfully locked.",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
 # /buy Command
 @restricted_command
 async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1080,16 +1128,17 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
 9. /add - Add new card (reply to media)
 10. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
-11. /del [card_id] - Delete card
-12. /cardlist - View all cards
-13. /glist - View groups list
-14. /stats - View stats
-15. /broadcast - Broadcast message
-16. /check [user_id] - Check user profile info
-17. /mute [id] [time] [reason] - Mute user from bot usage
-18. /ban [id] [reason] - Ban user from bot usage
-19. /umute [id] - Unmute user from bot usage
-20. /unban [id] - Unban user from bot usage"""
+11. /lock [card_id] - Lock card
+12. /del [card_id] - Delete card
+13. /cardlist - View all cards
+14. /glist - View groups list
+15. /stats - View stats
+16. /broadcast - Broadcast message
+17. /check [user_id] - Check user profile info
+18. /mute [id] [time] [reason] - Mute user from bot usage
+19. /ban [id] [reason] - Ban user from bot usage
+20. /umute [id] - Unmute user from bot usage
+21. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -2000,7 +2049,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     results = []
     async with db_pool.acquire() as conn:
-        if text == "all_cards":
+        if text == "" or text == "all_cards":
             all_db_cards = await conn.fetch("""
                 SELECT card_id, name, type, file_id, rarity FROM cards ORDER BY card_id ASC
             """)
@@ -2715,6 +2764,9 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
                 ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
             """, winner_id, card['card_id'])
 
+            # Check and auto-lock Yugen if drop count reaches 30
+            await check_and_autolock_yugen(conn, card['card_id'])
+
         r = card.get('rarity', 'Ten')
         r_emoji = get_rarity_emoji(r)
         win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
@@ -2805,6 +2857,9 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
             INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
             ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
         """, user_id, card['card_id'])
+
+        # Check and auto-lock Yugen if drop count reaches 30
+        await check_and_autolock_yugen(conn, card['card_id'])
 
     r = card.get('rarity', 'Ten')
     r_emoji = get_rarity_emoji(r)
@@ -3318,6 +3373,9 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
                         ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
                     """, receiver_id, card_id)
 
+                    # Check and auto-lock Yugen if drop count reaches 30
+                    await check_and_autolock_yugen(conn, card_id)
+
                     success_text = f"✅ {get_mention(sender_id, user.first_name)} sent <b>{card_name}</b> (ID: <code>{card_id}</code>) to {get_mention(receiver_id, receiver_name)}!"
 
             try:
@@ -3398,6 +3456,7 @@ def main():
     app.add_handler(CommandHandler("buy", buy_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("unlock", unlock_card_cmd))
+    app.add_handler(CommandHandler("lock", lock_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
 
