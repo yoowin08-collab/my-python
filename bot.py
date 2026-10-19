@@ -81,7 +81,8 @@ async def init_db():
                 pre_count INT DEFAULT 0,
                 last_pre_reset BIGINT DEFAULT 0,
                 kbox_count INT DEFAULT 0,
-                last_kbox_reset BIGINT DEFAULT 0
+                last_kbox_reset BIGINT DEFAULT 0,
+                kc_rarity_mode TEXT DEFAULT NULL
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -135,6 +136,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kbox_reset BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kc_rarity_mode TEXT DEFAULT NULL;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -1854,6 +1856,51 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Active profile card changed to <b>{has_card['name']}</b> for /kc.", parse_mode="HTML", reply_to_message_id=msg_id)
 
+# --- /khmode and /resethmode commands ---
+@restricted_command
+async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat, context)
+
+    text = "🎯 <b>Select Rarity Mode for /kc</b>\n\nကျေးဇူးပြု၍ စုပြလိုသော Rarity တစ်ခုကို ရွေးချယ်ပေးပါ -"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎐 Yugen", callback_data=f"khset_{user.id}_Yugen"),
+            InlineKeyboardButton("🧬 Shinsei", callback_data=f"khset_{user.id}_Shinsei")
+        ],
+        [
+            InlineKeyboardButton("🪞 Kiwami", callback_data=f"khset_{user.id}_Kiwami"),
+            InlineKeyboardButton("✨ Kami", callback_data=f"khset_{user.id}_Kami")
+        ],
+        [
+            InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
+            InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
+        ],
+        [
+            InlineKeyboardButton("◀️ Back Menu", callback_data=f"khback_{user.id}")
+        ]
+    ])
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+@restricted_command
+async def resethmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat, context)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET kc_rarity_mode = NULL WHERE user_id = $1", user.id)
+
+    await update.message.reply_text("✅ Reset Successful! /kc တွင် ကတ်အားလုံးကို ပုံမှန်အတိုင်း ပြန်လည်ပြသမည် ဖြစ်ပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
+# ----------------------------------------
+
 @restricted_command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1925,9 +1972,10 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
 
     async with db_pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT selected_card_id, name FROM users WHERE user_id = $1", target_id)
+        user_row = await conn.fetchrow("SELECT selected_card_id, name, kc_rarity_mode FROM users WHERE user_id = $1", target_id)
         selected_card_id = user_row['selected_card_id'] if user_row else None
         display_name = user_row['name'] if user_row else user.first_name
+        rarity_mode = user_row['kc_rarity_mode'] if user_row else None
 
         rank_row = await conn.fetchrow("""
             SELECT COUNT(*) + 1 AS rank FROM (
@@ -1941,13 +1989,22 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
         """, target_id)
         global_rank = rank_row['rank'] if rank_row else 1
 
-        user_card_rows = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, uc.amount 
-            FROM user_cards uc 
-            JOIN cards c ON uc.card_id = c.card_id 
-            WHERE uc.user_id = $1 AND uc.amount > 0
-            ORDER BY c.card_id ASC
-        """, target_id)
+        if rarity_mode:
+            user_card_rows = await conn.fetch("""
+                SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, uc.amount 
+                FROM user_cards uc 
+                JOIN cards c ON uc.card_id = c.card_id 
+                WHERE uc.user_id = $1 AND uc.amount > 0 AND c.rarity = $2
+                ORDER BY c.card_id ASC
+            """, target_id, rarity_mode)
+        else:
+            user_card_rows = await conn.fetch("""
+                SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, uc.amount 
+                FROM user_cards uc 
+                JOIN cards c ON uc.card_id = c.card_id 
+                WHERE uc.user_id = $1 AND uc.amount > 0
+                ORDER BY c.card_id ASC
+            """, target_id)
 
     total_owned_sum = sum(c['amount'] for c in user_card_rows)
 
@@ -1956,13 +2013,14 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     total_pages = (total_cards + per_page - 1) // per_page if total_cards > 0 else 1
     page = max(0, min(page, total_pages - 1))
 
+    mode_title = f" [{get_rarity_emoji(rarity_mode)} {rarity_mode} Mode]" if rarity_mode else ""
     text_header = f"""❀ 𝙉𝘼𝙈𝙀 - {get_mention(target_id, display_name)}
 ❀ 𝙂𝙡𝙤𝙗𝙖𝙡 𝙉𝙤 - #{global_rank}
 
-𝗛𝗔𝗥𝗘𝗠 𝗣𝗔𝗚𝗘 ({page + 1}/{total_pages})"""
+𝗛𝗔𝗥𝗘𝗠 𝗣𝗔𝗚𝗘{mode_title} ({page + 1}/{total_pages})"""
 
     if not user_card_rows:
-        full_text = f"{text_header}\n\nCollection\n<i>No cards yet.</i>"
+        full_text = f"{text_header}\n\nCollection\n<i>No cards found.</i>"
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(f"Harem❄ ({total_owned_sum})", switch_inline_query_current_chat=f"harem.{target_id}")
@@ -3114,6 +3172,95 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🎉 Opening Kbox...")
         return
 
+    # --- Callbacks for /khmode ---
+    if data.startswith("khset_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[1])
+        rarity = parts[2]
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+
+        confirm_text = f"Are You Sure To Set This Rarity On Kc\n\n📌 Selected Rarity: {get_emoji_for_rarity_str(rarity)} {rarity}"
+        confirm_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Cancel ❌", callback_data=f"khcancel_{user.id}"),
+                InlineKeyboardButton("Confirm ✅", callback_data=f"khconfirm_{user.id}_{rarity}")
+            ],
+            [
+                InlineKeyboardButton("◀️ Back menu", callback_data=f"khback_{user.id}")
+            ]
+        ])
+        try:
+            await query.edit_message_text(confirm_text, parse_mode="HTML", reply_markup=confirm_keyboard)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("khcancel_"):
+        allowed_uid = int(data.split("_")[1])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.answer("Cancelled.")
+        return
+
+    if data.startswith("khback_"):
+        allowed_uid = int(data.split("_")[1])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+        
+        text = "🎯 <b>Select Rarity Mode for /kc</b>\n\nကျေးဇူးပြု၍ စုပြလိုသော Rarity တစ်ခုကို ရွေးချယ်ပေးပါ -"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎐 Yugen", callback_data=f"khset_{user.id}_Yugen"),
+                InlineKeyboardButton("🧬 Shinsei", callback_data=f"khset_{user.id}_Shinsei")
+            ],
+            [
+                InlineKeyboardButton("🪞 Kiwami", callback_data=f"khset_{user.id}_Kiwami"),
+                InlineKeyboardButton("✨ Kami", callback_data=f"khset_{user.id}_Kami")
+            ],
+            [
+                InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
+                InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
+            ],
+            [
+                InlineKeyboardButton("◀️ Back Menu", callback_data=f"khback_{user.id}")
+            ]
+        ])
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("khconfirm_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[1])
+        rarity = parts[2]
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET kc_rarity_mode = $1 WHERE user_id = $2", rarity, user.id)
+
+        try:
+            await query.edit_message_text(
+                f"✅ <b>Successfully set rarity mode to {get_emoji_for_rarity_str(rarity)} {rarity}!</b>\n\nယခုမှစ၍ `/kc` တွင် ဤ Rarity ကတ်များကိုသာ သီးသန့်ပြသပေးမည် ဖြစ်ပါသည်။",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await query.answer("✅ Rarity mode updated successfully!")
+        return
+    # -----------------------------
+
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
 
@@ -3594,6 +3741,20 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         await query.answer()
         return
 
+def get_emoji_for_rarity_str(rarity):
+    if rarity == 'Yugen':
+        return "🎐"
+    elif rarity == 'Shinsei':
+        return "🧬"
+    elif rarity == 'Kiwami':
+        return "🪞"
+    elif rarity == 'Kami':
+        return "✨"
+    elif rarity == 'Hoshi':
+        return "⚜️"
+    else:
+        return "💮"
+
 async def post_init(app: Application):
     await init_db()
 
@@ -3604,6 +3765,8 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("pre", pre_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
+    app.add_handler(CommandHandler("khmode", khmode_cmd))
+    app.add_handler(CommandHandler("resethmode", resethmode_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
