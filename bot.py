@@ -1673,7 +1673,7 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg_id = msg.message_id
 
-    # Check if replying to an active card drop to show /k hint & full
+    # Check if replying to an active card drop to show Full card name only (Hint removed)
     if msg.reply_to_message:
         reply_id = msg.reply_to_message.message_id
         async with state_lock:
@@ -1681,15 +1681,12 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if drop_data and not drop_data.get("claimed"):
             card = drop_data["card"]
             card_name = card["name"]
-            hint_name = card_name.split()[0][:2] if ' ' in card_name else card_name[:2]
             
-            hint_str = f"/katch {hint_name}..."
             full_str = f"/katch {card_name}"
             
-            hint_text = f"""Copy To Use This
-Hint : <code>{hint_str}</code>
+            full_text = f"""Copy To Use This
 Full : <code>{full_str}</code>"""
-            return await msg.reply_text(hint_text, parse_mode="HTML", reply_to_message_id=msg_id)
+            return await msg.reply_text(full_text, parse_mode="HTML", reply_to_message_id=msg_id)
 
     if user.id != ADMIN_ID:
         return
@@ -2184,7 +2181,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# Dedicated /katch Command Handler
+# Dedicated /katch Command Handler (Updated to support partial/full case-insensitive match and keep original drop message with specific already claimed warning)
 @restricted_command
 async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -2204,12 +2201,21 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     drop_data = None
     async with state_lock:
         for m_id, drop in active_card_drops.items():
-            if drop["chat_id"] == chat.id and not drop["claimed"]:
+            if drop["chat_id"] == chat.id:
                 target_drop_msg_id = m_id
                 drop_data = drop
                 break
 
     if drop_data:
+        if drop_data["claimed"]:
+            winner_name = drop_data.get("winner_name", "Someone")
+            warning_text = f"💦 Too Late, He Got First {winner_name}, Try Next Character Spawn ❄"
+            try:
+                await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+            except Exception:
+                pass
+            return
+
         card = drop_data["card"]
         card_name = card["name"].strip().lower()
 
@@ -2217,12 +2223,9 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async with state_lock:
                 if active_card_drops.get(target_drop_msg_id, {}).get("claimed"):
                     winner_name = active_card_drops.get(target_drop_msg_id, {}).get("winner_name", "Someone")
+                    warning_text = f"💦 Too Late, He Got First {winner_name}, Try Next Character Spawn ❄"
                     try:
-                        await msg.reply_text(
-                            f"🧊 Too Late, He Got This Character {winner_name}, Try Again Next Time 🧇",
-                            parse_mode="HTML",
-                            reply_to_message_id=msg.message_id
-                        )
+                        await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
                     except Exception:
                         pass
                     return
@@ -2254,12 +2257,6 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await anim_msg.delete()
                 except Exception:
                     pass
-
-            # Delete the original dropped card message
-            try:
-                await context.bot.delete_message(chat.id, target_drop_msg_id)
-            except Exception:
-                pass
 
             r = card.get('rarity', 'Ten')
             r_emoji = get_rarity_emoji(r)
