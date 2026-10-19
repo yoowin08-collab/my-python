@@ -2232,20 +2232,23 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             r = card.get('rarity', 'Ten')
             r_emoji = get_rarity_emoji(r)
             
-            # Updated to match requested format exactly with Harem button
             success_text = f"⛩️ Congratulations , {get_mention(user.id, user.first_name)} Now you got A new Card <i>{card['name']}</i> 💮 ID: {card['card_id']} Rarity: {r_emoji} {r}\n❄️ Check /kc 🎗️"
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Harem❄️", switch_inline_query_current_chat=f"harem.{user.id}")]
             ])
 
-            try:
-                await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-            except Exception:
+            # ကဒ်ရတဲ့စာမှာ ပုံ (သို့) ဗီဒီယို ပါပြရန် ပြင်ဆင်ခြင်း
+            if card['type'] == 'photo':
                 try:
-                    await context.bot.send_message(chat.id, success_text, parse_mode="HTML", reply_markup=keyboard)
+                    await msg.reply_photo(photo=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
                 except Exception:
-                    pass
+                    await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+            else:
+                try:
+                    await msg.reply_video(video=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+                except Exception:
+                    await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
         else:
             await msg.reply_text("❌ နာမည်အမှန် မဟုတ်ပါ၊ ထပ်မံကြိုးစားကြည့်ပါ။", reply_to_message_id=msg.message_id)
     else:
@@ -2645,16 +2648,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await conn.execute("UPDATE cards SET is_locked = TRUE")
             return await msg.reply_text("🔒 All cards have been successfully LOCKED!", reply_to_message_id=msg.message_id)
 
-    # Check for Reply with /k or .k to show Full Name
+    # Check for Reply with /k or .k to show Full Name (ဘယ်အချိန်ပို့ပို့ Database မှပါ ရှာဖွေပေးနိုင်အောင် ပြင်ဆင်ထားသည်)
     if msg.text and msg.reply_to_message:
         text_lower = msg.text.strip().lower()
         if text_lower in ["/k", ".k"]:
-            reply_id = msg.reply_to_message.message_id
+            reply_msg = msg.reply_to_message
+            reply_id = reply_msg.message_id
+            card_name = None
+            
             async with state_lock:
                 drop_data = active_card_drops.get(reply_id)
             if drop_data:
-                card = drop_data["card"]
-                card_name = card["name"]
+                card_name = drop_data["card"]["name"]
+            elif reply_msg.photo or reply_msg.video:
+                file_id = reply_msg.photo[-1].file_id if reply_msg.photo else reply_msg.video.file_id
+                async with db_pool.acquire() as conn:
+                    c_row = await conn.fetchrow("SELECT name FROM cards WHERE file_id = $1", file_id)
+                    if c_row:
+                        card_name = c_row["name"]
+
+            if card_name:
                 full_str = f"/katch {card_name}"
                 full_text = f"""Copy To Use This
 Full : <code>{full_str}</code>"""
