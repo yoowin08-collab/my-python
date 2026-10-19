@@ -78,7 +78,9 @@ async def init_db():
                 mute_reason TEXT,
                 last_kdaily BIGINT DEFAULT 0,
                 pre_count INT DEFAULT 0,
-                last_pre_reset BIGINT DEFAULT 0
+                last_pre_reset BIGINT DEFAULT 0,
+                kbox_count INT DEFAULT 0,
+                last_kbox_reset BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -129,6 +131,8 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pre_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kbox_reset BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -2113,15 +2117,16 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/klot [Kachiamount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/klot [Kachiamount]` (အနည်းဆုံး 150 ကနေ အများဆုံး 3000 ထိ)", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         bet_amount = int(context.args[0])
     except ValueError:
         return await msg.reply_text("❌ Please enter a valid Kachi amount to trade.", reply_to_message_id=msg_id)
 
-    if bet_amount <= 0:
-        return await msg.reply_text("❌ Trade amount must be greater than 0.", reply_to_message_id=msg_id)
+    # /klot ကို အနည်းဆုံး 150 မှ အများဆုံး 3000 ထိသာ ဆော့လို့ရအောင် ကန့်သတ်ချက်ထည့်သွင်းခြင်း
+    if bet_amount < 150 or bet_amount > 3000:
+        return await msg.reply_text("❌ /klot ကို အနည်းဆုံး <b>150 Kachi</b> မှ အများဆုံး <b>3000 Kachi</b> အတွင်းသာ ဆော့ကစားနိုင်ပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
 
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
@@ -2178,32 +2183,11 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
     if drop_data:
-        if drop_data["claimed"]:
-            winner_name = drop_data.get("winner_name", "Someone")
-            warning_text = f"💦 Too Late, He Got First {winner_name}, Try Next Character Spawn ❄"
-            try:
-                await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-            except Exception:
-                pass
-            return
-
+        # ကဒ်ကို တစ်ခါကျပြီး ကောက်ပြီးနောက် နောက်တစ်ခါ ထပ်ကျပါက ကောက်လို့မရသည့် Error ဖြေရှင်းရန်အတွက် claimed စစ်ဆေးမှုကို ဖြုတ်ပေးထားပါသည် (ဘယ်သူမဆို အကြိမ်ကြိမ် ကောက်ယူနိုင်သည်)
         card = drop_data["card"]
         card_name = card["name"].strip().lower()
 
         if guessed_name == card_name or guessed_name in card_name or card_name in guessed_name:
-            async with state_lock:
-                if active_card_drops.get(target_drop_msg_id, {}).get("claimed"):
-                    winner_name = active_card_drops.get(target_drop_msg_id, {}).get("winner_name", "Someone")
-                    warning_text = f"💦 Too Late, He Got First {winner_name}, Try Next Character Spawn ❄"
-                    try:
-                        await msg.reply_text(warning_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-                    except Exception:
-                        pass
-                    return
-
-                active_card_drops[target_drop_msg_id]["claimed"] = True
-                active_card_drops[target_drop_msg_id]["winner_name"] = user.first_name
-
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute("""
@@ -2238,7 +2222,6 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("Harem❄️", switch_inline_query_current_chat=f"harem.{user.id}")]
             ])
 
-            # ကဒ်ရတဲ့စာမှာ ပုံ (သို့) ဗီဒီယို ပါပြရန် ပြင်ဆင်ခြင်း
             if card['type'] == 'photo':
                 try:
                     await msg.reply_photo(photo=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
@@ -2855,10 +2838,33 @@ Use /katch Name 🦕"""
         }
 
 async def run_kbox_task(bot, chat_id, query, user_id, display_name):
+    now = int(time.time())
+    cooldown = 86400  # 24 hours
+
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+            user_row = await conn.fetchrow("SELECT coins, kbox_count, last_kbox_reset FROM users WHERE user_id = $1 FOR UPDATE", user_id)
             current_coins = user_row['coins'] if user_row else 1000
+            kbox_count = user_row['kbox_count'] if user_row else 0
+            last_kbox_reset = user_row['last_kbox_reset'] if user_row else 0
+
+            # 24 နာရီကျော်သွားပါက kbox_count ကို ပြန်လည်စတင်ရန်
+            if now - last_kbox_reset >= cooldown:
+                kbox_count = 0
+                last_kbox_reset = now
+
+            # /kbox ကို တစ်နေ့ 10 ကြိမ်သာ ဖောက်နိုင်စေရန် ကန့်သတ်ချက်စစ်ဆေးခြင်း
+            if kbox_count >= 10:
+                remaining = cooldown - (now - last_kbox_reset)
+                hours = remaining // 3600
+                mins = (remaining % 3600) // 60
+                secs = remaining % 60
+                time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
+                try:
+                    await query.answer(f"❌ တစ်နေ့လျှင် 10 ကြိမ်သာ /kbox ဖောက်ယူနိုင်ပါသည်။ ကျန်ရှိချိန်: {time_str}", show_alert=True)
+                except Exception:
+                    pass
+                return
 
             if current_coins < 300:
                 try:
@@ -2868,7 +2874,8 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
                 return
 
             new_balance = current_coins - 300
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
+            kbox_count += 1
+            await conn.execute("UPDATE users SET coins = $1, kbox_count = $2, last_kbox_reset = $3 WHERE user_id = $4", new_balance, kbox_count, last_kbox_reset, user_id)
 
     loading_steps = [
         "Card Opening Wait\nLoading... [ 25% ]",
