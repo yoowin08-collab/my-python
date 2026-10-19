@@ -1669,8 +1669,29 @@ async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @restricted_command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    if update.effective_user.id != ADMIN_ID:
+    msg = update.message
+    user = update.effective_user
+    msg_id = msg.message_id
+
+    # Check if replying to an active card drop to show /k hint & full
+    if msg.reply_to_message:
+        reply_id = msg.reply_to_message.message_id
+        async with state_lock:
+            drop_data = active_card_drops.get(reply_id)
+        if drop_data and not drop_data.get("claimed"):
+            card = drop_data["card"]
+            card_name = card["name"]
+            hint_name = card_name.split()[0][:2] if ' ' in card_name else card_name[:2]
+            
+            hint_str = f"/katch {hint_name}..."
+            full_str = f"/katch {card_name}"
+            
+            hint_text = f"""Copy To Use This
+Hint : <code>{hint_str}</code>
+Full : <code>{full_str}</code>"""
+            return await msg.reply_text(hint_text, parse_mode="HTML", reply_to_message_id=msg_id)
+
+    if user.id != ADMIN_ID:
         return
 
     try:
@@ -2234,30 +2255,23 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
+            # Delete the original dropped card message
+            try:
+                await context.bot.delete_message(chat.id, target_drop_msg_id)
+            except Exception:
+                pass
+
             r = card.get('rarity', 'Ten')
             r_emoji = get_rarity_emoji(r)
             success_text = f"🎗 Congratulations {get_mention(user.id, user.first_name)} ,You Got A New Character Card {card['name']}, Rarity: {r_emoji} {r}, ID: <code>{card['card_id']}</code> Check /kc to see Your Harem ❄"
 
             try:
-                await context.bot.edit_message_caption(
-                    chat_id=chat.id,
-                    message_id=target_drop_msg_id,
-                    caption=success_text,
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(success_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
             except Exception:
                 try:
-                    await context.bot.edit_message_text(
-                        chat_id=chat.id,
-                        message_id=target_drop_msg_id,
-                        text=success_text,
-                        parse_mode="HTML"
-                    )
+                    await context.bot.send_message(chat.id, success_text, parse_mode="HTML")
                 except Exception:
-                    try:
-                        await msg.reply_text(success_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-                    except Exception:
-                        pass
+                    pass
         else:
             await msg.reply_text("❌ နာမည်အမှန် မဟုတ်ပါ၊ ထပ်မံကြိုးစားကြည့်ပါ။", reply_to_message_id=msg.message_id)
     else:
@@ -3392,7 +3406,7 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
-    app.add_handler(CommandHandler("katch", katch_cmd)) # Added /katch Command Handler
+    app.add_handler(CommandHandler("katch", katch_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
