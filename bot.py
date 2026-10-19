@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import os
 import random
@@ -78,9 +78,7 @@ async def init_db():
                 mute_reason TEXT,
                 last_kdaily BIGINT DEFAULT 0,
                 pre_count INT DEFAULT 0,
-                last_pre_reset BIGINT DEFAULT 0,
-                kbox_count INT DEFAULT 0,
-                last_kbox_reset BIGINT DEFAULT 0
+                last_pre_reset BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -131,8 +129,6 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pre_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kbox_reset BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -417,7 +413,7 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
             return False
     return True
 
-# /pre Command Implementation
+# /pre Command Implementation (Updated limit to 3 times per day)
 @restricted_command
 async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_main_group_restriction(update, context):
@@ -499,13 +495,40 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pre_count, last_pre_reset, user.id
             )
 
+    async with db_pool.acquire() as conn:
+        global_drop_count = await conn.fetchval(
+            "SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card['card_id']
+        )
+
     r = card.get('rarity', 'Ten')
     r_emoji = get_rarity_emoji(r)
 
-    caption_text = f"⛩️ Congratulations , {get_mention(user.id, display_name)} Now you got A new Card <i>{card['name']}</i> 💮 ID: {card['card_id']} Rarity: {r_emoji} {r}\n❄️ Check /kc 🎗️"
+    if r == 'Shinsei':
+        coin_value = "2000-3000"
+    elif r == 'Kiwami':
+        coin_value = "1500-1900"
+    elif r == 'Kami':
+        coin_value = "800-1200"
+    elif r == 'Hoshi':
+        coin_value = "350-500"
+    else:
+        coin_value = "150-300"
+
+    caption_text = f"""🎗 Congratulations , {get_mention(user.id, display_name)} You Got A New Character in Pre 
+
+▰▰▱▱▰▰▱▱
+🍀 Name - {card['name']}
+    🍀  ID - <code>{card['card_id']}</code> 
+
+🌟 Rarity - {r_emoji} {r}
+🩸 Kachi Value ({coin_value})
+   🐠 Global Drops - <b>{global_drop_count}</b> 
+
+▰▰▱▱▰▰▱▱
+❄Check /kc ❄"""
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Harem❄️", switch_inline_query_current_chat=f"harem.{user.id}")]
+        [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{user.id}")]
     ])
 
     if card['type'] == 'photo':
@@ -1006,72 +1029,7 @@ async def got_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /spw Command (Admin Only: Spawns a card in the current group)
-@restricted_command
-async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    user = update.effective_user
-    chat = update.effective_chat
-
-    if user.id != ADMIN_ID:
-        return
-
-    if chat.type not in ["group", "supergroup"]:
-        return await update.message.reply_text("❌ This command can only be used in groups.", reply_to_message_id=msg_id)
-
-    target_card_id = context.args[0].strip() if context.args else None
-
-    async with db_pool.acquire() as conn:
-        if target_card_id:
-            card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity FROM cards WHERE card_id = $1", target_card_id)
-            if not card:
-                return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
-        else:
-            card = await get_weighted_random_card(conn)
-            if not card:
-                return await update.message.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
-
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-
-    await trigger_specific_card_drop(context, chat.id, card)
-
-async def trigger_specific_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int, card: dict):
-    try:
-        anim_msg = await context.bot.send_message(chat_id, "🐌")
-    except Exception:
-        anim_msg = None
-
-    await asyncio.sleep(4)
-    if anim_msg:
-        try:
-            await context.bot.delete_message(chat_id, anim_msg.message_id)
-        except Exception:
-            pass
-
-    drop_text = f"""Kachi Character Has Spawn In The Chat 🍬
-
-Catch This Character For Your Kc Harem❄
-Use /katch Name 🦕"""
-
-    try:
-        if card['type'] == 'photo':
-            msg = await context.bot.send_photo(chat_id, card['file_id'], caption=drop_text, parse_mode="HTML")
-        else:
-            msg = await context.bot.send_video(chat_id, card['file_id'], caption=drop_text, parse_mode="HTML")
-    except Exception:
-        return
-
-    async with state_lock:
-        active_card_drops[msg.message_id] = {
-            "chat_id": chat_id,
-            "card": card,
-            "claimed": False
-        }
-
-# /unlock Command (Supports /lock unlock or /unlock [card_id])
+# /unlock Command
 @restricted_command
 async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1079,31 +1037,27 @@ async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await update.message.reply_text("❌ Usage: `/unlock [card_id]` or `/lock unlock` to unlock all", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Usage: `/unlock [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-    target = context.args[0].strip().lower()
+    target_card_id = context.args[0].strip()
 
     async with db_pool.acquire() as conn:
-        if target == "all" or target == "unlock":
-            await conn.execute("UPDATE cards SET is_locked = FALSE")
-            return await update.message.reply_text("✅ All cards have been successfully UNLOCKED!", parse_mode="HTML", reply_to_message_id=msg_id)
-
-        card = await conn.fetchrow("SELECT name, rarity, is_locked FROM cards WHERE card_id = $1", target)
+        card = await conn.fetchrow("SELECT name, rarity, is_locked FROM cards WHERE card_id = $1", target_card_id)
         if not card:
-            return await update.message.reply_text(f"❌ Card ID <code>{target}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         if not card['is_locked']:
-            return await update.message.reply_text(f"ℹ️ Card ID <code>{target}</code> (<b>{card['name']}</b>) is already unlocked.", parse_mode="HTML", reply_to_message_id=msg_id)
+            return await update.message.reply_text(f"ℹ️ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) is already unlocked.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-        await conn.execute("UPDATE cards SET is_locked = FALSE WHERE card_id = $1", target)
+        await conn.execute("UPDATE cards SET is_locked = FALSE WHERE card_id = $1", target_card_id)
 
     await update.message.reply_text(
-        f"✅ Card ID <code>{target}</code> (<b>{card['name']}</b>) has been successfully unlocked and can now drop in drops & Kboxes!",
+        f"✅ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) has been successfully unlocked and can now drop in drops & Kboxes!",
         parse_mode="HTML",
         reply_to_message_id=msg_id
     )
 
-# /lock Command (Bot Admin Only - Supports /lock all & /lock unlock)
+# /lock Command (Bot Admin Only)
 @restricted_command
 async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1111,30 +1065,22 @@ async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await update.message.reply_text("❌ Usage: `/lock [card_id]` or `/lock all` to lock all", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Usage: `/lock [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-    target = context.args[0].strip().lower()
+    target_card_id = context.args[0].strip()
 
     async with db_pool.acquire() as conn:
-        if target == "all":
-            await conn.execute("UPDATE cards SET is_locked = TRUE")
-            return await update.message.reply_text("🔒 All cards have been successfully LOCKED!", parse_mode="HTML", reply_to_message_id=msg_id)
-
-        if target == "unlock":
-            await conn.execute("UPDATE cards SET is_locked = FALSE")
-            return await update.message.reply_text("🔓 All cards have been successfully UNLOCKED!", parse_mode="HTML", reply_to_message_id=msg_id)
-
-        card = await conn.fetchrow("SELECT name, rarity, is_locked FROM cards WHERE card_id = $1", target)
+        card = await conn.fetchrow("SELECT name, rarity, is_locked FROM cards WHERE card_id = $1", target_card_id)
         if not card:
-            return await update.message.reply_text(f"❌ Card ID <code>{target}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
+            return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         if card['is_locked']:
-            return await update.message.reply_text(f"ℹ️ Card ID <code>{target}</code> (<b>{card['name']}</b>) is already locked.", parse_mode="HTML", reply_to_message_id=msg_id)
+            return await update.message.reply_text(f"ℹ️ Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) is already locked.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-        await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", target)
+        await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", target_card_id)
 
     await update.message.reply_text(
-        f"🔒 Card ID <code>{target}</code> (<b>{card['name']}</b>) has been successfully locked and will no longer drop in drops & Kboxes!",
+        f"🔒 Card ID <code>{target_card_id}</code> (<b>{card['name']}</b>) has been successfully locked and will no longer drop in drops & Kboxes!",
         parse_mode="HTML",
         reply_to_message_id=msg_id
     )
@@ -1324,25 +1270,24 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. /send - Broadcast quiz to groups (reply to /aa)
 3. /c [gpid] [count] - Set threshold for a specific group
 4. /crest - Reset all thresholds & message counts
-5. /kadd [user_id] [amount] - Add/remove Kachi
+5. /k [user_id] [amount] - Add/remove Kachi
 6. /addadmin [user_id] - Add Card Admin
 7. /badmin [user_id] - Set Card Buyer
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
 9. /got [card_id] - Get card directly to your inventory (Admin only)
 10. /add - Add new card (reply to media)
 11. /unlock [card_id] - Unlock Yugen or locked card for drops/Kboxes
-12. /lock [card_id] - Lock card (Use 'Lock all' or '/lock all' to lock all cards)
+12. /lock [card_id] - Lock card
 13. /del [card_id_or_name] - Delete card by ID or Name
-14. /spw [card_id] - Spawn card in current group
-15. /cardlist - View all cards
-16. /glist - View groups list
-17. /stats - View stats
-18. /broadcast - Broadcast message
-19. /check [user_id] - Check user profile info
-20. /mute [id] [time] [reason] - Mute user from bot usage
-21. /ban [id] [reason] - Ban user from bot usage
-22. /umute [id] - Unmute user from bot usage
-23. /unban [id] - Unban user from bot usage"""
+14. /cardlist - View all cards
+15. /glist - View groups list
+16. /stats - View stats
+17. /broadcast - Broadcast message
+18. /check [user_id] - Check user profile info
+19. /mute [id] [time] [reason] - Mute user from bot usage
+20. /ban [id] [reason] - Ban user from bot usage
+21. /umute [id] - Unmute user from bot usage
+22. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1656,14 +1601,10 @@ async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# Changed from /k to /kadd
 @restricted_command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    user = update.effective_user
-    msg_id = msg.message_id
-
-    if user.id != ADMIN_ID:
+    msg_id = update.message.message_id
+    if update.effective_user.id != ADMIN_ID:
         return
 
     try:
@@ -1691,9 +1632,9 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_to_message_id=msg_id
         )
     except (IndexError, ValueError):
-        await update.message.reply_text("❌ Usage: `/kadd [user_id] [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        await update.message.reply_text("❌ Usage: `/k [user_id] [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-# /add Command
+# /add Command (Updated to validate English letters in card ID)
 @restricted_command
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1722,6 +1663,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         card_id = part1.strip()
         card_name = part2.strip()
         
+        # Check if card_id contains English letters
         if any(c.isalpha() for c in card_id):
             return await update.message.reply_text(
                 "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)။",
@@ -1784,7 +1726,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /del Command
+# /del Command (Updated to support deletion by ID or Name)
 @restricted_command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -2117,15 +2059,15 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/klot [Kachiamount]` (အနည်းဆုံး 150 ကနေ အများဆုံး 3000 ထိ)", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/klot [Kachiamount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         bet_amount = int(context.args[0])
     except ValueError:
         return await msg.reply_text("❌ Please enter a valid Kachi amount to trade.", reply_to_message_id=msg_id)
 
-    if bet_amount < 150 or bet_amount > 3000:
-        return await msg.reply_text("❌ /klot ကို အနည်းဆုံး <b>150 Kachi</b> မှ အများဆုံး <b>3000 Kachi</b> အတွင်းသာ ဆော့ကစားနိုင်ပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
+    if bet_amount <= 0:
+        return await msg.reply_text("❌ Trade amount must be greater than 0.", reply_to_message_id=msg_id)
 
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
@@ -2155,100 +2097,6 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("OPEN", callback_data=f"kbox_open_{user.id}")]
     ])
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-
-# Dedicated /katch Command Handler (Fixed: Only the first correct user gets the card)
-@restricted_command
-async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    msg = update.message
-    if not chat or not msg or not user or user.is_bot:
-        return
-
-    await register_user_group(user, chat, context)
-
-    if not context.args:
-        return await msg.reply_text("❌ ကျေးဇူးပြု၍ /katch နောက်တွင် ကတ်နာမည်ကို ရိုက်ထည့်ပါ။ ဥပမာ: `/katch Mitsuha`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
-
-    guessed_name = " ".join(context.args).strip().lower()
-
-    target_drop_msg_id = None
-    drop_data = None
-    card = None
-
-    async with state_lock:
-        if msg.reply_to_message and msg.reply_to_message.message_id in active_card_drops:
-            target_drop_msg_id = msg.reply_to_message.message_id
-            drop = active_card_drops[target_drop_msg_id]
-            if drop["chat_id"] == chat.id:
-                drop_data = drop
-
-        if not drop_data:
-            for m_id, drop in active_card_drops.items():
-                if drop["chat_id"] == chat.id:
-                    target_drop_msg_id = m_id
-                    drop_data = drop
-                    break
-
-        if not drop_data:
-            return await msg.reply_text("❌ လက်ရှိ Group ထဲတွင် ဖမ်းယူရန် ကတ်မရှိတော့ပါ (သို့မဟုတ်) သက်တမ်းကုန်သွားပါပြီ။", reply_to_message_id=msg.message_id)
-
-        # Ensure only the first person gets it by checking and marking claimed atomically
-        if drop_data["claimed"]:
-            return await msg.reply_text("❌ ဤကတ်ကို အခြားသူတစ်ဦးမှ အရင်ဦးဆုံး မှန်ကန်စွာ ဖမ်းယူသွားပါပြီ။", reply_to_message_id=msg.message_id)
-
-        card = drop_data["card"]
-        card_name = card["name"].strip().lower()
-
-        if guessed_name == card_name or guessed_name in card_name or card_name in guessed_name:
-            drop_data["claimed"] = True
-        else:
-            return await msg.reply_text("❌ နာမည်အမှန် မဟုတ်ပါ၊ ထပ်မံကြိုးစားကြည့်ပါ။", reply_to_message_id=msg.message_id)
-
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, user.id, card['card_id'])
-            await check_and_auto_lock_card(conn, card['card_id'])
-
-    anim_msg = None
-    try:
-        anim_msg = await context.bot.send_message(chat.id, "🌸", reply_to_message_id=target_drop_msg_id)
-    except Exception:
-        try:
-            anim_msg = await context.bot.send_message(chat.id, "🌸")
-        except Exception:
-            pass
-
-    await asyncio.sleep(3)
-
-    if anim_msg:
-        try:
-            await anim_msg.delete()
-        except Exception:
-            pass
-
-    r = card.get('rarity', 'Ten')
-    r_emoji = get_rarity_emoji(r)
-    
-    success_text = f"⛩️ Congratulations , {get_mention(user.id, user.first_name)} Now you got A new Card <i>{card['name']}</i> 💮 ID: {card['card_id']} Rarity: {r_emoji} {r}\n❄️ Check /kc 🎗️"
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Harem❄️", switch_inline_query_current_chat=f"harem.{user.id}")]
-    ])
-
-    if card['type'] == 'photo':
-        try:
-            await msg.reply_photo(photo=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-        except Exception:
-            await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-    else:
-        try:
-            await msg.reply_video(video=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-        except Exception:
-            await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
@@ -2636,39 +2484,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, chat, context)
 
-    # Check for Lock All command (Bot Admin Only)
-    if msg.text and user.id == ADMIN_ID:
-        text_cmd = msg.text.strip().lower()
-        if text_cmd == "lock all":
-            async with db_pool.acquire() as conn:
-                await conn.execute("UPDATE cards SET is_locked = TRUE")
-            return await msg.reply_text("🔒 All cards have been successfully LOCKED!", reply_to_message_id=msg.message_id)
-
-    # Check for Reply with /k or .k to show Full Name
-    if msg.text and msg.reply_to_message:
-        text_lower = msg.text.strip().lower()
-        if text_lower in ["/k", ".k"]:
-            reply_msg = msg.reply_to_message
-            reply_id = reply_msg.message_id
-            card_name = None
-            
-            async with state_lock:
-                drop_data = active_card_drops.get(reply_id)
-            if drop_data:
-                card_name = drop_data["card"]["name"]
-            elif reply_msg.photo or reply_msg.video:
-                file_id = reply_msg.photo[-1].file_id if reply_msg.photo else reply_msg.video.file_id
-                async with db_pool.acquire() as conn:
-                    c_row = await conn.fetchrow("SELECT name FROM cards WHERE file_id = $1", file_id)
-                    if c_row:
-                        card_name = c_row["name"]
-
-            if card_name:
-                full_str = f"/katch {card_name}"
-                full_text = f"""Copy To Use This
-Full : <code>{full_str}</code>"""
-                return await msg.reply_text(full_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-
     if chat.type == "private":
         async with state_lock:
             has_pending = user.id in pending_kachi_transfers
@@ -2830,16 +2645,30 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     if not drop_card:
         return
 
-    drop_text = f"""Kachi Character Has Spawn In The Chat 🍬
+    r = drop_card.get('rarity', 'Ten')
+    r_emoji = get_rarity_emoji(r)
 
-Catch This Character For Your Kc Harem❄
-Use /katch Name 🦕"""
+    joined_names = []
+    joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
+
+    drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
+
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
+ Card ❀
+
+{joined_str}
+
+GoodLuck 🍀 Time (50sec)"""
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("𝗝𝗢𝗜𝗡(0/5)", callback_data="join_card_drop")
+    ]])
 
     try:
         if drop_card['type'] == 'photo':
-            msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
+            msg = await context.bot.send_photo(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
         else:
-            msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML")
+            msg = await context.bot.send_video(chat_id, drop_card['file_id'], caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
     except Exception:
         return
 
@@ -2847,35 +2676,133 @@ Use /katch Name 🦕"""
         active_card_drops[msg.message_id] = {
             "chat_id": chat_id,
             "card": drop_card,
-            "claimed": False
+            "joined_users": {},
+            "timer": 50,
+            "ended": False
         }
 
-async def run_kbox_task(bot, chat_id, query, user_id, display_name):
-    now = int(time.time())
-    cooldown = 86400  # 24 hours
+    asyncio.create_task(run_card_drop_timer(context, msg.message_id))
 
+async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
+    while True:
+        await asyncio.sleep(5)
+        async with state_lock:
+            drop = active_card_drops.get(msg_id)
+            if not drop or drop["ended"]:
+                break
+
+            drop["timer"] -= 5
+            if drop["timer"] <= 0 or len(drop["joined_users"]) >= 5:
+                drop["ended"] = True
+                should_finalize = True
+            else:
+                should_finalize = False
+                current_count = len(drop["joined_users"])
+                chat_id = drop["chat_id"]
+                card_copy = drop["card"]
+                joined_copy = dict(drop["joined_users"])
+                timer_val = drop["timer"]
+
+        if should_finalize:
+            await finalize_card_drop(context, msg_id)
+            break
+
+        r = card_copy.get('rarity', 'Ten')
+        r_emoji = get_rarity_emoji(r)
+
+        joined_names = [f"• {get_mention(uid, name)}" for uid, name in joined_copy.items()]
+        joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
+
+        drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
+
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
+ Card ❀
+
+{joined_str}
+
+GoodLuck 🍀 Time ({timer_val}sec)"""
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
+        ]])
+
+        try:
+            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
+
+async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
+    async with state_lock:
+        drop = active_card_drops.get(msg_id)
+        if not drop or drop.get("finalized"):
+            return
+        drop["finalized"] = True
+        drop["ended"] = True
+
+        chat_id = drop["chat_id"]
+        card = drop["card"]
+        joined = dict(drop["joined_users"])
+        
+        if msg_id in active_card_drops:
+            del active_card_drops[msg_id]
+
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+    except Exception:
+        pass
+
+    try:
+        anim_msg = await context.bot.send_message(chat_id, "🐸")
+    except Exception:
+        anim_msg = None
+
+    await asyncio.sleep(4)
+    if anim_msg:
+        try:
+            await context.bot.delete_message(chat_id, anim_msg.message_id)
+        except Exception:
+            pass
+
+    if joined:
+        winner_id, winner_name = random.choice(list(joined.items()))
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("""
+                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                """, winner_id, card['card_id'])
+                await check_and_auto_lock_card(conn, card['card_id'])
+
+        r = card.get('rarity', 'Ten')
+        r_emoji = get_rarity_emoji(r)
+        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{winner_id}")]
+        ])
+
+        try:
+            if card['type'] == 'photo':
+                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            try:
+                await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
+    else:
+        win_msg = f"❌ Card drop for <b>{card['name']}</b> cancelled as no one joined."
+        try:
+            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
+        except Exception:
+            pass
+
+async def run_kbox_task(bot, chat_id, query, user_id, display_name):
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            user_row = await conn.fetchrow("SELECT coins, kbox_count, last_kbox_reset FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
             current_coins = user_row['coins'] if user_row else 1000
-            kbox_count = user_row['kbox_count'] if user_row else 0
-            last_kbox_reset = user_row['last_kbox_reset'] if user_row else 0
-
-            if now - last_kbox_reset >= cooldown:
-                kbox_count = 0
-                last_kbox_reset = now
-
-            if kbox_count >= 5:
-                remaining = cooldown - (now - last_kbox_reset)
-                hours = remaining // 3600
-                mins = (remaining % 3600) // 60
-                secs = remaining % 60
-                time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
-                try:
-                    await query.answer(f"❌ တစ်နေ့လျှင် 5 ကြိမ်သာ /kbox ဖောက်ယူနိုင်ပါသည်။ ကျန်ရှိချိန်: {time_str}", show_alert=True)
-                except Exception:
-                    pass
-                return
 
             if current_coins < 300:
                 try:
@@ -2885,8 +2812,7 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
                 return
 
             new_balance = current_coins - 300
-            kbox_count += 1
-            await conn.execute("UPDATE users SET coins = $1, kbox_count = $2, last_kbox_reset = $3 WHERE user_id = $4", new_balance, kbox_count, last_kbox_reset, user_id)
+            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
 
     loading_steps = [
         "Card Opening Wait\nLoading... [ 25% ]",
@@ -3319,6 +3245,64 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                 pass
         return
 
+    if data == "join_card_drop":
+        async with state_lock:
+            drop = active_card_drops.get(msg_id)
+            if not drop or drop["ended"]:
+                ended = True
+            else:
+                ended = False
+                if user.id in drop["joined_users"]:
+                    already_joined = True
+                else:
+                    already_joined = False
+                    if len(drop["joined_users"]) >= 5:
+                        full = True
+                    else:
+                        full = False
+                        drop["joined_users"][user.id] = user.first_name
+                        current_count = len(drop["joined_users"])
+                        is_full_now = current_count >= 5
+
+        if ended:
+            return await query.answer("❌ This card drop has ended.", show_alert=True)
+
+        if already_joined:
+            return await query.answer("❌ You have already joined.", show_alert=True)
+
+        if full:
+            return await query.answer("❌ Drop is full (5/5)!", show_alert=True)
+
+        await query.answer("✅ Successfully joined card drop!", show_alert=True)
+
+        if is_full_now:
+            await finalize_card_drop(context, msg_id)
+        else:
+            r = drop["card"].get('rarity', 'Ten')
+            r_emoji = get_rarity_emoji(r)
+
+            joined_names = [f"• {get_mention(uid, name)}" for uid, name in drop["joined_users"].items()]
+            joined_str = "\n".join(joined_names) if joined_names else "<i>No one joined yet.</i>"
+
+            drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
+
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
+ Card ❀
+
+{joined_str}
+
+GoodLuck 🍀 Time ({drop['timer']}sec)"""
+
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"𝗝𝗢𝗜𝗡({current_count}/5)", callback_data="join_card_drop")
+            ]])
+
+            try:
+                await query.edit_message_caption(caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
+        return
+
     if data.startswith("gift_"):
         parts = data.split("_")
         action = parts[1]
@@ -3434,7 +3418,6 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
-    app.add_handler(CommandHandler("katch", katch_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
@@ -3445,7 +3428,7 @@ def main():
     app.add_handler(CommandHandler("glist", glist_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
-    app.add_handler(CommandHandler("kadd", admin_coin_cmd))
+    app.add_handler(CommandHandler("k", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("badmin", badmin_cmd))
     app.add_handler(CommandHandler("buy", buy_cmd))
@@ -3454,7 +3437,6 @@ def main():
     app.add_handler(CommandHandler("unlock", unlock_card_cmd))
     app.add_handler(CommandHandler("lock", lock_card_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
-    app.add_handler(CommandHandler("spw", spw_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
 
     # Bot-level Moderation Commands
