@@ -2156,7 +2156,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# Dedicated /katch Command Handler (Fixed with accurate drop lookup)
+# Dedicated /katch Command Handler (Fixed: Only the first correct user gets the card)
 @restricted_command
 async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -2174,6 +2174,8 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target_drop_msg_id = None
     drop_data = None
+    card = None
+
     async with state_lock:
         if msg.reply_to_message and msg.reply_to_message.message_id in active_card_drops:
             target_drop_msg_id = msg.reply_to_message.message_id
@@ -2188,59 +2190,65 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     drop_data = drop
                     break
 
-    if drop_data:
+        if not drop_data:
+            return await msg.reply_text("❌ လက်ရှိ Group ထဲတွင် ဖမ်းယူရန် ကတ်မရှိတော့ပါ (သို့မဟုတ်) သက်တမ်းကုန်သွားပါပြီ။", reply_to_message_id=msg.message_id)
+
+        # Ensure only the first person gets it by checking and marking claimed atomically
+        if drop_data["claimed"]:
+            return await msg.reply_text("❌ ဤကတ်ကို အခြားသူတစ်ဦးမှ အရင်ဦးဆုံး မှန်ကန်စွာ ဖမ်းယူသွားပါပြီ။", reply_to_message_id=msg.message_id)
+
         card = drop_data["card"]
         card_name = card["name"].strip().lower()
 
         if guessed_name == card_name or guessed_name in card_name or card_name in guessed_name:
-            async with db_pool.acquire() as conn:
-                async with conn.transaction():
-                    await conn.execute("""
-                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                    """, user.id, card['card_id'])
-                    await check_and_auto_lock_card(conn, card['card_id'])
-
-            anim_msg = None
-            try:
-                anim_msg = await context.bot.send_message(chat.id, "🌸", reply_to_message_id=target_drop_msg_id)
-            except Exception:
-                try:
-                    anim_msg = await context.bot.send_message(chat.id, "🌸")
-                except Exception:
-                    pass
-
-            await asyncio.sleep(3)
-
-            if anim_msg:
-                try:
-                    await anim_msg.delete()
-                except Exception:
-                    pass
-
-            r = card.get('rarity', 'Ten')
-            r_emoji = get_rarity_emoji(r)
-            
-            success_text = f"⛩️ Congratulations , {get_mention(user.id, user.first_name)} Now you got A new Card <i>{card['name']}</i> 💮 ID: {card['card_id']} Rarity: {r_emoji} {r}\n❄️ Check /kc 🎗️"
-
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Harem❄️", switch_inline_query_current_chat=f"harem.{user.id}")]
-            ])
-
-            if card['type'] == 'photo':
-                try:
-                    await msg.reply_photo(photo=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-                except Exception:
-                    await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-            else:
-                try:
-                    await msg.reply_video(video=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
-                except Exception:
-                    await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+            drop_data["claimed"] = True
         else:
-            await msg.reply_text("❌ နာမည်အမှန် မဟုတ်ပါ၊ ထပ်မံကြိုးစားကြည့်ပါ။", reply_to_message_id=msg.message_id)
+            return await msg.reply_text("❌ နာမည်အမှန် မဟုတ်ပါ၊ ထပ်မံကြိုးစားကြည့်ပါ။", reply_to_message_id=msg.message_id)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, user.id, card['card_id'])
+            await check_and_auto_lock_card(conn, card['card_id'])
+
+    anim_msg = None
+    try:
+        anim_msg = await context.bot.send_message(chat.id, "🌸", reply_to_message_id=target_drop_msg_id)
+    except Exception:
+        try:
+            anim_msg = await context.bot.send_message(chat.id, "🌸")
+        except Exception:
+            pass
+
+    await asyncio.sleep(3)
+
+    if anim_msg:
+        try:
+            await anim_msg.delete()
+        except Exception:
+            pass
+
+    r = card.get('rarity', 'Ten')
+    r_emoji = get_rarity_emoji(r)
+    
+    success_text = f"⛩️ Congratulations , {get_mention(user.id, user.first_name)} Now you got A new Card <i>{card['name']}</i> 💮 ID: {card['card_id']} Rarity: {r_emoji} {r}\n❄️ Check /kc 🎗️"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Harem❄️", switch_inline_query_current_chat=f"harem.{user.id}")]
+    ])
+
+    if card['type'] == 'photo':
+        try:
+            await msg.reply_photo(photo=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+        except Exception:
+            await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
     else:
-        await msg.reply_text("❌ လက်ရှိ Group ထဲတွင် ဖမ်းယူရန် ကတ်မရှိတော့ပါ (သို့မဟုတ်) သက်တမ်းကုန်သွားပါပြီ။", reply_to_message_id=msg.message_id)
+        try:
+            await msg.reply_video(video=card['file_id'], caption=success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
+        except Exception:
+            await msg.reply_text(success_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg.message_id)
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
@@ -2857,7 +2865,6 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
                 kbox_count = 0
                 last_kbox_reset = now
 
-            # Kbox limit set to 5 times per day
             if kbox_count >= 5:
                 remaining = cooldown - (now - last_kbox_reset)
                 hours = remaining // 3600
