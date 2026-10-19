@@ -1054,7 +1054,6 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not card:
                 return await update.message.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
 
-    # Delete the command message to keep chat clean
     try:
         await update.message.delete()
     except Exception:
@@ -2164,6 +2163,106 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
+# Dedicated /katch Command Handler
+@restricted_command
+async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    if not chat or not msg or not user or user.is_bot:
+        return
+
+    await register_user_group(user, chat, context)
+
+    if not context.args:
+        return await msg.reply_text("❌ ကျေးဇူးပြု၍ /katch နောက်တွင် ကတ်နာမည်ကို ရိုက်ထည့်ပါ။ ဥပမာ: `/katch Mitsuha`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+
+    guessed_name = " ".join(context.args).strip().lower()
+
+    target_drop_msg_id = None
+    drop_data = None
+    async with state_lock:
+        for m_id, drop in active_card_drops.items():
+            if drop["chat_id"] == chat.id and not drop["claimed"]:
+                target_drop_msg_id = m_id
+                drop_data = drop
+                break
+
+    if drop_data:
+        card = drop_data["card"]
+        card_name = card["name"].strip().lower()
+
+        if guessed_name == card_name or guessed_name in card_name or card_name in guessed_name:
+            async with state_lock:
+                if active_card_drops.get(target_drop_msg_id, {}).get("claimed"):
+                    winner_name = active_card_drops.get(target_drop_msg_id, {}).get("winner_name", "Someone")
+                    try:
+                        await msg.reply_text(
+                            f"🧊 Too Late, He Got This Character {winner_name}, Try Again Next Time 🧇",
+                            parse_mode="HTML",
+                            reply_to_message_id=msg.message_id
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                active_card_drops[target_drop_msg_id]["claimed"] = True
+                active_card_drops[target_drop_msg_id]["winner_name"] = user.first_name
+
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("""
+                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                    """, user.id, card['card_id'])
+                    await check_and_auto_lock_card(conn, card['card_id'])
+
+            anim_msg = None
+            try:
+                anim_msg = await context.bot.send_message(chat.id, "🌸", reply_to_message_id=target_drop_msg_id)
+            except Exception:
+                try:
+                    anim_msg = await context.bot.send_message(chat.id, "🌸")
+                except Exception:
+                    pass
+
+            await asyncio.sleep(3)
+
+            if anim_msg:
+                try:
+                    await anim_msg.delete()
+                except Exception:
+                    pass
+
+            r = card.get('rarity', 'Ten')
+            r_emoji = get_rarity_emoji(r)
+            success_text = f"🎗 Congratulations {get_mention(user.id, user.first_name)} ,You Got A New Character Card {card['name']}, Rarity: {r_emoji} {r}, ID: <code>{card['card_id']}</code> Check /kc to see Your Harem ❄"
+
+            try:
+                await context.bot.edit_message_caption(
+                    chat_id=chat.id,
+                    message_id=target_drop_msg_id,
+                    caption=success_text,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat.id,
+                        message_id=target_drop_msg_id,
+                        text=success_text,
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    try:
+                        await msg.reply_text(success_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+                    except Exception:
+                        pass
+        else:
+            await msg.reply_text("❌ နာမည်အမှန် မဟုတ်ပါ၊ ထပ်မံကြိုးစားကြည့်ပါ။", reply_to_message_id=msg.message_id)
+    else:
+        await msg.reply_text("❌ လက်ရှိ Group ထဲတွင် ဖမ်းယူရန် ကတ်မရှိတော့ပါ (သို့မဟုတ်) သက်တမ်းကုန်သွားပါပြီ။", reply_to_message_id=msg.message_id)
+
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     text = query.query.strip()
@@ -2619,105 +2718,6 @@ Status: Successful ✅
 
     if chat.type in ["group", "supergroup"]:
         chat_id = chat.id
-        msg_text = msg.text or msg.caption or ""
-
-        # Check for /katch command
-        if msg_text.startswith("/katch") or msg_text.startswith("ကတ်ဖမ်း"):
-            guess_parts = msg_text.split(" ", 1)
-            if len(guess_parts) < 2:
-                return
-            guessed_name = guess_parts[1].strip().lower()
-
-            # Find active card drop in this chat
-            target_drop_msg_id = None
-            drop_data = None
-            async with state_lock:
-                for m_id, drop in active_card_drops.items():
-                    if drop["chat_id"] == chat_id and not drop["claimed"]:
-                        target_drop_msg_id = m_id
-                        drop_data = drop
-                        break
-
-            if drop_data:
-                card = drop_data["card"]
-                card_name = card["name"].strip().lower()
-
-                if guessed_name == card_name or guessed_name in card_name or card_name in guessed_name:
-                    async with state_lock:
-                        # Double check inside lock to prevent race conditions
-                        if active_card_drops.get(target_drop_msg_id, {}).get("claimed"):
-                            winner_name = active_card_drops.get(target_drop_msg_id, {}).get("winner_name", "Someone")
-                            try:
-                                await msg.reply_text(
-                                    f"🧊 Too Late, He Got This Character {winner_name}, Try Again Next Time 🧇",
-                                    parse_mode="HTML",
-                                    reply_to_message_id=msg.message_id
-                                )
-                            except Exception:
-                                pass
-                            return
-
-                        active_card_drops[target_drop_msg_id]["claimed"] = True
-                        active_card_drops[target_drop_msg_id]["winner_name"] = user.first_name
-
-                    # Give card to user in DB
-                    async with db_pool.acquire() as conn:
-                        async with conn.transaction():
-                            await conn.execute("""
-                                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                            """, user.id, card['card_id'])
-                            await check_and_auto_lock_card(conn, card['card_id'])
-
-                    # 1. Show 🌸 animation message for 3 seconds
-                    anim_msg = None
-                    try:
-                        anim_msg = await context.bot.send_message(chat_id, "🌸", reply_to_message_id=target_drop_msg_id)
-                    except Exception:
-                        try:
-                            anim_msg = await context.bot.send_message(chat_id, "🌸")
-                        except Exception:
-                            pass
-
-                    await asyncio.sleep(3)
-
-                    if anim_msg:
-                        try:
-                            await anim_msg.delete()
-                        except Exception:
-                            pass
-
-                    # 2. Edit drop message or reply with success message
-                    r = card.get('rarity', 'Ten')
-                    r_emoji = get_rarity_emoji(r)
-                    success_text = f"🎗 Congratulations {get_mention(user.id, user.first_name)} ,You Got A New Character Card {card['name']}, Rarity: {r_emoji} {r}, ID: <code>{card['card_id']}</code> Check /kc to see Your Harem ❄"
-
-                    try:
-                        await context.bot.edit_message_caption(
-                            chat_id=chat_id,
-                            message_id=target_drop_msg_id,
-                            caption=success_text,
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        try:
-                            await context.bot.edit_message_text(
-                                chat_id=chat_id,
-                                message_id=target_drop_msg_id,
-                                text=success_text,
-                                parse_mode="HTML"
-                            )
-                        except Exception:
-                            try:
-                                await msg.reply_text(success_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-                            except Exception:
-                                pass
-            else:
-                # If someone tries to catch when no card is active or already claimed
-                # Check if there was any recent drop in this chat
-                pass
-            return
-
         now = time.time()
         key = (chat_id, user.id)
 
@@ -3392,6 +3392,7 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
+    app.add_handler(CommandHandler("katch", katch_cmd)) # Added /katch Command Handler
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
