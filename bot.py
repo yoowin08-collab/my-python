@@ -36,6 +36,7 @@ pending_quizzes = {}
 active_quizzes = {}
 pending_kachi_transfers = {}
 pending_card_buys = {}
+active_kbox_users = set()  # Track ongoing Kbox sessions
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -78,7 +79,9 @@ async def init_db():
                 mute_reason TEXT,
                 last_kdaily BIGINT DEFAULT 0,
                 pre_count INT DEFAULT 0,
-                last_pre_reset BIGINT DEFAULT 0
+                last_pre_reset BIGINT DEFAULT 0,
+                kbox_count INT DEFAULT 0,
+                last_kbox_reset BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -130,6 +133,8 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pre_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kbox_reset BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -152,7 +157,6 @@ async def init_db():
             r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 30, 30, 30, 30], k=1)[0]
             await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
 
-        # Assign random collections to existing cards that don't have one
         collections_list = [
             "🎞 Ope Ope No Mi [ 🩺]",
             "🎞 Hito Hito No Mi [🌕]",
@@ -171,7 +175,6 @@ async def init_db():
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
 
-# Helper for Rarity Emojis
 def get_rarity_emoji(r):
     if r == 'Yugen':
         return "🎐"
@@ -186,7 +189,6 @@ def get_rarity_emoji(r):
     else:
         return "💮"
 
-# Helper for Yugen Auto-Lock (25 Drops)
 async def check_and_auto_lock_card(conn, card_id):
     card_info = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
     if card_info and card_info['rarity'] == 'Yugen' and not card_info['is_locked']:
@@ -194,7 +196,6 @@ async def check_and_auto_lock_card(conn, card_id):
         if total_drops >= 25:
             await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", card_id)
 
-# Bot-level Ban & Mute Restriction Decorator
 def restricted_command(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -359,17 +360,17 @@ async def get_weighted_random_card(conn):
     for c in all_cards:
         r = c.get('rarity', 'Ten')
         if r == 'Yugen':
-            weights.append(1)  # 1%
+            weights.append(1)
         elif r == 'Shinsei':
-            weights.append(1)  # 1%
+            weights.append(1)
         elif r == 'Kiwami':
-            weights.append(30) # Equal weight with Ten
+            weights.append(30)
         elif r == 'Kami':
-            weights.append(30) # Equal weight with Ten
+            weights.append(30)
         elif r == 'Hoshi':
-            weights.append(30) # Equal weight with Ten
+            weights.append(30)
         else:
-            weights.append(30) # Ten
+            weights.append(30)
             
     return random.choices(all_cards, weights=weights, k=1)[0]
 
@@ -444,7 +445,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     now = int(time.time())
-    cooldown = 86400  # 24 hours
+    cooldown = 86400
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -519,6 +520,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     r = card.get('rarity', 'Ten')
     r_emoji = get_rarity_emoji(r)
+    col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
     if r == 'Shinsei':
         coin_value = "2000-3000"
@@ -538,6 +540,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     🍀  ID - <code>{card['card_id']}</code> 
 
 🌟 Rarity - {r_emoji} {r}
+📚 Collection - {col_name}
 🩸 Kachi Value ({coin_value})
    🐠 Global Drops - <b>{global_drop_count}</b> 
 
@@ -559,7 +562,6 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await msg.reply_text(caption_text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# Quiz Commands (/aa and /send)
 @restricted_command
 async def aa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -684,7 +686,6 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups (members > 30) successfully!", reply_to_message_id=msg.message_id)
 
-# /start Command
 @restricted_command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -743,7 +744,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# /ksellcard Command
 @restricted_command
 async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -856,7 +856,7 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             item_coins_total += random.randint(100, 150)
                         elif rarity == 'Hoshi':
                             item_coins_total += random.randint(70, 90)
-                        else:  # Ten
+                        else:
                             item_coins_total += random.randint(70, 90)
 
                     total_earned_coins += item_coins_total
@@ -918,7 +918,6 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.reply_text(success_receipt, parse_mode="HTML", reply_to_message_id=msg_id)
 
-# /kdaily Command
 @restricted_command
 async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_main_group_restriction(update, context):
@@ -932,7 +931,7 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     now = int(time.time())
-    cooldown = 86400  # 24 hours
+    cooldown = 86400
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -967,7 +966,6 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /addadmin Command
 @restricted_command
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -989,7 +987,6 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
-# /badmin Command
 @restricted_command
 async def badmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1011,7 +1008,6 @@ async def badmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
-# /got Command
 @restricted_command
 async def got_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1046,7 +1042,6 @@ async def got_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /unlock Command
 @restricted_command
 async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1074,7 +1069,6 @@ async def unlock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /lock Command
 @restricted_command
 async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1102,7 +1096,6 @@ async def lock_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /buy Command
 @restricted_command
 async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1273,7 +1266,6 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "items": verified_items
         }
 
-# /admin Command
 @restricted_command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1651,7 +1643,6 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Usage: `/k [user_id] [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-# /add Command (Updated to prompt Collection selection after Rarity)
 @restricted_command
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1742,7 +1733,6 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
-# /del Command
 @restricted_command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1823,7 +1813,7 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     card_id = context.args[0].strip()
     async with db_pool.acquire() as conn:
-        card = await conn.fetchrow("SELECT card_id, name, type, file_id FROM cards WHERE card_id = $1", card_id)
+        card = await conn.fetchrow("SELECT card_id, name, type, file_id, collection FROM cards WHERE card_id = $1", card_id)
         if not card:
             return await update.message.reply_text(f"❌ Card ID <code>{card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1831,6 +1821,7 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user_card or user_card['amount'] <= 0:
             return await update.message.reply_text(f"❌ You do not own Card ID <code>{card_id}</code> (<b>{card['name']}</b>).", reply_to_message_id=msg_id)
 
+    col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
     text = f"""🎁 <b>Kachi Card Gift Transfer</b>
 
 👤 <b>Sender:</b> {get_mention(sender.id, sender.first_name)}
@@ -1839,6 +1830,7 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🎴 <b>Card Info:</b>
 🏷️ <b>Name:</b> {card['name']}
 🆔 <b>Card ID:</b> <code>{card['card_id']}</code>
+📚 <b>Collection:</b> {col_name}
 
 <i>Click button below to confirm.</i>"""
 
@@ -1926,7 +1918,6 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     end_idx = start_idx + per_page
     current_page_cards = user_card_rows[start_idx:end_idx]
 
-    # Group cards by Collection for the current page
     collections_dict = {}
     for c in current_page_cards:
         col = c.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
@@ -2117,6 +2108,41 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
+    async with state_lock:
+        if user.id in active_kbox_users:
+            return await msg.reply_text("❌ သင့်မှာ Kbox တစ်ခု ဖွင့်နေဆဲ ရှိပါသေးသည်။ အရင်ဟာ ပြီးဆုံးသည်အထိ စောင့်ဆိုင်းပေးပါ။", reply_to_message_id=msg_id)
+
+    now = int(time.time())
+    cooldown = 86400
+
+    async with db_pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT kbox_count, last_kbox_reset, coins, name FROM users WHERE user_id = $1", user.id)
+        kbox_count = user_row['kbox_count'] if user_row else 0
+        last_kbox_reset = user_row['last_kbox_reset'] if user_row else 0
+        coins = user_row['coins'] if user_row else 1000
+        display_name = user_row['name'] if user_row else user.first_name
+
+        if now - last_kbox_reset >= cooldown:
+            kbox_count = 0
+            last_kbox_reset = now
+            await conn.execute("UPDATE users SET kbox_count = 0, last_kbox_reset = $1 WHERE user_id = $2", now, user.id)
+
+        if kbox_count >= 7:
+            remaining = cooldown - (now - last_kbox_reset)
+            hours = remaining // 3600
+            mins = (remaining % 3600) // 60
+            secs = remaining % 60
+            time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
+            return await msg.reply_text(
+                f"⏳ မင်္ဂလာပါ {get_mention(user.id, display_name)}၊ /kbox ကို တစ်နေ့လျှင် 7 ကြိမ်သာ ဖွင့်လှစ်နိုင်ပါသည်။\n"
+                f"⏱ ကျန်ရှိသောအချိန်: <b>{time_str}</b>",
+                parse_mode="HTML",
+                reply_to_message_id=msg_id
+            )
+
+        if coins < 300:
+            return await msg.reply_text(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {coins}).", reply_to_message_id=msg_id)
+
     text = "Welcome To Kbox 💤\nLet's Open 🔫"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("OPEN", callback_data=f"kbox_open_{user.id}")]
@@ -2157,6 +2183,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     for c in user_cards:
         r = c.get('rarity', 'Ten')
         r_emoji = get_rarity_emoji(r)
+        col_name = c.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
         title = f"{c['name']} ({c['card_id']})"[:64]
         description = f"ID: {c['card_id']} | Rarity: {r}"
         amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
@@ -2170,6 +2197,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 ✿ Card Name - <b>{c['name']}</b>{amount_str}
       ☘ ID - <code>{c['card_id']}</code>
 ✿ Rarity - {r_emoji} {r}
+✿ Collection - {col_name}
 
 ⌘ Global Drops - <b>{global_drop_count}</b>"""
         
@@ -2803,7 +2831,8 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         r = card.get('rarity', 'Ten')
         r_emoji = get_rarity_emoji(r)
-        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r}❄ Check /kc 🎗"
+        col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
+        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r} | Collection: {col_name} ❄ Check /kc 🎗"
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{winner_id}")]
@@ -2827,84 +2856,75 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
             pass
 
 async def run_kbox_task(bot, chat_id, query, user_id, display_name):
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
-            current_coins = user_row['coins'] if user_row else 1000
-
-            if current_coins < 300:
-                try:
-                    await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
-                except Exception:
-                    pass
-                return
-
-            new_balance = current_coins - 300
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
-
-    loading_steps = [
-        "Card Opening Wait\nLoading... [ 25% ]",
-        "Card Opening Wait\nLoading... [ 50% ]",
-        "Card Opening Wait\nLoading... [ 75% ]",
-        "Card Opening Wait\nLoading... [ 100% ]"
-    ]
-
     try:
-        await query.edit_message_text(loading_steps[0], parse_mode="HTML")
-    except Exception:
-        pass
+        loading_steps = [
+            "Card Opening Wait\nLoading... [ 25% ]",
+            "Card Opening Wait\nLoading... [ 50% ]",
+            "Card Opening Wait\nLoading... [ 75% ]",
+            "Card Opening Wait\nLoading... [ 100% ]"
+        ]
 
-    for step in loading_steps[1:]:
-        await asyncio.sleep(1)
         try:
-            await query.edit_message_text(step, parse_mode="HTML")
+            await query.edit_message_text(loading_steps[0], parse_mode="HTML")
         except Exception:
             pass
 
-    await asyncio.sleep(1)
+        for step in loading_steps[1:]:
+            await asyncio.sleep(1)
+            try:
+                await query.edit_message_text(step, parse_mode="HTML")
+            except Exception:
+                pass
 
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            card = await get_weighted_random_card(conn)
-            if not card:
-                try:
-                    await query.edit_message_text("❌ No cards available in database yet!", parse_mode="HTML")
-                except Exception:
-                    pass
-                return
+        await asyncio.sleep(1)
 
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, user_id, card['card_id'])
-            await check_and_auto_lock_card(conn, card['card_id'])
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                card = await get_weighted_random_card(conn)
+                if not card:
+                    try:
+                        await query.edit_message_text("❌ No cards available in database yet!", parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return
 
-    r = card.get('rarity', 'Ten')
-    r_emoji = get_rarity_emoji(r)
+                await conn.execute("""
+                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                """, user_id, card['card_id'])
+                await check_and_auto_lock_card(conn, card['card_id'])
 
-    result_caption = f"""🎉 Congratulations! {get_mention(user_id, display_name)} You got a card!
+        r = card.get('rarity', 'Ten')
+        r_emoji = get_rarity_emoji(r)
+        col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
+
+        result_caption = f"""🎉 Congratulations! {get_mention(user_id, display_name)} You got a card!
 Card Name : {card['name']}
 Id : <code>{card['card_id']}</code>
 Rarity : {r_emoji} {r}
+Collection : {col_name}
 
 🔍 Check: /kc
 📖 Details: /card {card['card_id']}"""
 
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-
-    try:
-        if card['type'] == 'photo':
-            await bot.send_photo(chat_id=chat_id, photo=card['file_id'], caption=result_caption, parse_mode="HTML")
-        else:
-            await bot.send_video(chat_id=chat_id, video=card['file_id'], caption=result_caption, parse_mode="HTML")
-    except Exception:
         try:
-            await bot.send_message(chat_id=chat_id, text=result_caption, parse_mode="HTML")
+            await query.message.delete()
         except Exception:
             pass
+
+        try:
+            if card['type'] == 'photo':
+                await bot.send_photo(chat_id=chat_id, photo=card['file_id'], caption=result_caption, parse_mode="HTML")
+            else:
+                await bot.send_video(chat_id=chat_id, video=card['file_id'], caption=result_caption, parse_mode="HTML")
+        except Exception:
+            try:
+                await bot.send_message(chat_id=chat_id, text=result_caption, parse_mode="HTML")
+            except Exception:
+                pass
+    finally:
+        async with state_lock:
+            active_kbox_users.discard(user_id)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2990,13 +3010,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id != allowed_uid:
             return await query.answer("❌ This is not your Kbox button!", show_alert=True)
 
-        async with db_pool.acquire() as conn:
-            user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user.id)
-            current_coins = user_row['coins'] if user_row else 1000
-            display_name = user_row['name'] if user_row else user.first_name
+        async with state_lock:
+            if user.id in active_kbox_users:
+                return await query.answer("❌ သင့်၏ Kbox တစ်ခုမှာ ယခုလက်ရှိ ဖွင့်ဆိုဆဲဖြစ်ပါသည်၊ ပြီးဆုံးသည်အထိ စောင့်ပါရန်။", show_alert=True)
+            active_kbox_users.add(user.id)
 
-        if current_coins < 300:
-            return await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
+        now = int(time.time())
+        cooldown = 86400
+
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                user_row = await conn.fetchrow("SELECT coins, name, kbox_count, last_kbox_reset FROM users WHERE user_id = $1 FOR UPDATE", user.id)
+                current_coins = user_row['coins'] if user_row else 1000
+                display_name = user_row['name'] if user_row else user.first_name
+                kbox_count = user_row['kbox_count'] if user_row else 0
+                last_kbox_reset = user_row['last_kbox_reset'] if user_row else 0
+
+                if now - last_kbox_reset >= cooldown:
+                    kbox_count = 0
+                    last_kbox_reset = now
+
+                if kbox_count >= 7:
+                    async with state_lock:
+                        active_kbox_users.discard(user.id)
+                    return await query.answer("❌ /kbox ကို တစ်နေ့လျှင် 7 ကြိမ်သာ ဖွင့်လှစ်နိုင်ပါတော့သည်။", show_alert=True)
+
+                if current_coins < 300:
+                    async with state_lock:
+                        active_kbox_users.discard(user.id)
+                    return await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
+
+                new_balance = current_coins - 300
+                kbox_count += 1
+                await conn.execute("UPDATE users SET coins = $1, kbox_count = $2, last_kbox_reset = $3 WHERE user_id = $4", new_balance, kbox_count, last_kbox_reset, user.id)
 
         asyncio.create_task(run_kbox_task(context.bot, chat_id, query, user.id, display_name))
         await query.answer("🎉 Opening Kbox...")
@@ -3180,7 +3226,6 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         await query.answer()
         return
 
-    # Step 1 of /add: Rarity chosen, now prompt Collection
     if data.startswith("addrarity_"):
         parts = data.split("_")
         allowed_uid = int(parts[1])
@@ -3226,7 +3271,6 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         await query.answer()
         return
 
-    # Step 2 of /add: Collection chosen, finalize card addition
     if data.startswith("addcol_"):
         parts = data.split("_")
         allowed_uid = int(parts[1])
