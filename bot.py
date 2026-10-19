@@ -2124,7 +2124,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await msg.reply_text("❌ Please enter a valid Kachi amount to trade.", reply_to_message_id=msg_id)
 
-    # /klot ကို အနည်းဆုံး 150 မှ အများဆုံး 3000 ထိသာ ဆော့လို့ရအောင် ကန့်သတ်ချက်ထည့်သွင်းခြင်း
     if bet_amount < 150 or bet_amount > 3000:
         return await msg.reply_text("❌ /klot ကို အနည်းဆုံး <b>150 Kachi</b> မှ အများဆုံး <b>3000 Kachi</b> အတွင်းသာ ဆော့ကစားနိုင်ပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -2157,7 +2156,7 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
-# Dedicated /katch Command Handler
+# Dedicated /katch Command Handler (Fixed with accurate drop lookup)
 @restricted_command
 async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -2176,14 +2175,20 @@ async def katch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_drop_msg_id = None
     drop_data = None
     async with state_lock:
-        for m_id, drop in active_card_drops.items():
+        if msg.reply_to_message and msg.reply_to_message.message_id in active_card_drops:
+            target_drop_msg_id = msg.reply_to_message.message_id
+            drop = active_card_drops[target_drop_msg_id]
             if drop["chat_id"] == chat.id:
-                target_drop_msg_id = m_id
                 drop_data = drop
-                break
+
+        if not drop_data:
+            for m_id, drop in active_card_drops.items():
+                if drop["chat_id"] == chat.id:
+                    target_drop_msg_id = m_id
+                    drop_data = drop
+                    break
 
     if drop_data:
-        # ကဒ်ကို တစ်ခါကျပြီး ကောက်ပြီးနောက် နောက်တစ်ခါ ထပ်ကျပါက ကောက်လို့မရသည့် Error ဖြေရှင်းရန်အတွက် claimed စစ်ဆေးမှုကို ဖြုတ်ပေးထားပါသည် (ဘယ်သူမဆို အကြိမ်ကြိမ် ကောက်ယူနိုင်သည်)
         card = drop_data["card"]
         card_name = card["name"].strip().lower()
 
@@ -2631,7 +2636,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await conn.execute("UPDATE cards SET is_locked = TRUE")
             return await msg.reply_text("🔒 All cards have been successfully LOCKED!", reply_to_message_id=msg.message_id)
 
-    # Check for Reply with /k or .k to show Full Name (ဘယ်အချိန်ပို့ပို့ Database မှပါ ရှာဖွေပေးနိုင်အောင် ပြင်ဆင်ထားသည်)
+    # Check for Reply with /k or .k to show Full Name
     if msg.text and msg.reply_to_message:
         text_lower = msg.text.strip().lower()
         if text_lower in ["/k", ".k"]:
@@ -2848,20 +2853,19 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
             kbox_count = user_row['kbox_count'] if user_row else 0
             last_kbox_reset = user_row['last_kbox_reset'] if user_row else 0
 
-            # 24 နာရီကျော်သွားပါက kbox_count ကို ပြန်လည်စတင်ရန်
             if now - last_kbox_reset >= cooldown:
                 kbox_count = 0
                 last_kbox_reset = now
 
-            # /kbox ကို တစ်နေ့ 10 ကြိမ်သာ ဖောက်နိုင်စေရန် ကန့်သတ်ချက်စစ်ဆေးခြင်း
-            if kbox_count >= 10:
+            # Kbox limit set to 5 times per day
+            if kbox_count >= 5:
                 remaining = cooldown - (now - last_kbox_reset)
                 hours = remaining // 3600
                 mins = (remaining % 3600) // 60
                 secs = remaining % 60
                 time_str = f"{hours}h {mins}m {secs}s" if hours > 0 else (f"{mins}m {secs}s" if mins > 0 else f"{secs}s")
                 try:
-                    await query.answer(f"❌ တစ်နေ့လျှင် 10 ကြိမ်သာ /kbox ဖောက်ယူနိုင်ပါသည်။ ကျန်ရှိချိန်: {time_str}", show_alert=True)
+                    await query.answer(f"❌ တစ်နေ့လျှင် 5 ကြိမ်သာ /kbox ဖောက်ယူနိုင်ပါသည်။ ကျန်ရှိချိန်: {time_str}", show_alert=True)
                 except Exception:
                     pass
                 return
@@ -3434,7 +3438,7 @@ def main():
     app.add_handler(CommandHandler("glist", glist_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
-    app.add_handler(CommandHandler("kadd", admin_coin_cmd)) # Changed from /k to /kadd
+    app.add_handler(CommandHandler("kadd", admin_coin_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("badmin", badmin_cmd))
     app.add_handler(CommandHandler("buy", buy_cmd))
