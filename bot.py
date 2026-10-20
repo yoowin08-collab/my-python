@@ -37,6 +37,7 @@ active_quizzes = {}
 pending_kachi_transfers = {}
 pending_card_buys = {}
 active_kbox_users = set()  # Track ongoing Kbox sessions per user
+kshop_prices = {}  # Track shop card prices per user session
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -1884,6 +1885,100 @@ async def resethmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Reset Successful! /kc တွင် ကတ်အားလုံးကို ပုံမှန်အတိုင်း ပြန်လည်ပြသမည် ဖြစ်ပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
 # ----------------------------------------
 
+# --- /kshop Command Implementation ---
+@restricted_command
+async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    text = f"""Hello {user.first_name}
+You can buy the highest-tier 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen"),
+            InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei")
+        ],
+        [
+            InlineKeyboardButton("🪞 Kiwami", callback_data=f"kshop_rarity_{user.id}_Kiwami")
+        ]
+    ])
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
+async def render_kshop_card(query, context, user_id, rarity, index):
+    async with db_pool.acquire() as conn:
+        cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection FROM cards WHERE rarity = $1 ORDER BY card_id ASC", rarity)
+    
+    if not cards:
+        return await query.answer("❌ No cards available in this rarity!", show_alert=True)
+    
+    index = max(0, min(index, len(cards) - 1))
+    card = cards[index]
+    
+    price_key = (user_id, card['card_id'])
+    if price_key not in kshop_prices:
+        if rarity == 'Kiwami':
+            kshop_prices[price_key] = random.randint(2500, 3000)
+        elif rarity == 'Shinsei':
+            kshop_prices[price_key] = random.randint(4000, 5500)
+        elif rarity == 'Yugen':
+            kshop_prices[price_key] = random.randint(6800, 8000)
+        else:
+            kshop_prices[price_key] = 2500
+    price = kshop_prices[price_key]
+
+    async with db_pool.acquire() as conn:
+        global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card['card_id'])
+
+    r_emoji = get_rarity_emoji(rarity)
+    col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
+
+    caption_text = f"""🎗 Card Information ♡
+
+▰▰▱▱▰▰▱▱
+🍀 Name - {card['name']}
+    🍀  ID - <code>{card['card_id']}</code>
+🎬 Type - {card['type'].upper()}
+🌟 Rarity - {r_emoji} {rarity}
+📚 Collection - {col_name}
+🩸 Kachi Price - <b>{price}</b>
+   🐠 Global Drops - <b>{global_drop_count}</b>
+
+▰▰▱▱▰▰▱▱▰▰ ({index + 1}/{len(cards)})"""
+
+    keyboard_rows = []
+    nav_row = []
+    if index > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kshop_nav_{user_id}_{rarity}_{index - 1}"))
+    if index < len(cards) - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kshop_nav_{user_id}_{rarity}_{index + 1}"))
+    if nav_row:
+        keyboard_rows.append(nav_row)
+
+    keyboard_rows.append([
+        InlineKeyboardButton("Buy This Card", callback_data=f"kshop_buy_{user_id}_{rarity}_{card['card_id']}_{price}")
+    ])
+    keyboard_rows.append([
+        InlineKeyboardButton("◀️ Back Menu", callback_data=f"kshop_back_{user_id}")
+    ])
+    markup = InlineKeyboardMarkup(keyboard_rows)
+
+    media = InputMediaPhoto(media=card['file_id'], caption=caption_text, parse_mode="HTML") if card['type'] == 'photo' else InputMediaVideo(media=card['file_id'], caption=caption_text, parse_mode="HTML")
+
+    try:
+        await query.edit_message_media(media=media, reply_markup=markup)
+    except Exception:
+        try:
+            await query.edit_message_caption(caption=caption_text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+# ----------------------------------------
+
 @restricted_command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2568,6 +2663,16 @@ async def render_glist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE,
     else:
         await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
+# --- Non-blocking Concurrent stats_cmd ---
+async def check_group_active(bot, chat_id):
+    try:
+        member = await bot.get_chat_member(chat_id, bot.id)
+        if member.status not in ['left', 'kicked']:
+            return True
+    except Exception:
+        pass
+    return False
+
 @restricted_command
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -2578,14 +2683,9 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u_count = await conn.fetchval("SELECT COUNT(*) FROM users")
         all_groups = await conn.fetch("SELECT chat_id FROM groups")
 
-    active_g_count = 0
-    for g in all_groups:
-        try:
-            member = await context.bot.get_chat_member(g['chat_id'], context.bot.id)
-            if member.status not in ['left', 'kicked']:
-                active_g_count += 1
-        except Exception:
-            pass
+    tasks = [check_group_active(context.bot, g['chat_id']) for g in all_groups]
+    results = await asyncio.gather(*tasks)
+    active_g_count = sum(1 for r in results if r)
 
     await update.message.reply_text(
         f"📊 <b>Bot Stats:</b>\n\n👥 Users: {u_count}\n🏰 Groups: {active_g_count}",
@@ -3225,6 +3325,91 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # -----------------------------
 
+    # --- Callbacks for /kshop ---
+    if data.startswith("kshop_rarity_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[2])
+        rarity = parts[3]
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+
+        await render_kshop_card(query, context, user.id, rarity, 0)
+        await query.answer()
+        return
+
+    if data.startswith("kshop_nav_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[2])
+        rarity = parts[3]
+        target_idx = int(parts[4])
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+
+        await render_kshop_card(query, context, user.id, rarity, target_idx)
+        await query.answer()
+        return
+
+    if data.startswith("kshop_buy_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[2])
+        rarity = parts[3]
+        card_id = parts[4]
+        price = int(parts[5])
+
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user.id)
+                coins = user_row['coins'] if user_row else 1000
+
+                if coins < price:
+                    return await query.answer(f"❌ Insufficient Kachi! You need {price} Kachi (Current: {coins}).", show_alert=True)
+
+                new_coins = coins - price
+                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user.id)
+
+                await conn.execute("""
+                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                """, user.id, card_id)
+                await check_and_auto_lock_card(conn, card_id)
+
+                card_info = await conn.fetchrow("SELECT name FROM cards WHERE card_id = $1", card_id)
+                card_name = card_info['name'] if card_info else card_id
+
+        return await query.answer(f"✅ Successfully bought {card_name} for {price} Kachi!", show_alert=True)
+
+    if data.startswith("kshop_back_"):
+        allowed_uid = int(data.split("_")[2])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not for you!", show_alert=True)
+
+        text = f"""Hello {user.first_name}
+You can buy the highest-tier 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen"),
+                InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei")
+            ],
+            [
+                InlineKeyboardButton("🪞 Kiwami", callback_data=f"kshop_rarity_{user.id}_Kiwami")
+            ]
+        ])
+        try:
+            await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            try:
+                await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
+        await query.answer()
+        return
+    # ----------------------------
+
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
 
@@ -3411,53 +3596,15 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
             return await query.answer("❌ Only the Bot Admin can add Yugen rarity cards!", show_alert=True)
 
         card_info = pending_card_adds.get(user.id)
-
-        if not card_info:
-            return await query.answer("❌ Card addition session expired.", show_alert=True)
-
-        card_info["rarity"] = rarity
-
-        collections_list = [
-            "🎞 Ope Ope No Mi [ 🩺]",
-            "🎞 Hito Hito No Mi [🌕]",
-            "🎞 Mera Mera No Mi [🔥]",
-            "🎞 Hana Hana No Mi [🌸]",
-            "🎞 Yomi Yomi No Mi [💀]",
-            "🎞 Tori Tori No Mi [🦅]",
-            "🎞 Yami Yami No Mi [🌑]"
-        ]
-
-        col_keyboard = []
-        for col in collections_list:
-            col_keyboard.append([InlineKeyboardButton(col, callback_data=f"addcol_{user.id}_{col[:15]}")])
-
-        try:
-            await query.message.edit_text(
-                f"🎴 <b>Rarity Selected:</b> {get_rarity_emoji(rarity)} {rarity}\n\n"
-                f"📚 <b>Please select Collection:</b>",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(col_keyboard)
-            )
-        except Exception:
-            pass
-        await query.answer()
-        return
-
-    if data.startswith("addcol_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[1])
-        col_prefix = parts[2]
-
-        if user.id != allowed_uid:
-            return await query.answer("❌ Not for you.", show_alert=True)
-
-        card_info = pending_card_adds.get(user.id)
         if card_info:
             del pending_card_adds[user.id]
 
         if not card_info:
             return await query.answer("❌ Card addition session expired.", show_alert=True)
 
+        card_info["rarity"] = rarity
+
+        # Auto random collection selection
         collections_list = [
             "🎞 Ope Ope No Mi [ 🩺]",
             "🎞 Hito Hito No Mi [🌕]",
@@ -3467,14 +3614,12 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
             "🎞 Tori Tori No Mi [🦅]",
             "🎞 Yami Yami No Mi [🌑]"
         ]
-
-        selected_collection = next((c for c in collections_list if c.startswith(col_prefix)), collections_list[0])
+        selected_collection = random.choice(collections_list)
 
         card_id = card_info["card_id"]
         card_name = card_info["card_name"]
         c_type = card_info["type"]
         file_id = card_info["file_id"]
-        rarity = card_info["rarity"]
         is_card_admin = card_info["is_card_admin"]
         
         is_locked = True if rarity == 'Yugen' else False
@@ -3723,6 +3868,7 @@ def main():
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("khmode", khmode_cmd))
     app.add_handler(CommandHandler("resethmode", resethmode_cmd))
+    app.add_handler(CommandHandler("kshop", kshop_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("kbox", kbox_cmd))
