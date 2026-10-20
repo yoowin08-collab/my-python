@@ -36,7 +36,7 @@ pending_quizzes = {}
 active_quizzes = {}
 pending_kachi_transfers = {}
 pending_card_buys = {}
-active_kbox_users = set()  # Track ongoing Kbox sessions
+active_kbox_users = set()  # Track ongoing Kbox sessions per user independently
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -117,6 +117,14 @@ async def init_db():
                 amount INT DEFAULT 1,
                 PRIMARY KEY (user_id, card_id)
             );
+            CREATE TABLE IF NOT EXISTS shop_cards (
+                card_id TEXT PRIMARY KEY,
+                name TEXT,
+                type TEXT,
+                file_id TEXT,
+                kachi_amount BIGINT DEFAULT 1000,
+                rarity TEXT DEFAULT '⛵ᴋᴀᴄʜɪ'
+            );
             CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
             CREATE INDEX IF NOT EXISTS idx_user_cards_card_id ON user_cards(card_id);
             CREATE INDEX IF NOT EXISTS idx_group_members_chat_user ON group_members(chat_id, user_id);
@@ -188,6 +196,8 @@ def get_rarity_emoji(r):
         return "✨"
     elif r == 'Hoshi':
         return "⚜️"
+    elif r == '⛵ᴋᴀᴄʜɪ':
+        return "⛵"
     else:
         return "💮"
 
@@ -737,7 +747,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Gift 🎁", callback_data="menu_kgift")
         ],
         [
-            InlineKeyboardButton("Sell Card 💸", callback_data="menu_ksellcard")
+            InlineKeyboardButton("Sell Card 💸", callback_data="menu_ksellcard"),
+            InlineKeyboardButton("Shop 🛍", callback_data="menu_kshop")
         ],
         [
             InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
@@ -1349,21 +1360,22 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 6. /addadmin [user_id] - Add Card Admin
 7. /badmin [user_id] - Set Card Buyer
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
-9. /got [card_id] - Get card directly to your inventory (Admin only)
-10. /add - Add new card (reply to media)
-11. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
-12. /lock [card_id/all] - Lock card or all cards
-13. /spw [card_id] - Spawn random card or specific card
-14. /del [card_id_or_name] - Delete card by ID or Name
-15. /cardlist - View all cards
-16. /glist - View groups list
-17. /stats - View stats
-18. /broadcast - Broadcast message
-19. /check [user_id] - Check user profile info
-20. /mute [id] [time] [reason] - Mute user from bot usage
-21. /ban [id] [reason] - Ban user from bot usage
-22. /umute [id] - Unmute user from bot usage
-23. /unban [id] - Unban user from bot usage"""
+9. /sadd name/id/kachiamount - Add card to shop (reply to photo/video)
+10. /got [card_id] - Get card directly to your inventory (Admin only)
+11. /add - Add new card (reply to media)
+12. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
+13. /lock [card_id/all] - Lock card or all cards
+14. /spw [card_id] - Spawn random card or specific card
+15. /del [card_id_or_name] - Delete card by ID or Name
+16. /cardlist - View all cards
+17. /glist - View groups list
+18. /stats - View stats
+19. /broadcast - Broadcast message
+20. /check [user_id] - Check user profile info
+21. /mute [id] [time] [reason] - Mute user from bot usage
+22. /ban [id] [reason] - Ban user from bot usage
+23. /umute [id] - Unmute user from bot usage
+24. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1711,6 +1723,60 @@ async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Usage: `/k [user_id] [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
 @restricted_command
+async def sadd_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+    if user.id != ADMIN_ID:
+        return
+
+    reply = update.message.reply_to_message
+    if not reply or (not reply.photo and not reply.video):
+        return await update.message.reply_text("❌ Reply to a photo or video with `/sadd name/id/kachiamount`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    raw_text = update.message.text.partition(" ")[2].strip()
+    if not raw_text or "/" not in raw_text:
+        return await update.message.reply_text("❌ Usage: Reply to media with `/sadd name/id/kachiamount`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    parts = [p.strip() for p in raw_text.split("/")]
+    if len(parts) < 3:
+        return await update.message.reply_text("❌ Format error. Use `/sadd name/id/kachiamount`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    c_name = parts[0]
+    c_id = parts[1]
+    try:
+        kachi_amt = int(parts[2])
+    except ValueError:
+        return await update.message.reply_text("❌ Invalid Kachi amount.", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    if reply.photo:
+        file_id = reply.photo[-1].file_id
+        c_type = "photo"
+    else:
+        file_id = reply.video.file_id
+        c_type = "video"
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO shop_cards (card_id, name, type, file_id, kachi_amount, rarity)
+            VALUES ($1, $2, $3, $4, $5, '⛵ᴋᴀᴄʜɪ')
+            ON CONFLICT (card_id) DO UPDATE SET 
+                name = EXCLUDED.name,
+                type = EXCLUDED.type,
+                file_id = EXCLUDED.file_id,
+                kachi_amount = EXCLUDED.kachi_amount
+        """, c_id, c_name, c_type, file_id, kachi_amt)
+
+    await update.message.reply_text(
+        f"✅ Shop Card Added Successfully!\n\n"
+        f"🏷 Name: {c_name}\n"
+        f"🆔 ID: <code>{c_id}</code>\n"
+        f"💎 Price: {kachi_amt} Kachi\n"
+        f"🌟 Rarity: ⛵ᴋᴀᴄʜɪ",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
+@restricted_command
 async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     user = update.effective_user
@@ -1879,9 +1945,6 @@ async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
             InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
-        ],
-        [
-            InlineKeyboardButton("◀️ Back Menu", callback_data=f"khback_{user.id}")
         ]
     ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
@@ -2050,7 +2113,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
 
     content_blocks = ["Collection"]
     for col_name, cards_in_col in collections_dict.items():
-        content_blocks.append("") # ခြားရန် လိုင်းလွတ် ထည့်သွင်းခြင်း
+        content_blocks.append("")
         content_blocks.append(f"      {col_name}")
         for c in cards_in_col:
             r_emoji = get_rarity_emoji(c.get('rarity'))
@@ -2101,6 +2164,137 @@ async def check_kc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await register_user_group(user, chat, context)
     await render_kc_view(update, context, page=0, owner_id=user.id)
+
+# --- /kshop & Shop View Implementation ---
+async def render_kshop_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
+    msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
+
+    async with db_pool.acquire() as conn:
+        shop_cards = await conn.fetch("SELECT card_id, name, type, file_id, kachi_amount, rarity FROM shop_cards ORDER BY card_id ASC")
+
+    if not shop_cards:
+        text = "🛍 <b>Shop is currently empty. No cards added yet!</b>"
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+        else:
+            try:
+                await update_or_query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=None)
+            except Exception:
+                await update_or_query.edit_message_text(text=text, parse_mode="HTML")
+            return
+
+    per_page = 1
+    total_cards = len(shop_cards)
+    total_pages = total_cards
+    page = max(0, min(page, total_pages - 1))
+    card = shop_cards[page]
+
+    caption = f"""🛍 <b>Shop (Page {page + 1}/{total_pages})</b>
+
+🍀 Name - <b>{card['name']}</b>
+🆔 ID - <code>{card['card_id']}</code>
+🌟 Rarity - {card['rarity']}
+💎 Price - <b>{card['kachi_amount']}</b> Kachi 🩸
+
+💡 <i>ဝယ်ယူလိုပါက /kbuy {card['card_id']} ဟု ရိုက်ထည့်ပါ</i>"""
+
+    keyboard_rows = []
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"shpage_{page - 1}"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"shpage_{page + 1}"))
+        if nav_row:
+            keyboard_rows.append(nav_row)
+
+    markup = InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
+
+    if isinstance(update_or_query, Update):
+        try:
+            if card['type'] == 'photo':
+                await update_or_query.message.reply_photo(photo=card['file_id'], caption=caption, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+            else:
+                await update_or_query.message.reply_video(video=card['file_id'], caption=caption, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+        except Exception:
+            await update_or_query.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
+    else:
+        query = update_or_query
+        try:
+            if card['type'] == 'photo':
+                await query.edit_message_media(media=InputMediaPhoto(media=card['file_id'], caption=caption, parse_mode="HTML"), reply_markup=markup)
+            else:
+                await query.edit_message_media(media=InputMediaVideo(media=card['file_id'], caption=caption, parse_mode="HTML"), reply_markup=markup)
+        except Exception:
+            try:
+                await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
+
+@restricted_command
+async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    await register_user_group(user, chat, context)
+    await render_kshop_view(update, context, page=0)
+
+@restricted_command
+async def kbuy_shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/kbuy [card_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    card_id = context.args[0].strip()
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            shop_item = await conn.fetchrow("SELECT card_id, name, type, file_id, kachi_amount, rarity FROM shop_cards WHERE card_id = $1", card_id)
+            if not shop_item:
+                return await msg.reply_text(f"❌ Card ID <code>{card_id}</code> not found in shop.", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", user.id)
+            current_coins = user_row['coins'] if user_row else 1000
+            price = shop_item['kachi_amount']
+
+            if current_coins < price:
+                return await msg.reply_text(f"❌ Insufficient Kachi! You need <b>{price}</b> Kachi (Current balance: {current_coins}).", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            new_balance = current_coins - price
+            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
+
+            exists_in_cards = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", card_id)
+            if not exists_in_cards:
+                await conn.execute("""
+                    INSERT INTO cards (card_id, name, type, file_id, rarity, collection, is_locked)
+                    VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+                """, card_id, shop_item['name'], shop_item['type'], shop_item['file_id'], 'Ten', '🎞 Ope Ope No Mi [ 🩺]')
+
+            await conn.execute("""
+                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+            """, user.id, card_id)
+
+    await msg.reply_text(
+        f"✅ <b>Successfully purchased card from shop!</b>\n\n"
+        f"🍀 Name: <b>{shop_item['name']}</b>\n"
+        f"🆔 ID: <code>{card_id}</code>\n"
+        f"💎 Price Paid: {price} Kachi\n"
+        f"💰 Remaining Balance: <b>{new_balance}</b> Kachi\n\n"
+        f"❄ Check /kc",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+# ----------------------------------------
 
 @restricted_command
 async def kachi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3188,7 +3382,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("Confirm ✅", callback_data=f"khconfirm_{user.id}_{rarity}")
             ],
             [
-                InlineKeyboardButton("◀️ Back menu", callback_data=f"khback_{user.id}")
+                InlineKeyboardButton("◀️ Back Menu", callback_data=f"khback_{user.id}")
             ]
         ])
         try:
@@ -3227,9 +3421,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
                 InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
-            ],
-            [
-                InlineKeyboardButton("◀️ Back Menu", callback_data=f"khback_{user.id}")
             ]
         ])
         try:
@@ -3410,6 +3601,11 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         await query.answer()
         return
 
+    if data == "menu_kshop":
+        await query.answer("🛍 Opening Shop...")
+        await render_kshop_view(query, context, page=0)
+        return
+
     if data == "menu_back":
         bot_info = await context.bot.get_me()
         text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
@@ -3426,7 +3622,8 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                 InlineKeyboardButton("Gift 🎁", callback_data="menu_kgift")
             ],
             [
-                InlineKeyboardButton("Sell Card 💸", callback_data="menu_ksellcard")
+                InlineKeyboardButton("Sell Card 💸", callback_data="menu_ksellcard"),
+                InlineKeyboardButton("Shop 🛍", callback_data="menu_kshop")
             ],
             [
                 InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_info.username}?startgroup=true")
@@ -3436,6 +3633,12 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
             await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         except Exception:
             pass
+        await query.answer()
+        return
+
+    if data.startswith("shpage_"):
+        page = int(data.replace("shpage_", ""))
+        await render_kshop_view(query, context, page=page)
         await query.answer()
         return
 
@@ -3752,6 +3955,8 @@ def get_emoji_for_rarity_str(rarity):
         return "✨"
     elif rarity == 'Hoshi':
         return "⚜️"
+    elif rarity == '⛵ᴋᴀᴄʜɪ':
+        return "⛵"
     else:
         return "💮"
 
@@ -3774,6 +3979,8 @@ def main():
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("ksellcard", ksellcard_cmd))
+    app.add_handler(CommandHandler("kshop", kshop_cmd))
+    app.add_handler(CommandHandler("kbuy", kbuy_shop_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
@@ -3791,6 +3998,7 @@ def main():
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("badmin", badmin_cmd))
     app.add_handler(CommandHandler("buy", buy_cmd))
+    app.add_handler(CommandHandler("sadd", sadd_cmd))
     app.add_handler(CommandHandler("got", got_card_cmd))
     app.add_handler(CommandHandler("add", add_card_cmd))
     app.add_handler(CommandHandler("unlock", unlock_card_cmd))
