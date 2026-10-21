@@ -1398,7 +1398,7 @@ async def mute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_str = context.args[1]
         reason = " ".join(context.args[2:]) if len(context.args) > 2 else "No reason provided"
     except ValueError:
-        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
     seconds = parse_time(time_str)
     until_timestamp = int(time.time()) + seconds
@@ -1430,7 +1430,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_id = int(context.args[0])
         reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason provided"
     except ValueError:
-        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
     async with db_pool.acquire() as conn:
         user_exists = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
@@ -1458,7 +1458,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(context.args[0])
     except ValueError:
-        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE users SET muted_until = 0, mute_reason = NULL WHERE user_id = $1", target_id)
@@ -1477,12 +1477,12 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
     except ValueError:
-        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE users SET banned = FALSE, ban_reason = NULL WHERE user_id = $1", target_id)
@@ -1506,7 +1506,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(context.args[0])
     except ValueError:
-        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Invalid User ID.", reply_to_message_id=msg_id)
 
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
@@ -2315,7 +2315,7 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-# /kno Command Implementation (Removed Main Group Restriction & Added 30s Cooldown)
+# /kno Command Implementation (Removed Play Friends button, kept Single only)
 @restricted_command
 async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2338,20 +2338,12 @@ async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     kno_cooldowns[user.id] = now
 
-    text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
-    amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
+    text = "Welcome To KNO SLOT\nChoose Game Mode"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Single 👤", callback_data=f"kno_single_{user.id}")]
+    ])
 
-    keyboard_rows = []
-    row = []
-    for amt in amounts:
-        row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
-        if len(row) == 3:
-            keyboard_rows.append(row)
-            row = []
-    if row:
-        keyboard_rows.append(row)
-
-    await msg.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard_rows), reply_to_message_id=msg_id)
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # /kbox Command Implementation (Removed Main Group Restriction)
 @restricted_command
@@ -3339,6 +3331,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
+
+    # /kno single mode selection callback
+    if data.startswith("kno_single_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[2])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not your button! ခေါ်ဆိုသူသာ နှိပ်နိုင်ပါသည်။", show_alert=True)
+
+        text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
+        amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
+
+        keyboard_rows = []
+        row = []
+        for amt in amounts:
+            row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
+            if len(row) == 3:
+                keyboard_rows.append(row)
+                row = []
+        if row:
+            keyboard_rows.append(row)
+
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard_rows))
+        except Exception as e:
+            print(f"Error in kno single callback: {e}")
+        await query.answer()
+        return
 
     # /kno bet amount selection callback
     if data.startswith("kno_bet_"):
