@@ -1352,14 +1352,15 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 13. /spw [card_id] - Spawn random card or specific card
 14. /del [card_id_or_name] - Delete card by ID or Name
 15. /cardlist - View all cards
-16. /glist - View groups list
-17. /stats - View stats
-18. /broadcast - Broadcast message
-19. /check [user_id] - Check user profile info
-20. /mute [id] [time] [reason] - Mute user from bot usage
-21. /ban [id] [reason] - Ban user from bot usage
-22. /umute [id] - Unmute user from bot usage
-23. /unban [id] - Unban user from bot usage"""
+16. /seelock - View Yugen cards lock status and drops (Admin only)
+17. /glist - View groups list
+18. /stats - View stats
+19. /broadcast - Broadcast message
+20. /check [user_id] - Check user profile info
+21. /mute [id] [time] [reason] - Mute user from bot usage
+22. /ban [id] [reason] - Ban user from bot usage
+23. /umute [id] - Unmute user from bot usage
+24. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -2019,7 +2020,7 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_card = await conn.fetchrow("SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2", sender.id, card_id)
         if not user_card or user_card['amount'] <= 0:
-            return await update.message.reply_text(f"❌ You do not own Card ID <code>{card_id}</code> (<b>{card['name']}</b>).", reply_to_message_id=msg_id)
+            return await update.message.reply_text(f"❌ You do not own Card ID <code>{card_id}</code> (<b>{card['name']}</b>).", parse_mode="HTML", reply_to_message_id=msg_id)
 
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
     text = f"""🎁 <b>Kachi Card Gift Transfer</b>
@@ -2251,7 +2252,6 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
             try:
                 await sent_msg.edit_text(step_text.format(name=display_name, bal=current_coins), parse_mode="HTML")
             except Exception:
-                # Prevent hanging or stopping if edit fails or message is not modified
                 pass
 
         await asyncio.sleep(1.2)
@@ -2289,7 +2289,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
-    # 35 seconds cooldown check for /klot
     now = time.time()
     last_klot = klot_cooldowns.get(user.id, 0)
     if now - last_klot < 35:
@@ -2364,7 +2363,6 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
-    # 35 seconds cooldown check for /kbox
     now = time.time()
     last_kbox = kbox_cooldowns.get(user.id, 0)
     if now - last_kbox < 35:
@@ -2502,6 +2500,65 @@ async def cardlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await render_cardlist_page(update, context, page=0, owner_id=update.effective_user.id)
+
+@restricted_command
+async def seelock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await render_seelock_page(update, context, page=0, owner_id=update.effective_user.id)
+
+async def render_seelock_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
+    msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
+    async with db_pool.acquire() as conn:
+        cards = await conn.fetch("SELECT card_id, name, type, rarity, collection, is_locked FROM cards WHERE rarity = 'Yugen' ORDER BY card_id ASC")
+
+    if not cards:
+        text = "🎴 <b>Yugen card list is empty.</b>"
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+        else:
+            return await update_or_query.edit_message_text(text, parse_mode="HTML")
+
+    per_page = 15
+    total_cards = len(cards)
+    total_pages = (total_cards + per_page - 1) // per_page
+
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_page_cards = cards[start_idx:end_idx]
+
+    card_text_list = []
+    async with db_pool.acquire() as conn:
+        for idx, c in enumerate(current_page_cards, start=start_idx + 1):
+            r = c.get('rarity', 'Yugen')
+            r_emoji = get_rarity_emoji(r)
+            lock_str = "🔒 LOCKED" if c.get('is_locked') else "🔓 UNLOCKED"
+            total_drops = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+            card_text_list.append(f"{idx}. {r_emoji} <b>{c['name']}</b> (ID: <code>{c['card_id']}</code>) | {lock_str} | Drops: <b>{total_drops}</b>")
+
+    cards_str = "\n".join(card_text_list)
+
+    text = f"""🎐 <b>Yugen Cards Lock Status (Page {page + 1}/{total_pages})</b>
+
+{cards_str}"""
+
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton("◀️ Back", callback_data=f"seelock_{page - 1}_{owner_id}"))
+    if page < total_pages - 1:
+        buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"seelock_{page + 1}_{owner_id}"))
+
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
+    if isinstance(update_or_query, Update):
+        await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+    else:
+        query = update_or_query
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
 
 async def render_cardlist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
@@ -2825,11 +2882,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dice_val = msg.dice.value
         bet_amount = session["bet_amount"]
 
+        # Wait for animation to finish (Telegram dice animation takes ~3 seconds)
+        await asyncio.sleep(3.0)
+
         # Decode dice value (1-64) into 3 reels (0 to 3)
         v = dice_val - 1
         r1 = v // 16
         r2 = (v // 4) % 4
         r3 = v % 4
+
+        slot_emojis = ["🍇", "🍋", "🔔", "7️⃣"]
+        e1 = slot_emojis[r1]
+        e2 = slot_emojis[r2]
+        e3 = slot_emojis[r3]
+        emojis_display = f"{e1} {e2} {e3}"
 
         def get_symbol_points(sym):
             if sym == 3:
@@ -2870,6 +2936,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text_final = f"""Player Name - {get_mention(user.id, display_name)}
      ID - <code>{user.id}</code>
 Bet Amount - <b>{bet_amount}</b> Kachi
+Slot Emojis - {emojis_display}
+Score - {total_score}
       Result - {result_label} (+{payout} Kachi)
 Kachi Balance - <b>{new_balance}</b> Kachi"""
 
@@ -4010,6 +4078,20 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         await query.answer()
         return
 
+    if data.startswith("seelock_"):
+        parts = data.split("_")
+        page = int(parts[1])
+        owner_id = int(parts[2]) if len(parts) > 2 else None
+
+        if owner_id and user.id != owner_id:
+            return await query.answer("❌ Not your seelock view.", show_alert=True)
+        if user.id != ADMIN_ID:
+            return await query.answer("❌ Admin only.", show_alert=True)
+
+        await render_seelock_page(query, context, page=page, owner_id=owner_id)
+        await query.answer()
+        return
+
 def get_emoji_for_rarity_str(rarity):
     if rarity == 'Yugen':
         return "🎐"
@@ -4053,6 +4135,7 @@ def main():
     app.add_handler(CommandHandler("aa", aa_cmd))
     app.add_handler(CommandHandler("send", send_quiz_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
+    app.add_handler(CommandHandler("seelock", seelock_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("crest", crest_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
