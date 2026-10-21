@@ -1137,7 +1137,7 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 GoodLuck 🍀 Time (50sec)"""
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("𝗝𝗢𝗜𝗡(0/5)", callback_data="join_card_drop")
+        InlineKeyboardButton("𝗝𝗢𝗜N(0/5)", callback_data="join_card_drop")
     ]])
 
     try:
@@ -2315,7 +2315,7 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-# /kno Command Implementation (Removed Play Friends button, kept Single only)
+# /kno Command Implementation (Directly starts with choosing betting amount, restricted to calling user only)
 @restricted_command
 async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2338,10 +2338,20 @@ async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     kno_cooldowns[user.id] = now
 
-    text = "Welcome To KNO SLOT\nChoose Game Mode"
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Single 👤", callback_data=f"kno_single_{user.id}")]
-    ])
+    text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
+    amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
+
+    keyboard_rows = []
+    row = []
+    for amt in amounts:
+        row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
+        if len(row) == 3:
+            keyboard_rows.append(row)
+            row = []
+    if row:
+        keyboard_rows.append(row)
+
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
@@ -3331,33 +3341,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
-
-    # /kno single mode selection callback
-    if data.startswith("kno_single_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[2])
-        if user.id != allowed_uid:
-            return await query.answer("❌ This is not your button! ခေါ်ဆိုသူသာ နှိပ်နိုင်ပါသည်။", show_alert=True)
-
-        text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
-        amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
-
-        keyboard_rows = []
-        row = []
-        for amt in amounts:
-            row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
-            if len(row) == 3:
-                keyboard_rows.append(row)
-                row = []
-        if row:
-            keyboard_rows.append(row)
-
-        try:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard_rows))
-        except Exception as e:
-            print(f"Error in kno single callback: {e}")
-        await query.answer()
-        return
 
     # /kno bet amount selection callback
     if data.startswith("kno_bet_"):
