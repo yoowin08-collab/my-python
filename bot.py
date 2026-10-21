@@ -24,7 +24,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
-# Main Group Link for /kbox, /klot, /kdaily, /kno, and /pre restriction
+# Main Group Link for /kbox, /klot, /kdaily, and /pre restriction
 MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
 
 # Global Memory Stores (Non-blocking per user/action)
@@ -38,12 +38,12 @@ pending_kachi_transfers = {}
 pending_card_buys = {}
 active_kbox_users = set()  # Track ongoing Kbox sessions per user
 kshop_prices = {}  # Track shop card prices per user session
-active_kno_sessions = {}  # Track ongoing /kno slot sessions
 
-# Cooldown Stores for /klot, /kbox, and /kno (35s / 30s rules)
+# Cooldown Stores for /klot, /kbox, and /kslot (30s-35s rules)
 klot_cooldowns = {}
 kbox_cooldowns = {}
-kno_cooldowns = {}
+kslot_cooldowns = {}
+active_kslot_spins = {}  # Track pending slot spin replies
 
 global_default_threshold = 60
 bot_warned_groups = set()
@@ -435,7 +435,7 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
             return False
     return True
 
-# /pre Command Implementation (Removed Main Group Restriction)
+# /pre Command Implementation
 @restricted_command
 async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1137,7 +1137,7 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 GoodLuck 🍀 Time (50sec)"""
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("𝗝𝗢𝗜N(0/5)", callback_data="join_card_drop")
+        InlineKeyboardButton("𝗝𝗢𝗜𝗡(0/5)", callback_data="join_card_drop")
     ]])
 
     try:
@@ -2271,7 +2271,7 @@ Kachi Balance: {new_balance}
     finally:
         pass
 
-# /klot Command Implementation (Removed Main Group Restriction)
+# /klot Command Implementation
 @restricted_command
 async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2315,9 +2315,10 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-# /kno Command Implementation (Directly starts with choosing betting amount, restricted to calling user only)
+
+# --- /kslot Command Implementation ---
 @restricted_command
-async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -2327,35 +2328,66 @@ async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     now = time.time()
-    last_kno = kno_cooldowns.get(user.id, 0)
-    if now - last_kno < 30:
-        remaining = int(30 - (now - last_kno))
+    last_kslot = kslot_cooldowns.get(user.id, 0)
+    if now - last_kslot < 30:
+        remaining = int(30 - (now - last_kslot))
         return await msg.reply_text(
-            f"⏳ မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ /kno ကို တစ်ပွဲပြီးလျှင် <b>30 စက္ကန့်</b> စောင့်ဆိုင်းပေးပါ။\n"
+            f"⏳ မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ /kslot ကို တစ်ပွဲပြီးလျှင် <b>30 စက္ကန့်</b> စောင့်ဆိုင်းပေးပါ။\n"
             f"⏱ ကျန်ရှိသောအချိန်: <b>{remaining}s</b>",
             parse_mode="HTML",
             reply_to_message_id=msg_id
         )
-    kno_cooldowns[user.id] = now
 
-    text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
     amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
-
     keyboard_rows = []
     row = []
     for amt in amounts:
-        row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
-        if len(row) == 3:
+        row.append(InlineKeyboardButton(f"{amt} Kachi 🩸", callback_data=f"kslot_bet_{user.id}_{amt}"))
+        if len(row) == 2:
             keyboard_rows.append(row)
             row = []
     if row:
         keyboard_rows.append(row)
 
-    keyboard = InlineKeyboardMarkup(keyboard_rows)
+    text = f"""🎰 <b>Kachi Slot Machine Game</b>
 
-    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+👤 Player: {get_mention(user.id, user.first_name)}
+👇 ကျေးဇူးပြု၍ ဂိမ်းစတင်ရန် လောင်းကြေးပမာဏ (Betting Amount) ကို ရွေးချယ်ပါ -"""
 
-# /kbox Command Implementation (Removed Main Group Restriction)
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard_rows), reply_to_message_id=msg_id)
+
+
+def decode_slot_dice(value):
+    # Telegram slot dice value (1-64)
+    idx = value - 1
+    d1 = idx // 16
+    d2 = (idx // 4) % 4
+    d3 = idx % 4
+
+    symbols = []
+    total_score = 0
+
+    for d in [d1, d2, d3]:
+        if d == 3:
+            s_name = "7"
+            s_score = random.randint(11, 12)
+        elif d == 2:
+            s_name = "🍋"
+            s_score = random.randint(9, 10)
+        elif d == 1:
+            s_name = "🍇"
+            s_score = random.randint(7, 8)
+        else:
+            s_name = "BAR"
+            s_score = random.randint(6, 7)
+        symbols.append(s_name)
+        total_score += s_score
+
+    return symbols, total_score
+# -------------------------------------
+
+
+# /kbox Command Implementation
 @restricted_command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2871,88 +2903,58 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, chat, context)
 
-    # Check for active /kno slot spin replay
-    if msg.reply_to_message and msg.reply_to_message.message_id in active_kno_sessions:
-        session = active_kno_sessions[msg.reply_to_message.message_id]
-        if user.id != session["user_id"]:
-            return await msg.reply_text("❌ This is not your slot game session.", reply_to_message_id=msg.message_id)
-
-        if not msg.dice or msg.dice.emoji != '🎰':
-            return await msg.reply_text("❌ ကျေးဇူးပြု၍ 🎰 slot animation (dice) ကိုသာ ပို့ပေးပါ။", reply_to_message_id=msg.message_id)
-
-        del active_kno_sessions[msg.reply_to_message.message_id]
+    # --- Check for Slot Spin Reply ---
+    if msg.reply_to_message and msg.reply_to_message.message_id in active_kslot_spins:
+        spin_info = active_kslot_spins[msg.reply_to_message.message_id]
+        if msg.from_user.id != spin_info["user_id"]:
+            return await msg.reply_text("❌ This is not your slot spin reply!", reply_to_message_id=msg.message_id)
+        
+        if not msg.dice or msg.dice.emoji != "🎰":
+            return await msg.reply_text("❌ ကျေးဇူးပြု၍ Telegram Emoji ထဲမှ 🎰 (Slot Machine) Animation ကို Reply အဖြစ် ပို့ပေးပါ။", reply_to_message_id=msg.message_id)
+        
+        del active_kslot_spins[msg.reply_to_message.message_id]
+        kslot_cooldowns[user.id] = time.time()
 
         dice_val = msg.dice.value
-        bet_amount = session["bet_amount"]
+        symbols, score = decode_slot_dice(dice_val)
+        bet_amount = spin_info["bet_amount"]
+        user_id = spin_info["user_id"]
+        display_name = spin_info["display_name"]
 
-        # Wait for animation to finish (Telegram dice animation takes ~3 seconds)
-        await asyncio.sleep(3.0)
-
-        # Decode dice value (1-64) into 3 reels (0 to 3)
-        v = dice_val - 1
-        r1 = v // 16
-        r2 = (v // 4) % 4
-        r3 = v % 4
-
-        # Fixed slot emoji mapping (0: BAR, 1: 🍇, 2: 🍋, 3: 7)
-        slot_emojis = ["BAR", "🍇", "🍋", "7"]
-        e1 = slot_emojis[r1]
-        e2 = slot_emojis[r2]
-        e3 = slot_emojis[r3]
-        emojis_display = f"{e1} {e2} {e3}"
-
-        def get_symbol_points(sym):
-            if sym == 3:
-                return random.randint(11, 12)  # 7
-            elif sym == 2:
-                return random.randint(9, 10)   # သံပုရာသီး (Lemon)
-            elif sym == 1:
-                return random.randint(7, 8)    # စပျစ်သီး (Grapes)
-            else:
-                return random.randint(6, 7)    # Bar
-
-        total_score = get_symbol_points(r1) + get_symbol_points(r2) + get_symbol_points(r3)
-
-        if total_score >= 32:
-            multiplier = 2.0
-            result_label = "Win (2x)"
-        elif 28 <= total_score <= 31:
-            multiplier = 1.5
-            result_label = "Win (1.5x)"
-        elif 26 <= total_score <= 27:
-            multiplier = 1.0
-            result_label = "Draw / Refund (1x)"
+        if score >= 32:
+            payout = bet_amount * 3  # Return bet + 2x profit
+            result_type = "Win 2x 🏆"
+            net_gain = f"+{bet_amount * 2}"
+        elif score >= 28:
+            payout = int(bet_amount * 2.5)  # Return bet + 1.5x profit
+            result_type = "Win 1.5x ✨"
+            net_gain = f"+{int(bet_amount * 1.5)}"
+        elif score >= 26:
+            payout = bet_amount  # Refund 1x
+            result_type = "Draw / Refund 1x 🤝"
+            net_gain = "0"
         else:
-            multiplier = 0.0
-            result_label = "Loss"
-
-        payout = int(bet_amount * multiplier)
+            payout = 0
+            result_type = "Loss 0x 💔"
+            net_gain = f"-{bet_amount}"
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", user.id)
-                current_coins = user_row['coins'] if user_row else 1000
-                display_name = user_row['name'] if user_row else user.first_name
+                await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", payout, user_id)
+                updated_user = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
+                new_balance = updated_user['coins'] if updated_user else payout
 
-                new_balance = max(0, current_coins - bet_amount + payout)
-                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
+        sym_str = " | ".join(symbols)
+        result_text = f"""🎰 <b>Kachi Slot Machine Result</b>
 
-        result_text_final = f"""Player Name - {get_mention(user.id, display_name)}
-     ID - <code>{user.id}</code>
-Bet Amount - <b>{bet_amount}</b> Kachi
-Slot Emojis - {emojis_display}
-Score - {total_score}
-      Result - {result_label} (+{payout} Kachi)
-Kachi Balance - <b>{new_balance}</b> Kachi"""
+👤 Player: {get_mention(user_id, display_name)}
+🎲 Symbols: <b>{sym_str}</b>
+📊 Score: <b>{score}</b>
+🎯 Result: <b>{result_type}</b> ({net_gain} Kachi)
+💰 Current Balance: <b>{new_balance}</b> Kachi ✨"""
 
-        try:
-            await msg.reply_to_message.edit_text(result_text_final, parse_mode="HTML")
-        except Exception:
-            try:
-                await msg.reply_text(result_text_final, parse_mode="HTML", reply_to_message_id=msg.message_id)
-            except Exception:
-                pass
-        return
+        return await msg.reply_text(result_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+    # ---------------------------------
 
     if chat.type == "private":
         has_pending = user.id in pending_kachi_transfers
@@ -3342,35 +3344,42 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
-    # /kno bet amount selection callback
-    if data.startswith("kno_bet_"):
+    # --- Callbacks for /kslot ---
+    if data.startswith("kslot_bet_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
         bet_amount = int(parts[3])
 
         if user.id != allowed_uid:
-            return await query.answer("❌ This is not your button! ခေါ်ဆိုသူသာ နှိပ်နိုင်ပါသည်။", show_alert=True)
+            return await query.answer("❌ This is not your game! Please use /kslot to start your own game.", show_alert=True)
 
         async with db_pool.acquire() as conn:
-            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
-            current_coins = user_row['coins'] if user_row else 1000
+            async with conn.transaction():
+                user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", user.id)
+                current_coins = user_row['coins'] if user_row else 1000
+                display_name = user_row['name'] if user_row else user.first_name
 
-        if current_coins < bet_amount:
-            return await query.answer(f"❌ Insufficient Kachi balance! Current balance: {current_coins} Kachi.", show_alert=True)
+                if current_coins < bet_amount:
+                    return await query.answer(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", show_alert=True)
 
-        prompt_text = "Now You Spin To Slot 🎰 with Replay"
+                new_balance = current_coins - bet_amount
+                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user.id)
+
         try:
-            sent_msg = await query.edit_message_text(prompt_text, parse_mode="HTML", reply_markup=None)
-            active_kno_sessions[sent_msg.message_id] = {
+            sent_msg = await query.edit_message_text(
+                f"Now You Spin To Slot 🎰 with Replay\n\n👤 Player: {get_mention(user.id, display_name)}\n🩸 Bet Amount: <b>{bet_amount}</b> Kachi\n\n<i>👇 ကျေးဇူးပြု၍ ဤစာကို Reply လုပ်၍ Telegram Emoji ထဲမှ 🎰 (Slot Machine) ကို ပို့ပေးပါ။</i>",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+            active_kslot_spins[sent_msg.message_id] = {
                 "user_id": user.id,
-                "display_name": user.first_name,
                 "bet_amount": bet_amount,
-                "chat_id": chat_id
+                "display_name": display_name
             }
-        except Exception as e:
-            print(f"Error in kno bet callback: {e}")
-        await query.answer()
-        return
+        except Exception:
+            pass
+        return await query.answer("🎯 Slot spin ready! Please reply with 🎰 emoji.")
+    # ----------------------------
 
     if data.startswith("buy_confirm_"):
         parts = data.split("_")
@@ -4125,7 +4134,7 @@ def main():
     app.add_handler(CommandHandler("kshop", kshop_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
-    app.add_handler(CommandHandler("kno", kno_cmd))
+    app.add_handler(CommandHandler("kslot", kslot_cmd))  # <-- Newly added command handler
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("kdaily", kdaily_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
