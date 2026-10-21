@@ -123,6 +123,17 @@ async def init_db():
                 amount INT DEFAULT 1,
                 PRIMARY KEY (user_id, card_id)
             );
+            CREATE TABLE IF NOT EXISTS redeem_codes (
+                code TEXT PRIMARY KEY,
+                amount BIGINT,
+                max_uses INT,
+                claimed_count INT DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS code_claims (
+                code TEXT,
+                user_id BIGINT,
+                PRIMARY KEY (code, user_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
             CREATE INDEX IF NOT EXISTS idx_user_cards_card_id ON user_cards(card_id);
             CREATE INDEX IF NOT EXISTS idx_group_members_chat_user ON group_members(chat_id, user_id);
@@ -967,6 +978,84 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @restricted_command
+async def kcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if len(context.args) < 3:
+        return await msg.reply_text("❌ Usage: `/kcode [code] [kachiamount] [user_count]`\nဥပမာ: `/kcode LDJK 2000 5`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    code = context.args[0].strip()
+    try:
+        amount = int(context.args[1])
+        max_uses = int(context.args[2])
+    except ValueError:
+        return await msg.reply_text("❌ ကျေးဇူးပြု၍ ကာချီပမာဏနှင့် လူအရေအတွက်ကို နံပတ်ဖြင့် မှန်ကန်စွာ ထည့်သွင်းပါ။", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO redeem_codes (code, amount, max_uses, claimed_count)
+            VALUES ($1, $2, $3, 0)
+            ON CONFLICT (code) DO UPDATE SET amount = EXCLUDED.amount, max_uses = EXCLUDED.max_uses
+        """, code, amount, max_uses)
+
+    await update.message.reply_text(
+        f"✅ <b>Redeem Code Created Successfully!</b>\n\n"
+        f"🔑 Code: <code>{code}</code>\n"
+        f"💎 Kachi Amount: <b>{amount}</b>\n"
+        f"👥 Max Uses: <b>{max_uses}</b> users",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
+@restricted_command
+async def kredeem_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/kredeem [code]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    code = context.args[0].strip()
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            code_row = await conn.fetchrow("SELECT amount, max_uses, claimed_count FROM redeem_codes WHERE code = $1 FOR UPDATE", code)
+            if not code_row:
+                return await msg.reply_text("❌ <b>အသုံးမဝင်သော Code ဖြစ်နေပါသည် (သို့မဟုတ်) မရှိပါ။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            amount = code_row['amount']
+            max_uses = code_row['max_uses']
+            claimed_count = code_row['claimed_count']
+
+            if claimed_count >= max_uses:
+                return await msg.reply_text("❌ <b>ပြည့်သွားပါပြီ!</b> ဤ Redeem Code မှာ သတ်မှတ်ထားသော လူအရေအတွက် ပြည့်သွားပါပြီ။", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            claimed_row = await conn.fetchrow("SELECT 1 FROM code_claims WHERE code = $1 AND user_id = $2", code, user.id)
+            if claimed_row:
+                return await msg.reply_text("❌ သင်သည် ဤ Redeem Code ကို ထုတ်ယူပြီးဖြစ်ပါသည်။", reply_to_message_id=msg_id)
+
+            await conn.execute("INSERT INTO code_claims (code, user_id) VALUES ($1, $2)", code, user.id)
+            await conn.execute("UPDATE redeem_codes SET claimed_count = claimed_count + 1 WHERE code = $1", code)
+            await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", amount, user.id)
+            new_balance = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user.id)
+
+    await msg.reply_text(
+        f"🎁 <b>Redeem Successful!</b>\n\n"
+        f"👤 User: {get_mention(user.id, user.first_name)}\n"
+        f"💎 Reward: <b>+{amount} Kachi</b> 🩸\n"
+        f"💰 Current Balance: <b>{new_balance}</b> Kachi ✨",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
+@restricted_command
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1360,7 +1449,8 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 21. /mute [id] [time] [reason] - Mute user from bot usage
 22. /ban [id] [reason] - Ban user from bot usage
 23. /umute [id] - Unmute user from bot usage
-24. /unban [id] - Unban user from bot usage"""
+24. /unban [id] - Unban user from bot usage
+25. /kcode [code] [amount] [count] - Create Redeem Code"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -2315,7 +2405,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-# /kno Command Implementation (Allowed in all groups now with 30s cooldown and Single vs Play Friends options)
 @restricted_command
 async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2908,7 +2997,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "score": total_score
             }
 
-            await msg.reply_text(f"✅ {get_mention(user.id, user.first_name)} rolled: {emojis_display} (Score: {total_score})", parse_mode="HTML", reply_to_message_id=msg.message_id)
+            try:
+                await msg.delete()
+            except Exception:
+                pass
 
             # Check if all players have rolled
             if len(session["rolls"]) >= len(session["players"]):
@@ -2936,12 +3028,28 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await msg.reply_to_message.edit_text(final_summary_text, parse_mode="HTML")
                 except Exception:
-                    try:
-                        await msg.reply_text(final_summary_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
-                    except Exception:
-                        pass
+                    pass
 
                 del active_kno_mp_sessions[session_msg_id]
+            else:
+                # Live list update in the replied message
+                rolls_data = session["rolls"]
+                max_p = session["max_players"]
+                live_lines = [f"🎰 <b>Kno Multiplayer Live List</b> (Rolled: {len(rolls_data)}/{max_p})\n"]
+                for uid, rdata in rolls_data.items():
+                    live_lines.append(f"• {get_mention(uid, rdata['name'])}: {rdata['emojis']} (Score: {rdata['score']})")
+                
+                pending_uids = [uid for uid in session["players"] if uid not in rolls_data]
+                if pending_uids:
+                    live_lines.append("\n<b>Waiting for:</b>")
+                    for uid in pending_uids:
+                        live_lines.append(f"• {get_mention(uid, session['players'][uid])} (spinning...)")
+
+                live_text = "\n".join(live_lines)
+                try:
+                    await msg.reply_to_message.edit_text(live_text, parse_mode="HTML")
+                except Exception:
+                    pass
             return
 
     # Check for active /kno slot spin replay
@@ -4342,6 +4450,7 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
+    app.add_handler(CommandHandler("kredeem", kredeem_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
@@ -4364,6 +4473,7 @@ def main():
     app.add_handler(CommandHandler("spw", spw_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
+    app.add_handler(CommandHandler("kcode", kcode_cmd))
 
     # Bot-level Moderation Commands
     app.add_handler(CommandHandler("mute", mute_cmd))
