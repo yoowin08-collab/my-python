@@ -24,7 +24,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7940553702"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "@beyondpoe")
 
-# Main Group Link for /kbox, /klot, /kdaily, /kno, and /pre restriction
+# Main Group Link for /kdaily restriction
 MAIN_GROUP_LINK = "https://t.me/Kachi_sGroup"
 
 # Global Memory Stores (Non-blocking per user/action)
@@ -39,10 +39,12 @@ pending_card_buys = {}
 active_kbox_users = set()  # Track ongoing Kbox sessions per user
 kshop_prices = {}  # Track shop card prices per user session
 active_kno_sessions = {}  # Track ongoing /kno slot sessions
+active_kno_mp_sessions = {}  # Track ongoing multiplayer /kno sessions
 
-# Cooldown Stores for /klot and /kbox (35 seconds rule)
+# Cooldown Stores
 klot_cooldowns = {}
 kbox_cooldowns = {}
+kno_cooldowns = {}
 
 global_default_threshold = 60
 bot_warned_groups = set()
@@ -434,11 +436,9 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
             return False
     return True
 
-# /pre Command Implementation
+# /pre Command Implementation (Allowed in all groups now)
 @restricted_command
 async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_main_group_restriction(update, context):
-        return
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -1854,7 +1854,6 @@ async def set_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Active profile card changed to <b>{has_card['name']}</b> for /kc.", parse_mode="HTML", reply_to_message_id=msg_id)
 
-# --- /khmode and /resethmode commands ---
 @restricted_command
 async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1894,9 +1893,7 @@ async def resethmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await conn.execute("UPDATE users SET kc_rarity_mode = NULL WHERE user_id = $1", user.id)
 
     await update.message.reply_text("✅ Reset Successful! /kc တွင် ကတ်အားလုံးကို ပုံမှန်အတိုင်း ပြန်လည်ပြသမည် ဖြစ်ပါသည်။", parse_mode="HTML", reply_to_message_id=msg_id)
-# ----------------------------------------
 
-# --- /kshop Command Implementation ---
 @restricted_command
 async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1988,7 +1985,6 @@ async def render_kshop_card(query, context, user_id, rarity, index):
             await query.edit_message_caption(caption=caption_text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             pass
-# ----------------------------------------
 
 @restricted_command
 async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2278,9 +2274,6 @@ Kachi Balance: {new_balance}
 
 @restricted_command
 async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_main_group_restriction(update, context):
-        return
-
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -2322,11 +2315,9 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-# /kno Command Implementation
+# /kno Command Implementation (Allowed in all groups now with 30s cooldown and Single vs Play Friends options)
 @restricted_command
 async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_main_group_restriction(update, context):
-        return
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -2335,26 +2326,30 @@ async def kno_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
-    text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
-    amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
+    now = time.time()
+    last_kno = kno_cooldowns.get(user.id, 0)
+    if now - last_kno < 30:
+        remaining = int(30 - (now - last_kno))
+        return await msg.reply_text(
+            f"⏳ မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ /kno ကို တစ်ပွဲပြီးလျှင် <b>30 စက္ကန့်</b> စောင့်ဆိုင်းပေးပါ။\n"
+            f"⏱ ကျန်ရှိသောအချိန်: <b>{remaining}s</b>",
+            parse_mode="HTML",
+            reply_to_message_id=msg_id
+        )
+    kno_cooldowns[user.id] = now
 
-    keyboard_rows = []
-    row = []
-    for amt in amounts:
-        row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
-        if len(row) == 3:
-            keyboard_rows.append(row)
-            row = []
-    if row:
-        keyboard_rows.append(row)
+    text = "Welcome To KNO SLOT\nChoose Game Mode"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Single 👤", callback_data=f"kno_mode_single_{user.id}"),
+            InlineKeyboardButton("Play Friends 👥", callback_data=f"kno_mode_mp_{user.id}")
+        ]
+    ])
 
-    await msg.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard_rows), reply_to_message_id=msg_id)
+    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 @restricted_command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_main_group_restriction(update, context):
-        return
-
     if not await check_force_join(update, context):
         return
     user = update.effective_user
@@ -2868,6 +2863,87 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, chat, context)
 
+    # Check for active multiplayer /kno dice reply
+    if msg.reply_to_message and msg.reply_to_message.message_id in active_kno_mp_sessions:
+        session_msg_id = msg.reply_to_message.message_id
+        session = active_kno_mp_sessions.get(session_msg_id)
+
+        if session and session["status"] == "playing":
+            if user.id not in session["players"]:
+                return await msg.reply_text("❌ You are not a participant in this game.", reply_to_message_id=msg.message_id)
+
+            if user.id in session["rolls"]:
+                return await msg.reply_text("❌ You have already sent your slot roll for this game.", reply_to_message_id=msg.message_id)
+
+            if not msg.dice or msg.dice.emoji != '🎰':
+                return await msg.reply_text("❌ ကျေးဇူးပြု၍ 🎰 slot animation (dice) ကိုသာ ပို့ပေးပါ။", reply_to_message_id=msg.message_id)
+
+            dice_val = msg.dice.value
+            v = dice_val - 1
+            r1 = v // 16
+            r2 = (v // 4) % 4
+            r3 = v % 4
+
+            slot_emojis = ["🍇", "🍋", "BAR", "7️⃣"]
+            e1 = slot_emojis[r1]
+            e2 = slot_emojis[r2]
+            e3 = slot_emojis[r3]
+            emojis_display = f"{e1} {e2} {e3}"
+
+            def get_symbol_points(sym):
+                if sym == 3:
+                    return random.randint(11, 12)  # 7️⃣
+                elif sym == 2:
+                    return random.randint(9, 10)   # BAR
+                elif sym == 0:
+                    return random.randint(7, 8)    # 🍇
+                else:
+                    return random.randint(6, 7)    # 🍋
+
+            total_score = get_symbol_points(r1) + get_symbol_points(r2) + get_symbol_points(r3)
+
+            session["rolls"][user.id] = {
+                "name": user.first_name,
+                "emojis": emojis_display,
+                "score": total_score
+            }
+
+            await msg.reply_text(f"✅ {get_mention(user.id, user.first_name)} rolled: {emojis_display} (Score: {total_score})", parse_mode="HTML", reply_to_message_id=msg.message_id)
+
+            # Check if all players have rolled
+            if len(session["rolls"]) >= len(session["players"]):
+                rolls_data = session["rolls"]
+                sorted_rolls = sorted(rolls_data.items(), key=lambda x: x[1]["score"], reverse=True)
+                
+                winner_id, winner_data = sorted_rolls[0]
+                reward_coins = 1000
+
+                async with db_pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.execute("""
+                            UPDATE users SET coins = coins + $1 WHERE user_id = $2
+                        """, reward_coins, winner_id)
+
+                summary_lines = ["🏆 <b>Kno Multiplayer Game Results</b>\n"]
+                for rank, (uid, rdata) in enumerate(sorted_rolls, 1):
+                    medals = ["🥇", "🥈", "🥉"]
+                    prefix = medals[rank-1] if rank <= 3 else f"{rank}."
+                    summary_lines.append(f"{prefix} {get_mention(uid, rdata['name'])} — Emojis: {rdata['emojis']} | Score: <b>{rdata['score']}</b>")
+
+                summary_lines.append(f"\n🎉 <b>Winner:</b> {get_mention(winner_id, winner_data['name'])} (+{reward_coins} Kachi reward!)")
+                final_summary_text = "\n".join(summary_lines)
+
+                try:
+                    await msg.reply_to_message.edit_text(final_summary_text, parse_mode="HTML")
+                except Exception:
+                    try:
+                        await msg.reply_text(final_summary_text, parse_mode="HTML", reply_to_message_id=msg.message_id)
+                    except Exception:
+                        pass
+
+                del active_kno_mp_sessions[session_msg_id]
+            return
+
     # Check for active /kno slot spin replay
     if msg.reply_to_message and msg.reply_to_message.message_id in active_kno_sessions:
         session = active_kno_sessions[msg.reply_to_message.message_id]
@@ -2882,16 +2958,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dice_val = msg.dice.value
         bet_amount = session["bet_amount"]
 
-        # Wait for animation to finish (Telegram dice animation takes ~3 seconds)
         await asyncio.sleep(3.0)
 
-        # Decode dice value (1-64) into 3 reels (0 to 3)
         v = dice_val - 1
         r1 = v // 16
         r2 = (v // 4) % 4
         r3 = v % 4
 
-        slot_emojis = ["🍇", "🍋", "🔔", "7️⃣"]
+        slot_emojis = ["🍇", "🍋", "BAR", "7️⃣"]
         e1 = slot_emojis[r1]
         e2 = slot_emojis[r2]
         e3 = slot_emojis[r3]
@@ -2899,13 +2973,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         def get_symbol_points(sym):
             if sym == 3:
-                return random.randint(11, 12)  # 7
+                return random.randint(11, 12)  # 7️⃣
             elif sym == 2:
-                return random.randint(9, 10)   # သရက်သီး (Lemon)
+                return random.randint(9, 10)   # BAR
             elif sym == 0:
-                return random.randint(7, 8)    # Bar
+                return random.randint(7, 8)    # 🍇
             else:
-                return random.randint(6, 7)    # စပျစ်သီး (Grapes)
+                return random.randint(6, 7)    # 🍋
 
         total_score = get_symbol_points(r1) + get_symbol_points(r2) + get_symbol_points(r3)
 
@@ -3338,7 +3412,147 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
-    # /kno bet amount selection callback
+    # /kno Mode selection callbacks
+    if data.startswith("kno_mode_single_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[3])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not your button!", show_alert=True)
+
+        text = "Welcome To KNO SLOT\nChoose Your Kachi Betting Amount"
+        amounts = [300, 500, 800, 1500, 2500, 4500, 7000]
+
+        keyboard_rows = []
+        row = []
+        for amt in amounts:
+            row.append(InlineKeyboardButton(str(amt), callback_data=f"kno_bet_{user.id}_{amt}"))
+            if len(row) == 3:
+                keyboard_rows.append(row)
+                row = []
+        if row:
+            keyboard_rows.append(row)
+
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard_rows))
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("kno_mode_mp_"):
+        parts = data.split("_")
+        allowed_uid = int(parts[3])
+        if user.id != allowed_uid:
+            return await query.answer("❌ This is not your button!", show_alert=True)
+
+        text = "Choose Player"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("1/2", callback_data=f"kno_mp_set_{user.id}_2"),
+                InlineKeyboardButton("1/3", callback_data=f"kno_mp_set_{user.id}_3"),
+            ],
+            [
+                InlineKeyboardButton("1/5", callback_data=f"kno_mp_set_{user.id}_5"),
+                InlineKeyboardButton("1/7", callback_data=f"kno_mp_set_{user.id}_7"),
+            ]
+        ])
+
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("kno_mp_set_"):
+        parts = data.split("_")
+        host_id = int(parts[3])
+        max_players = int(parts[4])
+
+        if user.id != host_id:
+            return await query.answer("❌ This is not your game setup!", show_alert=True)
+
+        active_kno_mp_sessions[msg_id] = {
+            "host_id": host_id,
+            "host_name": user.first_name,
+            "max_players": max_players,
+            "players": {host_id: user.first_name},
+            "status": "joining"
+        }
+
+        joined_list_str = f"• {get_mention(host_id, user.first_name)}"
+        text = f"Choose Player\nPlayers: 1/{max_players}\n\n<b>Joined Players:</b>\n{joined_list_str}"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"JOIN (1/{max_players}) ✅", callback_data=f"kno_mp_join_{msg_id}")]
+        ])
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("kno_mp_join_"):
+        session_msg_id = int(data.split("_")[3])
+        session = active_kno_mp_sessions.get(session_msg_id)
+
+        if not session or session["status"] != "joining":
+            return await query.answer("❌ This game session is closed or already started.", show_alert=True)
+
+        if user.id in session["players"]:
+            return await query.answer("❌ You have already joined this game!", show_alert=True)
+
+        if len(session["players"]) >= session["max_players"]:
+            return await query.answer("❌ Lobby is already full!", show_alert=True)
+
+        session["players"][user.id] = user.first_name
+        current_count = len(session["players"])
+        max_p = session["max_players"]
+
+        joined_list_str = "\n".join([f"• {get_mention(uid, name)}" for uid, name in session["players"].items()])
+        text = f"Choose Player\nPlayers: {current_count}/{max_p}\n\n<b>Joined Players:</b>\n{joined_list_str}"
+
+        if current_count >= max_p:
+            session["status"] = "ready_to_start"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Start 🚀 (Host Only)", callback_data=f"kno_mp_start_{session_msg_id}")]
+            ])
+        else:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"JOIN ({current_count}/{max_p}) ✅", callback_data=f"kno_mp_join_{session_msg_id}")]
+            ])
+
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
+        await query.answer("✅ Successfully joined the game!")
+        return
+
+    if data.startswith("kno_mp_start_"):
+        session_msg_id = int(data.split("_")[3])
+        session = active_kno_mp_sessions.get(session_msg_id)
+
+        if not session:
+            return await query.answer("❌ Session not found.", show_alert=True)
+
+        if user.id != session["host_id"]:
+            return await query.answer("❌ Only the host who created the game can start it!", show_alert=True)
+
+        session["status"] = "playing"
+        session["rolls"] = {}
+
+        start_text = "Kno Game Started Now\n\n<i>အဲ့စာကို reply ထောက်ပြီး 🎰 (dice) ပို့ပေးပါ။ ပါဝင်သူအားလုံး ပို့ပြီးသည်အထိ စောင့်ဆိုင်းပေးပါ။</i>"
+        try:
+            await query.edit_message_text(start_text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+
+        active_kno_mp_sessions[session_msg_id] = session
+        await query.answer("🚀 Game started! Send 🎰 by replying to this message.")
+        return
+
+    # /kno bet amount selection callback (Single Player)
     if data.startswith("kno_bet_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
@@ -3559,7 +3773,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await query.answer("✅ Rarity mode updated successfully!")
         return
-    # -----------------------------
 
     # --- Callbacks for /kshop ---
     if data.startswith("kshop_rarity_"):
@@ -3644,7 +3857,6 @@ You can buy the highest-tier 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards 
                 pass
         await query.answer()
         return
-    # ----------------------------
 
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
