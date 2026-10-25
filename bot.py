@@ -203,6 +203,12 @@ def get_rarity_emoji(r):
     else:
         return "💮"
 
+def get_rarity_display(r):
+    r_emoji = get_rarity_emoji(r)
+    if r == 'Birthday Special':
+        return r_emoji
+    return f"{r_emoji} {r}"
+
 async def check_and_auto_lock_card(conn, card_id):
     card_info = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
     if card_info and card_info['rarity'] == 'Yugen' and not card_info['is_locked']:
@@ -529,7 +535,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     r = card.get('rarity', 'Ten')
-    r_emoji = get_rarity_emoji(r)
+    r_display = get_rarity_display(r)
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
     if r == 'Shinsei':
@@ -549,7 +555,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🍀 Name - {card['name']}
     🍀  ID - <code>{card['card_id']}</code> 
 
-🌟 Rarity - {r_emoji} {r}
+🌟 Rarity - {r_display}
 📚 Collection - {col_name}
 🩸 Kachi Value ({coin_value})
    🐠 Global Drops - <b>{global_drop_count}</b> 
@@ -964,8 +970,8 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sales_desc_list = []
     for vs in verified_sales:
-        r_emoji = get_rarity_emoji(vs['rarity'])
-        sales_desc_list.append(f"• {r_emoji} {vs['name']} (ID: <code>{vs['card_id']}</code>) — <b>{vs['amount']}x</b> (+{vs['earned']} Kachi)")
+        r_display = get_rarity_display(vs['rarity'])
+        sales_desc_list.append(f"• {r_display} {vs['name']} (ID: <code>{vs['card_id']}</code>) — <b>{vs['amount']}x</b> (+{vs['earned']} Kachi)")
     sales_desc_str = "\n".join(sales_desc_list)
 
     success_receipt = f"""💸 <b>Card Sale Successful!</b>
@@ -1096,10 +1102,10 @@ async def got_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await check_and_auto_lock_card(conn, target_card_id)
 
     r = card.get('rarity', 'Ten')
-    r_emoji = get_rarity_emoji(r)
+    r_display = get_rarity_display(r)
 
     await update.message.reply_text(
-        f"✅ Successfully added card <b>{card['name']}</b> (ID: <code>{card['card_id']}</code>, Rarity: {r_emoji} {r}) to your inventory!",
+        f"✅ Successfully added card <b>{card['name']}</b> (ID: <code>{card['card_id']}</code>, Rarity: {r_display}) to your inventory!",
         parse_mode="HTML",
         reply_to_message_id=msg_id
     )
@@ -1529,7 +1535,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg_id
+        reply_to_message_id=msg.message_id
     )
 
 @restricted_command
@@ -1789,12 +1795,34 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not raw_args:
         return await update.message.reply_text("❌ Usage: Reply to media with `/add [name]` or `/add [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
-    # Check if raw_args is a numeric user_id for Birthday Special card addition (Admin only)
-    if raw_args.isdigit():
+    # Check if raw_args is for Birthday Special card addition (Admin only)
+    is_birthday_add = False
+    target_user_id = None
+    custom_card_id = None
+
+    space_parts = raw_args.split()
+    dot_parts = [p.strip() for p in raw_args.split(".")]
+
+    if raw_args.isdigit() and len(raw_args) >= 8:
+        is_birthday_add = True
+        target_user_id = int(raw_args)
+    elif len(space_parts) == 2 and space_parts[0].isdigit() and space_parts[1].isdigit():
+        p1, p2 = space_parts[0], space_parts[1]
+        if len(p1) >= 8 or len(p2) >= 8:
+            is_birthday_add = True
+            target_user_id = int(p1) if len(p1) >= 8 else int(p2)
+            custom_card_id = p2 if len(p1) >= 8 else p1
+    elif len(dot_parts) == 2 and dot_parts[0].isdigit() and dot_parts[1].isdigit():
+        p1, p2 = dot_parts[0], dot_parts[1]
+        if len(p1) >= 8 or len(p2) >= 8:
+            is_birthday_add = True
+            target_user_id = int(p1) if len(p1) >= 8 else int(p2)
+            custom_card_id = p2 if len(p1) >= 8 else p1
+
+    if is_birthday_add:
         if user.id != ADMIN_ID:
             return await update.message.reply_text("❌ Only the Bot Admin can add Birthday Special cards!", reply_to_message_id=msg_id)
         
-        target_user_id = int(raw_args)
         async with db_pool.acquire() as conn:
             u_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_user_id)
         user_name = u_row['name'] if u_row else "User"
@@ -1805,16 +1833,24 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        card_name = f"{user_name} 🎀ʙɪʀᴛʜᴅᴀʏ sᴘᴇᴄɪᴀʟ🧸"
+        user_mention = get_mention(target_user_id, user_name)
+        card_name = f"{user_mention} 🎀ʙɪʀᴛʜᴅᴀʏ sᴘᴇᴄɪᴀʟ🧸"
         rarity = "Birthday Special"
 
-        async with db_pool.acquire() as conn:
-            while True:
-                rand_id = str(random.randint(1000, 9999))
-                exists = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", rand_id)
-                if not exists:
-                    card_id = rand_id
-                    break
+        if custom_card_id:
+            card_id = custom_card_id
+            async with db_pool.acquire() as conn:
+                existing_c = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", card_id)
+                if existing_c:
+                    return await update.message.reply_text(f"⚠️ Card ID (<code>{card_id}</code>) already exists.", parse_mode="HTML", reply_to_message_id=msg_id)
+        else:
+            async with db_pool.acquire() as conn:
+                while True:
+                    rand_id = str(random.randint(1000, 9999))
+                    exists = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", rand_id)
+                    if not exists:
+                        card_id = rand_id
+                        break
 
         if reply.photo:
             file_id = reply.photo[-1].file_id
@@ -1841,13 +1877,13 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     VALUES ($1, $2, $3, $4, $5, $6, FALSE)
                 """, card_id, card_name, c_type, file_id, rarity, selected_collection)
 
-        r_emoji = get_rarity_emoji(rarity)
+        r_display = get_rarity_display(rarity)
         log_text = f"""New Birthday Special card added successfully
 
 ❀ Card Name : {card_name}
      ❝  ID : {card_id}
 ❀ Type : {c_type.capitalize()}
-🌟 Rarity : {r_emoji} {rarity}
+🌟 Rarity : {r_display}
 📚 Collection : {selected_collection}
 👤 Added By : {get_mention(user.id, user.first_name)}"""
 
@@ -1860,7 +1896,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         return await update.message.reply_text(
-            f"✅ Birthday Special card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_emoji} {rarity}\n📚 Collection: {selected_collection}",
+            f"✅ Birthday Special card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_display}\n📚 Collection: {selected_collection}",
             parse_mode="HTML",
             reply_to_message_id=msg_id
         )
@@ -2088,7 +2124,7 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     async with db_pool.acquire() as conn:
         global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card['card_id'])
 
-    r_emoji = get_rarity_emoji(rarity)
+    r_display = get_rarity_display(rarity)
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
     caption_text = f"""🎗 Card Information ♡
@@ -2097,7 +2133,7 @@ async def render_kshop_card(query, context, user_id, rarity, index):
 🍀 Name - {card['name']}
     🍀  ID - <code>{card['card_id']}</code>
 🎬 Type - {card['type'].upper()}
-🌟 Rarity - {r_emoji} {rarity}
+🌟 Rarity - {r_display}
 📚 Collection - {col_name}
 🩸 Kachi Price - <b>{price}</b>
    🐠 Global Drops - <b>{global_drop_count}</b>
@@ -2242,7 +2278,7 @@ async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, pa
     total_pages = (total_cards + per_page - 1) // per_page if total_cards > 0 else 1
     page = max(0, min(page, total_pages - 1))
 
-    mode_title = f" [{get_rarity_emoji(rarity_mode)} {rarity_mode} Mode]" if rarity_mode else ""
+    mode_title = f" [{get_rarity_display(rarity_mode)} Mode]" if rarity_mode else ""
     text_header = f"""❀ 𝙉𝘼𝙈𝙀 - {get_mention(target_id, display_name)}
 ❀ 𝙂𝙡𝙤𝙗𝙖𝙡 𝙉𝙤 - #{global_rank}
 
@@ -2644,7 +2680,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     results = []
     for c in user_cards:
         r = c.get('rarity', 'Ten')
-        r_emoji = get_rarity_emoji(r)
+        r_display = get_rarity_display(r)
         col_name = c.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
         title = f"{c['name']} ({c['card_id']})"[:64]
         description = f"ID: {c['card_id']} | Rarity: {r}"
@@ -2658,7 +2694,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 ✿ Card Name - <b>{c['name']}</b>{amount_str}
       ☘ ID - <code>{c['card_id']}</code>
-✿ Rarity - {r_emoji} {r}
+✿ Rarity - {r_display}
 ✿ Collection - {col_name}
 
 ⌘ Global Drops - <b>{global_drop_count}</b>"""
@@ -2851,7 +2887,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owners_str = "☛ <i>No owners yet.</i>"
 
     r = card.get('rarity', 'Ten')
-    r_emoji = get_rarity_emoji(r)
+    r_display = get_rarity_display(r)
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
     lock_str = "\n🔒 <b>Status: Locked</b>" if card.get('is_locked') else ""
 
@@ -2878,7 +2914,7 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🍀 Name - {card['name']}
     🍀  ID - <code>{card['card_id']}</code>
 🎬 Type - {card['type'].upper()}
-🌟 Rarity - {r_emoji} {r}
+🌟 Rarity - {r_display}
 📚 Collection - {col_name}{lock_str}
 🩸 Kachi Value ( {coin_value} )
    🐠 Global Drops - <b>{global_drop_count}</b>
@@ -3351,9 +3387,9 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
                 await check_and_auto_lock_card(conn, card['card_id'])
 
         r = card.get('rarity', 'Ten')
-        r_emoji = get_rarity_emoji(r)
+        r_display = get_rarity_display(r)
         col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
-        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_emoji} {r} | Collection: {col_name} ❄ Check /kc 🎗"
+        win_msg = f"⛩ Congratulations , {get_mention(winner_id, winner_name)} Now you got A new Card {card['name']} ID: {card['card_id']} Rarity: {r_display} | Collection: {col_name} ❄ Check /kc 🎗"
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Harem❄", switch_inline_query_current_chat=f"harem.{winner_id}")]
@@ -3416,13 +3452,13 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
                 await check_and_auto_lock_card(conn, card['card_id'])
 
         r = card.get('rarity', 'Ten')
-        r_emoji = get_rarity_emoji(r)
+        r_display = get_rarity_display(r)
         col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
         result_caption = f"""🎉 Congratulations! {get_mention(user_id, display_name)} You got a card!
 Card Name : {card['name']}
 Id : <code>{card['card_id']}</code>
-Rarity : {r_emoji} {r}
+Rarity : {r_display}
 Collection : {col_name}
 
 🔍 Check: /kc
@@ -3720,7 +3756,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
 
-        confirm_text = f"Are You Sure To Set This Rarity On Kc\n\n📌 Selected Rarity: {get_emoji_for_rarity_str(rarity)} {rarity}"
+        confirm_text = f"Are You Sure To Set This Rarity On Kc\n\n📌 Selected Rarity: {get_rarity_display(rarity)}"
         confirm_keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Cancel ❌", callback_data=f"khcancel_{user.id}"),
@@ -3791,7 +3827,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             await query.edit_message_text(
-                f"✅ <b>Successfully set rarity mode to {get_emoji_for_rarity_str(rarity)} {rarity}!</b>\n\nယခုမှစ၍ `/kc` တွင် ဤ Rarity ကတ်များကိုသာ သီးသန့်ပြသပေးမည် ဖြစ်ပါသည်။",
+                f"✅ <b>Successfully set rarity mode to {get_rarity_display(rarity)}!</b>\n\nယခုမှစ၍ `/kc` တွင် ဤ Rarity ကတ်များကိုသာ သီးသန့်ပြသပေးမည် ဖြစ်ပါသည်။",
                 parse_mode="HTML"
             )
         except Exception:
@@ -4117,14 +4153,14 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                         WHERE user_id = $2
                     """, added_reward_coins, user.id)
 
-        r_emoji = get_rarity_emoji(rarity)
+        r_display = get_rarity_display(rarity)
         lock_msg_note = "\n🔒 <i>Status: Locked (Will not drop until /unlock is used)</i>" if is_locked else ""
         log_text = f"""New card added successfully
 
 ❀ Card Name : {card_name}
      ❝  ID : {card_id}
 ❀ Type : {c_type.capitalize()}
-🌟 Rarity : {r_emoji} {rarity}
+🌟 Rarity : {r_display}
 📚 Collection : {selected_collection}{lock_msg_note}
 👤 Added By : {get_mention(user.id, user.first_name)}"""
 
@@ -4139,7 +4175,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         reward_notice = f"\n🎉 Received <b>+{added_reward_coins} Kachi</b> for adding card!" if (is_card_admin and user.id != ADMIN_ID) else ""
         try:
             await query.message.edit_text(
-                f"✅ Card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_emoji} {rarity}\n📚 Collection: {selected_collection}{lock_msg_note}{reward_notice}",
+                f"✅ Card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_display}\n📚 Collection: {selected_collection}{lock_msg_note}{reward_notice}",
                 parse_mode="HTML"
             )
         except Exception:
@@ -4333,22 +4369,6 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         await render_seelock_page(query, context, page=page, owner_id=owner_id)
         await query.answer()
         return
-
-def get_emoji_for_rarity_str(rarity):
-    if rarity == 'Yugen':
-        return "🎐"
-    elif rarity == 'Shinsei':
-        return "🧬"
-    elif rarity == 'Kiwami':
-        return "🪞"
-    elif rarity == 'Kami':
-        return "✨"
-    elif rarity == 'Hoshi':
-        return "⚜️"
-    elif rarity == 'Birthday Special':
-        return "🎀ʙɪʀᴛʜᴅᴀʏ sᴘᴇᴄɪᴀʟ🧸"
-    else:
-        return "💮"
 
 async def post_init(app: Application):
     await init_db()
