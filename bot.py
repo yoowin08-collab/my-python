@@ -198,6 +198,8 @@ def get_rarity_emoji(r):
         return "✨"
     elif r == 'Hoshi':
         return "⚜️"
+    elif r == 'Birthday Special':
+        return "🎀ʙɪʀᴛʜᴅᴀʏ sᴘᴇᴄɪᴀʟ🧸"
     else:
         return "💮"
 
@@ -359,9 +361,10 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
-    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE is_locked = FALSE")
+    # Birthday Special cards are excluded from random drops
+    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE is_locked = FALSE AND rarity != 'Birthday Special'")
     if not all_cards:
-        all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards")
+        all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity != 'Birthday Special'")
         if not all_cards:
             return None
     
@@ -489,7 +492,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten')"
                 )
                 if not all_cards:
-                    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards")
+                    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity != 'Birthday Special'")
                     if not all_cards:
                         return await msg.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
 
@@ -903,7 +906,9 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     item_coins_total = 0
                     for _ in range(req_amount):
-                        if rarity == 'Yugen':
+                        if rarity == 'Birthday Special':
+                            item_coins_total += random.randint(4000, 6000)
+                        elif rarity == 'Yugen':
                             item_coins_total += random.randint(4000, 6000)
                         elif rarity == 'Shinsei':
                             item_coins_total += random.randint(300, 500)
@@ -1173,7 +1178,7 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not card:
                 return await update.message.reply_text(f"❌ Card ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
         else:
-            cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection FROM cards")
+            cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection FROM cards WHERE rarity != 'Birthday Special'")
             if not cards:
                 return await update.message.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
             card = random.choice(cards)
@@ -1403,7 +1408,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 7. /badmin [user_id] - Set Card Buyer
 8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
 9. /got [card_id] - Get card directly to your inventory (Admin only)
-10. /add - Add new card (reply to media)
+10. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
 11. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
 12. /lock [card_id/all] - Lock card or all cards
 13. /spw [card_id] - Spawn random card or specific card
@@ -1511,7 +1516,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1524,7 +1529,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1548,7 +1553,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1778,12 +1783,89 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = update.message.reply_to_message
     if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]` or `/add [id].[name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]` or `/add [user_id]` (for Birthday Special)", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     raw_args = update.message.text.partition(" ")[2].strip()
     if not raw_args:
-        return await update.message.reply_text("❌ Usage: Reply to media with `/add [name]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Usage: Reply to media with `/add [name]` or `/add [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
+    # Check if raw_args is a numeric user_id for Birthday Special card addition (Admin only)
+    if raw_args.isdigit():
+        if user.id != ADMIN_ID:
+            return await update.message.reply_text("❌ Only the Bot Admin can add Birthday Special cards!", reply_to_message_id=msg_id)
+        
+        target_user_id = int(raw_args)
+        async with db_pool.acquire() as conn:
+            u_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_user_id)
+        user_name = u_row['name'] if u_row else "User"
+        try:
+            chat_obj = await context.bot.get_chat(target_user_id)
+            if chat_obj.first_name:
+                user_name = chat_obj.first_name
+        except Exception:
+            pass
+
+        card_name = f"{user_name} 🎀ʙɪʀᴛʜᴅᴀʏ sᴘᴇᴄɪᴀʟ🧸"
+        rarity = "Birthday Special"
+
+        async with db_pool.acquire() as conn:
+            while True:
+                rand_id = str(random.randint(1000, 9999))
+                exists = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", rand_id)
+                if not exists:
+                    card_id = rand_id
+                    break
+
+        if reply.photo:
+            file_id = reply.photo[-1].file_id
+            c_type = "photo"
+        else:
+            file_id = reply.video.file_id
+            c_type = "video"
+
+        collections_list = [
+            "🎞 Ope Ope No Mi [ 🩺]",
+            "🎞 Hito Hito No Mi [🌕]",
+            "🎞 Mera Mera No Mi [🔥]",
+            "🎞 Hana Hana No Mi [🌸]",
+            "🎞 Yomi Yomi No Mi [💀]",
+            "🎞 Tori Tori No Mi [🦅]",
+            "🎞 Yami Yami No Mi [🌑]"
+        ]
+        selected_collection = random.choice(collections_list)
+
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("""
+                    INSERT INTO cards (card_id, name, type, file_id, rarity, collection, is_locked)
+                    VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+                """, card_id, card_name, c_type, file_id, rarity, selected_collection)
+
+        r_emoji = get_rarity_emoji(rarity)
+        log_text = f"""New Birthday Special card added successfully
+
+❀ Card Name : {card_name}
+     ❝  ID : {card_id}
+❀ Type : {c_type.capitalize()}
+🌟 Rarity : {r_emoji} {rarity}
+📚 Collection : {selected_collection}
+👤 Added By : {get_mention(user.id, user.first_name)}"""
+
+        try:
+            if c_type == "photo":
+                await context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML")
+            else:
+                await context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML")
+        except Exception:
+            pass
+
+        return await update.message.reply_text(
+            f"✅ Birthday Special card added successfully!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_emoji} {rarity}\n📚 Collection: {selected_collection}",
+            parse_mode="HTML",
+            reply_to_message_id=msg_id
+        )
+
+    # Regular card add flow
     card_id = None
     card_name = None
 
@@ -1933,6 +2015,9 @@ async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
             InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
+        ],
+        [
+            InlineKeyboardButton("🎀 Birthday Special", callback_data=f"khset_{user.id}_Birthday Special")
         ]
     ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
@@ -1962,14 +2047,15 @@ async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     text = f"""Hello {user.first_name}
-You can buy the highest-tier 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+You can buy the highest-tier 🎀Birthday Special / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen"),
-            InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei")
+            InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
+            InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen")
         ],
         [
+            InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei"),
             InlineKeyboardButton("🪞 Kiwami", callback_data=f"kshop_rarity_{user.id}_Kiwami")
         ]
     ])
@@ -1987,7 +2073,9 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     
     price_key = (user_id, card['card_id'])
     if price_key not in kshop_prices:
-        if rarity == 'Kiwami':
+        if rarity == 'Birthday Special':
+            kshop_prices[price_key] = random.randint(8000, 10000)
+        elif rarity == 'Kiwami':
             kshop_prices[price_key] = random.randint(2500, 3000)
         elif rarity == 'Shinsei':
             kshop_prices[price_key] = random.randint(4000, 5500)
@@ -2767,7 +2855,9 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
     lock_str = "\n🔒 <b>Status: Locked</b>" if card.get('is_locked') else ""
 
-    if r == 'Yugen':
+    if r == 'Birthday Special':
+        coin_value = "5000-8000"
+    elif r == 'Yugen':
         coin_value = "4000-6000"
     elif r == 'Shinsei':
         coin_value = "2000-3000"
@@ -2987,7 +3077,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             amount = int(text_input)
             if amount <= 0:
-                return await msg.reply_text("❌ Amount must be greater than 0.", reply_to_message_id=msg_id)
+                return await msg.reply_text("❌ Amount must be greater than 0.", reply_to_message_id=msg.message_id)
 
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
@@ -2998,7 +3088,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if sender_coins < amount:
                         if user.id in pending_kachi_transfers:
                             del pending_kachi_transfers[user.id]
-                        return await msg.reply_text(f"❌ Insufficient Kachi balance. (Current: {sender_coins} Kachi)", reply_to_message_id=msg_id)
+                        return await msg.reply_text(f"❌ Insufficient Kachi balance. (Current: {sender_coins} Kachi)", reply_to_message_id=msg.message_id)
 
                     target_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", target_id)
                     target_coins = target_row['coins'] if target_row else 1000
@@ -3625,7 +3715,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("khset_"):
         parts = data.split("_")
         allowed_uid = int(parts[1])
-        rarity = parts[2]
+        rarity = " ".join(parts[2:]) # Support multi-word rarities like 'Birthday Special'
 
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
@@ -3676,6 +3766,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
                 InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
+            ],
+            [
+                InlineKeyboardButton("🎀 Birthday Special", callback_data=f"khset_{user.id}_Birthday Special")
             ]
         ])
         try:
@@ -3688,7 +3781,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("khconfirm_"):
         parts = data.split("_")
         allowed_uid = int(parts[1])
-        rarity = parts[2]
+        rarity = " ".join(parts[2:])
 
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
@@ -3711,7 +3804,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("kshop_rarity_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
-        rarity = parts[3]
+        rarity = " ".join(parts[3:])
 
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
@@ -3723,8 +3816,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("kshop_nav_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
-        rarity = parts[3]
-        target_idx = int(parts[4])
+        # format: kshop_nav_{user_id}_{rarity_words}_{index}
+        # Since rarity can contain spaces ("Birthday Special"), index is the last element
+        target_idx = int(parts[-1])
+        rarity = " ".join(parts[3:-1])
 
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
@@ -3736,9 +3831,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("kshop_buy_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
-        rarity = parts[3]
-        card_id = parts[4]
-        price = int(parts[5])
+        price = int(parts[-1])
+        card_id = parts[-2]
+        rarity = " ".join(parts[3:-2])
 
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
@@ -3771,13 +3866,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.answer("❌ This is not for you!", show_alert=True)
 
         text = f"""Hello {user.first_name}
-You can buy the highest-tier 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+You can buy the highest-tier 🎀Birthday Special / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen"),
-                InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei")
+                InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
+                InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen")
             ],
             [
+                InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei"),
                 InlineKeyboardButton("🪞 Kiwami", callback_data=f"kshop_rarity_{user.id}_Kiwami")
             ]
         ])
@@ -3804,7 +3900,7 @@ You can buy the highest-tier 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards 
         quiz["correct"] = quiz["options"][idx]
         correct_opt = quiz["correct"]
         
-        updated_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{quiz['question']}</b>\n\n✅ <b>အဖြေမှန်ရွေးချယ်ပြီးပါပြီ:</b> <code>{correct_opt}</code>\n\n<i>ယခု `/send` ဖြင့် group များသို့ ပို့နိုင်ပါပြီ။</i>"
+        updated_text = f"❓ <b>Trivia Quiz Preview</b>\n\n<b>{quiz['question']}</b>\n\n✅ <b>အဖြေမှန်ရွေးချယ်ပြီးပါပြီ:</b> <code>{correct_opt}</code>\n\n<i>ယခုထုတ်လွှင့်ရန် `/send` ကို အသုံးပြုနိုင်ပါပြီ။</i>"
         
         keyboard = []
         for o_idx, opt in enumerate(quiz["options"]):
@@ -4249,6 +4345,8 @@ def get_emoji_for_rarity_str(rarity):
         return "✨"
     elif rarity == 'Hoshi':
         return "⚜️"
+    elif rarity == 'Birthday Special':
+        return "🎀ʙɪʀᴛʜᴅᴀʏ sᴘᴇᴄɪᴀʟ🧸"
     else:
         return "💮"
 
@@ -4266,7 +4364,7 @@ def main():
     app.add_handler(CommandHandler("resethmode", resethmode_cmd))
     app.add_handler(CommandHandler("kshop", kshop_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
-    app.add_handler(CommandHandler("myre", myre_cmd))  # <-- Newly added /myre command handler
+    app.add_handler(CommandHandler("myre", myre_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("kslot", kslot_cmd))  
     app.add_handler(CommandHandler("kbox", kbox_cmd))
