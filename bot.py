@@ -6,7 +6,7 @@ import string
 import time
 import uuid
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions, WebAppInfo
 from telegram.error import TelegramError, NetworkError, TimedOut
 from telegram.ext import (
     Application,
@@ -17,6 +17,12 @@ from telegram.ext import (
     filters,
     InlineQueryHandler,
 )
+
+# FastAPI imports for Rocket Mini App API
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import threading
 
 # Environment Variables
 TOKEN = os.getenv("BOT_TOKEN", "8617814117:AAGbTDFaabbt2RUuHSPQDqT9S6WZqiNosvM")
@@ -59,6 +65,56 @@ seen_registered_groups = set()
 
 # Database Connection Pool (Optimized for High Concurrency - Thousands of Users)
 db_pool = None
+
+# FastAPI App for Rocket Mini App
+web_app = FastAPI()
+
+web_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@web_app.get("/api/balance/{user_id}")
+async def get_user_balance(user_id: int):
+    if not db_pool:
+        raise HTTPException(status_code=500, detail="Database not ready")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1", user_id)
+        if not row:
+            return {"coins": 1000, "name": "User"}
+        return {"coins": row['coins'], "name": row['name']}
+
+@web_app.post("/api/play")
+async def play_rocket_game(data: dict):
+    user_id = data.get("user_id")
+    bet_amount = data.get("bet_amount", 1000)
+    win_amount = data.get("win_amount", 0)
+
+    if not db_pool:
+        raise HTTPException(status_code=500, detail="Database not ready")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+            if not user_row:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            current_coins = user_row['coins']
+            
+            if current_coins < bet_amount:
+                return {"success": False, "message": "Insufficient Kachi balance", "coins": current_coins}
+
+            new_coins = current_coins - bet_amount + win_amount
+            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user_id)
+
+            return {"success": True, "coins": new_coins}
+
+def run_fastapi():
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(web_app, host="0.0.0.0", port=port)
 
 async def init_db():
     global db_pool, global_default_threshold
@@ -439,6 +495,27 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
                 pass
             return False
     return True
+
+# Rocket Mini App Command
+@restricted_command
+async def rocket_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    
+    # Vercel မှာ တင်ထားတဲ့ သင့် Mini App ရဲ့ URL ကို ထည့်ပါ
+    web_app_url = "https://your-rocket-app.vercel.app" 
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Rocket Game ဖွင့်မည်", web_app=WebAppInfo(url=web_app_url))]
+    ])
+    
+    await msg.reply_text(
+        f"🎮 မင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊\n"
+        f"Kachi Coin တွေနဲ့ တိုက်ရိုက်ကစားလို့ရတဲ့ Rocket Mini App ကို အောက်ပါခလုတ်ကနေ ဝင်ရောက်ဆော့ကစားနိုင်ပါပြီောင်!",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+        reply_to_message_id=msg.message_id
+    )
 
 # /pre Command Implementation
 @restricted_command
@@ -1524,7 +1601,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1548,7 +1625,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1569,7 +1646,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         if not user_row:
-            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         coins = user_row['coins'] or 1000
         selected_card_id = user_row['selected_card_id']
@@ -2987,7 +3064,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             amount = int(text_input)
             if amount <= 0:
-                return await msg.reply_text("❌ Amount must be greater than 0.", reply_to_message_id=msg_id)
+                return await msg.reply_text("❌ Amount must be greater than 0.", reply_to_message_id=msg.message_id)
 
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
@@ -2998,7 +3075,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if sender_coins < amount:
                         if user.id in pending_kachi_transfers:
                             del pending_kachi_transfers[user.id]
-                        return await msg.reply_text(f"❌ Insufficient Kachi balance. (Current: {sender_coins} Kachi)", reply_to_message_id=msg_id)
+                        return await msg.reply_text(f"❌ Insufficient Kachi balance. (Current: {sender_coins} Kachi)", reply_to_message_id=msg.message_id)
 
                     target_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", target_id)
                     target_coins = target_row['coins'] if target_row else 1000
@@ -4256,17 +4333,22 @@ async def post_init(app: Application):
     await init_db()
 
 def main():
+    # FastAPI ကို Background Thread ဖြင့် စတင်ခြင်း (Railway Port အတွက်)
+    api_thread = threading.Thread(target=run_fastapi, daemon=True)
+    api_thread.start()
+
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     # Public User Commands
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("rocket", rocket_cmd)) # <-- Newly added Rocket Mini App command
     app.add_handler(CommandHandler("pre", pre_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
     app.add_handler(CommandHandler("khmode", khmode_cmd))
     app.add_handler(CommandHandler("resethmode", resethmode_cmd))
     app.add_handler(CommandHandler("kshop", kshop_cmd))
     app.add_handler(CommandHandler("kachi", kachi_cmd))
-    app.add_handler(CommandHandler("myre", myre_cmd))  # <-- Newly added /myre command handler
+    app.add_handler(CommandHandler("myre", myre_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("kslot", kslot_cmd))  
     app.add_handler(CommandHandler("kbox", kbox_cmd))
@@ -4310,7 +4392,7 @@ def main():
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), message_handler))
 
-    print("🤖 Python Game Bot Running...")
+    print("🤖 Python Game Bot & Web API Running...")
     app.run_polling()
 
 if __name__ == "__main__":
