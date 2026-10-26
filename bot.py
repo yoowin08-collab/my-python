@@ -188,7 +188,11 @@ async def init_db():
             global_default_threshold = int(thresh_row['value'])
 
 def get_rarity_emoji(r):
-    if r == 'Yugen':
+    if r == 'Raiden':
+        return "📓"
+    elif r == 'Kryora':
+        return "🦠"
+    elif r == 'Yugen':
         return "🎐"
     elif r == 'Shinsei':
         return "🧬"
@@ -376,7 +380,11 @@ async def get_weighted_random_card(conn):
     weights = []
     for c in all_cards:
         r = c.get('rarity', 'Ten')
-        if r == 'Yugen':
+        if r == 'Raiden':
+            weights.append(1)
+        elif r == 'Kryora':
+            weights.append(1)
+        elif r == 'Yugen':
             weights.append(1)
         elif r == 'Shinsei':
             weights.append(1)
@@ -490,11 +498,11 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
             all_cards = await conn.fetch(
-                "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten') AND is_locked = FALSE"
+                "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Raiden', 'Kryora', 'Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten') AND is_locked = FALSE"
             )
             if not all_cards:
                 all_cards = await conn.fetch(
-                    "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten')"
+                    "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Raiden', 'Kryora', 'Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten')"
                 )
                 if not all_cards:
                     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity != 'Birthday Special'")
@@ -504,7 +512,11 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             weights = []
             for c in all_cards:
                 r = c.get('rarity', 'Ten')
-                if r == 'Shinsei':
+                if r == 'Raiden':
+                    weights.append(1)
+                elif r == 'Kryora':
+                    weights.append(1)
+                elif r == 'Shinsei':
                     weights.append(1)
                 elif r == 'Kiwami':
                     weights.append(30)
@@ -537,7 +549,11 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r_display = get_rarity_display(r)
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
-    if r == 'Shinsei':
+    if r == 'Raiden':
+        coin_value = "30000-55000"
+    elif r == 'Kryora':
+        coin_value = "20000-38000"
+    elif r == 'Shinsei':
         coin_value = "2000-3000"
     elif r == 'Kiwami':
         coin_value = "1500-1900"
@@ -913,6 +929,10 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for _ in range(req_amount):
                         if rarity == 'Birthday Special':
                             item_coins_total += random.randint(4000, 6000)
+                        elif rarity == 'Raiden':
+                            item_coins_total += random.randint(30000, 55000)
+                        elif rarity == 'Kryora':
+                            item_coins_total += random.randint(20000, 38000)
                         elif rarity == 'Yugen':
                             item_coins_total += random.randint(4000, 6000)
                         elif rarity == 'Shinsei':
@@ -1545,7 +1565,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1569,7 +1589,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1579,7 +1599,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         if not user_row:
-            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         coins = user_row['coins'] or 1000
         selected_card_id = user_row['selected_card_id']
@@ -1945,6 +1965,10 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("📓 Raiden", callback_data=f"addrarity_{user.id}_Raiden"),
+            InlineKeyboardButton("🦠 Kryora", callback_data=f"addrarity_{user.id}_Kryora")
+        ],
+        [
             InlineKeyboardButton("🎐 Yugen", callback_data=f"addrarity_{user.id}_Yugen"),
             InlineKeyboardButton("🧬 Shinsei", callback_data=f"addrarity_{user.id}_Shinsei")
         ],
@@ -2038,6 +2062,10 @@ async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🎯 <b>Select Rarity Mode for /kc</b>\n\nကျေးဇူးပြု၍ စုပြလိုသော Rarity တစ်ခုကို ရွေးချယ်ပေးပါ -"
     keyboard = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("📓 Raiden", callback_data=f"khset_{user.id}_Raiden"),
+            InlineKeyboardButton("🦠 Kryora", callback_data=f"khset_{user.id}_Kryora")
+        ],
+        [
             InlineKeyboardButton("🎐 Yugen", callback_data=f"khset_{user.id}_Yugen"),
             InlineKeyboardButton("🧬 Shinsei", callback_data=f"khset_{user.id}_Shinsei")
         ],
@@ -2080,11 +2108,15 @@ async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     text = f"""Hello {user.first_name}
-You can buy the highest-tier 🎀Birthday Special / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
 
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
+            InlineKeyboardButton("📓 Raiden", callback_data=f"kshop_rarity_{user.id}_Raiden")
+        ],
+        [
+            InlineKeyboardButton("🦠 Kryora", callback_data=f"kshop_rarity_{user.id}_Kryora"),
             InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen")
         ],
         [
@@ -2108,6 +2140,10 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     if price_key not in kshop_prices:
         if rarity == 'Birthday Special':
             kshop_prices[price_key] = random.randint(8000, 10000)
+        elif rarity == 'Raiden':
+            kshop_prices[price_key] = random.randint(35000, 50000)
+        elif rarity == 'Kryora':
+            kshop_prices[price_key] = random.randint(22000, 35000)
         elif rarity == 'Kiwami':
             kshop_prices[price_key] = random.randint(2500, 3000)
         elif rarity == 'Shinsei':
@@ -2896,6 +2932,10 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if r == 'Birthday Special':
         coin_value = "5000-8000"
+    elif r == 'Raiden':
+        coin_value = "30000-55000"
+    elif r == 'Kryora':
+        coin_value = "20000-38000"
     elif r == 'Yugen':
         coin_value = "4000-6000"
     elif r == 'Shinsei':
@@ -3814,6 +3854,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🎯 <b>Select Rarity Mode for /kc</b>\n\nကျေးဇူးပြု၍ စုပြလိုသော Rarity တစ်ခုကို ရွေးချယ်ပေးပါ -"
         keyboard = InlineKeyboardMarkup([
             [
+                InlineKeyboardButton("📓 Raiden", callback_data=f"khset_{user.id}_Raiden"),
+                InlineKeyboardButton("🦠 Kryora", callback_data=f"khset_{user.id}_Kryora")
+            ],
+            [
                 InlineKeyboardButton("🎐 Yugen", callback_data=f"khset_{user.id}_Yugen"),
                 InlineKeyboardButton("🧬 Shinsei", callback_data=f"khset_{user.id}_Shinsei")
             ],
@@ -3922,10 +3966,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.answer("❌ This is not for you!", show_alert=True)
 
         text = f"""Hello {user.first_name}
-You can buy the highest-tier 🎀Birthday Special / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
+                InlineKeyboardButton("📓 Raiden", callback_data=f"kshop_rarity_{user.id}_Raiden")
+            ],
+            [
+                InlineKeyboardButton("🦠 Kryora", callback_data=f"kshop_rarity_{user.id}_Kryora"),
                 InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen")
             ],
             [
@@ -4126,8 +4174,8 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         if user.id != allowed_uid:
             return await query.answer("❌ Not for you.", show_alert=True)
 
-        if rarity == 'Yugen' and user.id != ADMIN_ID:
-            return await query.answer("❌ Only the Bot Admin can add Yugen rarity cards!", show_alert=True)
+        if rarity in ['Birthday Special', 'Raiden', 'Kryora'] and user.id != ADMIN_ID:
+            return await query.answer(f"❌ Only the Bot Admin can add {rarity} rarity cards!", show_alert=True)
 
         card_info = pending_card_adds.get(user.id)
         if card_info:
@@ -4155,7 +4203,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         file_id = card_info["file_id"]
         is_card_admin = card_info["is_card_admin"]
         
-        is_locked = True if rarity == 'Yugen' else False
+        is_locked = True if rarity == 'Raiden' else False
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
@@ -4164,7 +4212,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                     VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """, card_id, card_name, c_type, file_id, rarity, selected_collection, is_locked)
 
-                added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else (80 if rarity in ["Kiwami", "Kami"] else (120 if rarity == 'Shinsei' else 150))
+                added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else (80 if rarity in ["Kiwami", "Kami"] else (120 if rarity in ['Shinsei', 'Kryora'] else 150))
 
                 if is_card_admin and user.id != ADMIN_ID:
                     await conn.execute("""
