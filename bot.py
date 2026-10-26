@@ -2603,7 +2603,7 @@ def decode_slot_dice(value):
     return symbols, total_score
 
 
-# --- /kshan Command Implementation (Shan Koe Mee Multiplayer) ---
+# --- /kshan Command Implementation (Shan Koe Mee Multiplayer with 30s Timeout & DM Buttons) ---
 CARD_SUITS = ["♠️", "♣️", "♥️", "♦️"]
 CARD_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
@@ -2613,7 +2613,6 @@ def get_random_card():
     return f"{rank}{suit}", rank
 
 def calculate_shan_score(cards_ranks):
-    # Shan Koe Mee scoring: sum of card values modulo 10. J,Q,K = 10 (or 0), A = 1.
     total = 0
     for r in cards_ranks:
         if r in ["J", "Q", "K", "10"]:
@@ -2653,6 +2652,25 @@ async def kshan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 
+async def check_kshan_timeout(bot, range_str, user_id, query_msg_id, chat_id):
+    await asyncio.sleep(30)
+    queue = kshan_queues[range_str]
+    for idx, item in enumerate(queue):
+        if item["id"] == user_id:
+            queue.pop(idx)
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=query_msg_id,
+                    text="❌ <b>30 စက္ကန့်အတွင်း အခြားကစားသမား မတွေ့ရှိသဖြင့် ရှမ်းကိုးမီးပွဲကို ပယ်ဖျက်လိုက်ပါပြီ။</b>",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            break
+
+
 async def start_kshan_game(bot, room_id):
     room = kshan_rooms.get(room_id)
     if not room or room.get("game_started"):
@@ -2663,7 +2681,6 @@ async def start_kshan_game(bot, room_id):
     p2 = room["p2"]
     bet = room["bet"]
 
-    # Deal 2 cards each
     c1_1, r1_1 = get_random_card()
     c1_2, r1_2 = get_random_card()
     room["p1_cards"] = [c1_1, c1_2]
@@ -2674,7 +2691,6 @@ async def start_kshan_game(bot, room_id):
     room["p2_cards"] = [c2_1, c2_2]
     room["p2_ranks"] = [r2_1, r2_2]
 
-    # Send DM to both players
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("ဆွဲမလား 🤏", callback_data=f"kshan_hit_{room_id}"),
@@ -2708,7 +2724,6 @@ async def finalize_kshan_round(bot, room_id):
     p2 = room["p2"]
     bet = room["bet"]
 
-    # Notify 10s wait
     wait_text = "⏳ <b>နှစ်ယောက်လုံး ရွေးချယ်ပြီးပါပြီ။ ရလဒ်ထွက်ရန် 10 စက္ကန့် စောင့်ဆိုင်းနေပါသည်...</b>"
     for uid in [p1['id'], p2['id']]:
         try:
@@ -2721,24 +2736,19 @@ async def finalize_kshan_round(bot, room_id):
     score1 = calculate_shan_score(room["p1_ranks"])
     score2 = calculate_shan_score(room["p2_ranks"])
 
-    # Determine winner
     if score1 > score2:
         winner = p1
         loser = p2
-        w_score, l_score = score1, score2
     elif score2 > score1:
         winner = p2
         loser = p1
-        w_score, l_score = score2, score1
     else:
-        # Tie breaker by card count or random
         if len(room["p1_cards"]) > len(room["p2_cards"]):
             winner = p1
             loser = p2
         else:
             winner = p2
             loser = p1
-        w_score, l_score = score1, score2
 
     pot = bet * 2
 
@@ -2763,7 +2773,7 @@ async def finalize_kshan_round(bot, room_id):
 👤 You: {get_mention(p2['id'], p2['name'])} (Score: {score2}) - Cards: {' '.join(room['p2_cards'])}
 👤 Opponent: {get_mention(p1['id'], p1['name'])} (Score: {score1}) - Cards: {' '.join(room['p1_cards'])}
 
-👑 <b>Winner:</b> {get_winner_mention_text := get_mention(winner['id'], winner['name'])} (+{pot} Kachi 🩸)
+👑 <b>Winner:</b> {get_mention(winner['id'], winner['name'])} (+{pot} Kachi 🩸)
 💰 Your Balance: <b>{p2_bal}</b> Kachi"""
 
     try:
@@ -3691,7 +3701,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id != allowed_uid:
             return await query.answer("❌ This is not your game! Please use /kshan to start your own game.", show_alert=True)
 
-        # Parse range and set bet amount
         if range_str == "400-600":
             bet = random.randint(400, 600)
         elif range_str == "1000-2000":
@@ -3709,7 +3718,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await conn.execute("UPDATE users SET coins = coins - $1 WHERE user_id = $2", bet, user.id)
 
-        # Matchmaking queue logic
         queue = kshan_queues[range_str]
         if queue:
             opponent = queue.pop(0)
@@ -3739,7 +3747,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return await query.answer("🎯 Opponent found! Check DM link.")
         else:
-            queue.append({"id": user.id, "name": name, "bet": bet, "query": query})
+            queue.append({"id": user.id, "name": name, "bet": bet})
+            asyncio.create_task(check_kshan_timeout(context.bot, range_str, user.id, msg_id, chat_id))
+
             wait_text = f"""🎴 <b>Welcome To Shan Koe Mee</b>
 
 👤 Player: {get_mention(user.id, name)}
@@ -3899,9 +3909,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         try:
-            dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰")
+            dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰", reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None)
         except Exception:
-            dice_msg = None
+            try:
+                dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰")
+            except Exception:
+                dice_msg = None
 
         await asyncio.sleep(4)
 
