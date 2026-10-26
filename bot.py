@@ -46,14 +46,6 @@ kslot_cooldowns = {}
 kslot_is_cancelled = {}
 active_kslot_sessions = {}  # Track active/pending kslot sessions per user
 
-# Shan Koe Mee /kshan Multiplayer State Stores
-kshan_queues = {
-    "400-600": [],
-    "1000-2000": [],
-    "7000-10000": []
-}
-kshan_rooms = {}  # room_id -> room dict
-
 global_default_threshold = 60
 bot_warned_groups = set()
 
@@ -760,13 +752,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except ValueError:
                 pass
-        elif arg_val.startswith("kshan_play_"):
-            room_id = arg_val.replace("kshan_play_", "")
-            room = kshan_rooms.get(room_id)
-            if room and not room.get("started"):
-                room["started"] = True
-                await start_kshan_game(context.bot, room_id)
-            return
 
     bot_info = await context.bot.get_me()
     text = f"""👋 မင်္ဂလာပါ {get_mention(user.id, user.first_name)} !
@@ -2603,189 +2588,6 @@ def decode_slot_dice(value):
     return symbols, total_score
 
 
-# --- /kshan Command Implementation (Shan Koe Mee Multiplayer with 30s Timeout & DM Buttons) ---
-CARD_SUITS = ["♠️", "♣️", "♥️", "♦️"]
-CARD_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
-
-def get_random_card():
-    rank = random.choice(CARD_RANKS)
-    suit = random.choice(CARD_SUITS)
-    return f"{rank}{suit}", rank
-
-def calculate_shan_score(cards_ranks):
-    total = 0
-    for r in cards_ranks:
-        if r in ["J", "Q", "K", "10"]:
-            val = 0
-        elif r == "A":
-            val = 1
-        else:
-            val = int(r)
-        total += val
-    return total % 10
-
-@restricted_command
-async def kshan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
-    user = update.effective_user
-    chat = update.effective_chat
-    msg = update.message
-    msg_id = msg.message_id
-    await register_user_group(user, chat, context)
-
-    text = f"""🎴 <b>Welcome To Shan Koe Mee</b>
-
-👤 Player: {get_mention(user.id, user.first_name)}
-👇 ကျေးဇူးပြု၍ လောင်းကြေးအမျိုးအစားကို ရွေးချယ်ပါ -"""
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("400 - 600 🩸", callback_data=f"kshan_bet_{user.id}_400-600"),
-            InlineKeyboardButton("1000 - 2000 🩸", callback_data=f"kshan_bet_{user.id}_1000-2000")
-        ],
-        [
-            InlineKeyboardButton("7000 - 10000 🩸", callback_data=f"kshan_bet_{user.id}_7000-10000")
-        ]
-    ])
-
-    await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
-
-
-async def check_kshan_timeout(bot, range_str, user_id, query_msg_id, chat_id):
-    await asyncio.sleep(30)
-    queue = kshan_queues[range_str]
-    for idx, item in enumerate(queue):
-        if item["id"] == user_id:
-            queue.pop(idx)
-            try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=query_msg_id,
-                    text="❌ <b>30 စက္ကန့်အတွင်း အခြားကစားသမား မတွေ့ရှိသဖြင့် ရှမ်းကိုးမီးပွဲကို ပယ်ဖျက်လိုက်ပါပြီ။</b>",
-                    parse_mode="HTML",
-                    reply_markup=None
-                )
-            except Exception:
-                pass
-            break
-
-
-async def start_kshan_game(bot, room_id):
-    room = kshan_rooms.get(room_id)
-    if not room or room.get("game_started"):
-        return
-    room["game_started"] = True
-
-    p1 = room["p1"]
-    p2 = room["p2"]
-    bet = room["bet"]
-
-    c1_1, r1_1 = get_random_card()
-    c1_2, r1_2 = get_random_card()
-    room["p1_cards"] = [c1_1, c1_2]
-    room["p1_ranks"] = [r1_1, r1_2]
-
-    c2_1, r2_1 = get_random_card()
-    c2_2, r2_2 = get_random_card()
-    room["p2_cards"] = [c2_1, c2_2]
-    room["p2_ranks"] = [r2_1, r2_2]
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("ဆွဲမလား 🤏", callback_data=f"kshan_hit_{room_id}"),
-            InlineKeyboardButton("ရပ်မလား 🛑", callback_data=f"kshan_stand_{room_id}")
-        ]
-    ])
-
-    text_p1 = f"""🎴 <b>Shan Koe Mee Game (Room: {room_id})</b>\n\nOpponent: {get_mention(p2['id'], p2['name'])}\nBet: <b>{bet}</b> Kachi\n\n🃏 Your Cards: <b>{c1_1} {c1_2}</b>\n\n<i>ကျေးဇူးပြု၍ ဆွဲမလား (Hit) သို့မဟုတ် ရပ်မလား (Stand) ရွေးချယ်ပါ -</i>"""
-    text_p2 = f"""🎴 <b>Shan Koe Mee Game (Room: {room_id})</b>\n\nOpponent: {get_mention(p1['id'], p1['name'])}\nBet: <b>{bet}</b> Kachi\n\n🃏 Your Cards: <b>{c2_1} {c2_2}</b>\n\n<i>ကျေးဇူးပြု၍ ဆွဲမလား (Hit) သို့မဟုတ် ရပ်မလား (Stand) ရွေးချယ်ပါ -</i>"""
-
-    try:
-        msg1 = await bot.send_message(p1['id'], text_p1, parse_mode="HTML", reply_markup=keyboard)
-        room["p1_msg_id"] = msg1.message_id
-    except Exception:
-        pass
-
-    try:
-        msg2 = await bot.send_message(p2['id'], text_p2, parse_mode="HTML", reply_markup=keyboard)
-        room["p2_msg_id"] = msg2.message_id
-    except Exception:
-        pass
-
-
-async def finalize_kshan_round(bot, room_id):
-    room = kshan_rooms.get(room_id)
-    if not room or room.get("finalized"):
-        return
-    room["finalized"] = True
-
-    p1 = room["p1"]
-    p2 = room["p2"]
-    bet = room["bet"]
-
-    wait_text = "⏳ <b>နှစ်ယောက်လုံး ရွေးချယ်ပြီးပါပြီ။ ရလဒ်ထွက်ရန် 10 စက္ကန့် စောင့်ဆိုင်းနေပါသည်...</b>"
-    for uid in [p1['id'], p2['id']]:
-        try:
-            await bot.send_message(uid, wait_text, parse_mode="HTML")
-        except Exception:
-            pass
-
-    await asyncio.sleep(10)
-
-    score1 = calculate_shan_score(room["p1_ranks"])
-    score2 = calculate_shan_score(room["p2_ranks"])
-
-    if score1 > score2:
-        winner = p1
-        loser = p2
-    elif score2 > score1:
-        winner = p2
-        loser = p1
-    else:
-        if len(room["p1_cards"]) > len(room["p2_cards"]):
-            winner = p1
-            loser = p2
-        else:
-            winner = p2
-            loser = p1
-
-    pot = bet * 2
-
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", pot, winner['id'])
-            p1_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", p1['id'])
-            p2_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", p2['id'])
-            p1_bal = p1_row['coins'] if p1_row else 1000
-            p2_bal = p2_row['coins'] if p2_row else 1000
-
-    res_p1 = f"""🏆 <b>Shan Koe Mee Result Detail</b>
-
-👤 You: {get_mention(p1['id'], p1['name'])} (Score: {score1}) - Cards: {' '.join(room['p1_cards'])}
-👤 Opponent: {get_mention(p2['id'], p2['name'])} (Score: {score2}) - Cards: {' '.join(room['p2_cards'])}
-
-👑 <b>Winner:</b> {get_mention(winner['id'], winner['name'])} (+{pot} Kachi 🩸)
-💰 Your Balance: <b>{p1_bal}</b> Kachi"""
-
-    res_p2 = f"""🏆 <b>Shan Koe Mee Result Detail</b>
-
-👤 You: {get_mention(p2['id'], p2['name'])} (Score: {score2}) - Cards: {' '.join(room['p2_cards'])}
-👤 Opponent: {get_mention(p1['id'], p1['name'])} (Score: {score1}) - Cards: {' '.join(room['p1_cards'])}
-
-👑 <b>Winner:</b> {get_mention(winner['id'], winner['name'])} (+{pot} Kachi 🩸)
-💰 Your Balance: <b>{p2_bal}</b> Kachi"""
-
-    try:
-        await bot.send_message(p1['id'], res_p1, parse_mode="HTML")
-    except Exception:
-        pass
-    try:
-        await bot.send_message(p2['id'], res_p2, parse_mode="HTML")
-    except Exception:
-        pass
-
-
 # --- /kbox Command Implementation ---
 @restricted_command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3579,13 +3381,16 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
     if joined:
         winner_id, winner_name = random.choice(list(joined.items()))
-        async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("""
-                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                """, winner_id, card['card_id'])
-                await check_and_auto_lock_card(conn, card['card_id'])
+        try:
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("""
+                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
+                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
+                    """, winner_id, card['card_id'])
+                    await check_and_auto_lock_card(conn, card['card_id'])
+        except Exception as e:
+            print(f"Error updating db in finalize_card_drop: {e}")
 
         r = card.get('rarity', 'Ten')
         r_display = get_rarity_display(r)
@@ -3680,6 +3485,12 @@ Collection : {col_name}
                 await bot.send_message(chat_id=chat_id, text=result_caption, parse_mode="HTML")
             except Exception:
                 pass
+    except Exception as e:
+        print(f"Error in run_kbox_task: {e}")
+        try:
+            await query.edit_message_text("❌ An error occurred while opening Kbox. Please try again later.", parse_mode="HTML")
+        except Exception:
+            pass
     finally:
         active_kbox_users.discard(user_id)
 
@@ -3691,119 +3502,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     await register_user_group(user, query.message.chat, context)
-
-    # --- Callbacks for /kshan (Shan Koe Mee) ---
-    if data.startswith("kshan_bet_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[2])
-        range_str = parts[3]
-
-        if user.id != allowed_uid:
-            return await query.answer("❌ This is not your game! Please use /kshan to start your own game.", show_alert=True)
-
-        if range_str == "400-600":
-            bet = random.randint(400, 600)
-        elif range_str == "1000-2000":
-            bet = random.randint(1000, 2000)
-        else:
-            bet = random.randint(7000, 10000)
-
-        async with db_pool.acquire() as conn:
-            user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", user.id)
-            coins = user_row['coins'] if user_row else 1000
-            name = user_row['name'] if user_row else user.first_name
-
-            if coins < bet:
-                return await query.answer(f"❌ Insufficient Kachi! You need {bet} Kachi (Current: {coins}).", show_alert=True)
-
-            await conn.execute("UPDATE users SET coins = coins - $1 WHERE user_id = $2", bet, user.id)
-
-        queue = kshan_queues[range_str]
-        if queue:
-            opponent = queue.pop(0)
-            room_id = str(uuid.uuid4())[:8]
-            room = {
-                "room_id": room_id,
-                "range": range_str,
-                "bet": bet,
-                "p1": opponent,
-                "p2": {"id": user.id, "name": name},
-                "p1_choice": None,
-                "p2_choice": None,
-                "started": False,
-                "game_started": False,
-                "finalized": False
-            }
-            kshan_rooms[room_id] = room
-
-            bot_info = await context.bot.get_me()
-            dm_link = f"https://t.me/{bot_info.username}?start=kshan_play_{room_id}"
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Bot DM မှာသွားဆော့မည်", url=dm_link)]])
-
-            match_text = f"🎴 <b>Shan Koe Mee Match Found!</b>\n\nPlayers: {get_mention(opponent['id'], opponent['name'])} vs {get_mention(user.id, name)}\nBet: <b>{bet}</b> Kachi\n\n<i>ကျေးဇူးပြု၍ Bot DM သို့သွားရောက်၍ ကစားပေးပါ -</i>"
-            try:
-                await query.edit_message_text(match_text, parse_mode="HTML", reply_markup=markup)
-            except Exception:
-                pass
-            return await query.answer("🎯 Opponent found! Check DM link.")
-        else:
-            queue.append({"id": user.id, "name": name, "bet": bet})
-            asyncio.create_task(check_kshan_timeout(context.bot, range_str, user.id, msg_id, chat_id))
-
-            wait_text = f"""🎴 <b>Welcome To Shan Koe Mee</b>
-
-👤 Player: {get_mention(user.id, name)}
-🩸 Selected Bet: <b>{bet}</b>
-
-<b>Wait For Other Player...</b> ⏳"""
-            try:
-                await query.edit_message_text(wait_text, parse_mode="HTML", reply_markup=None)
-            except Exception:
-                pass
-            return await query.answer("⏳ Waiting for another player...")
-
-    if data.startswith("kshan_hit_") or data.startswith("kshan_stand_"):
-        parts = data.split("_")
-        action = parts[1]
-        room_id = parts[2]
-        room = kshan_rooms.get(room_id)
-
-        if not room:
-            return await query.answer("❌ Game room expired or finished.", show_alert=True)
-
-        is_p1 = (user.id == room["p1"]["id"])
-        is_p2 = (user.id == room["p2"]["id"])
-
-        if not is_p1 and not is_p2:
-            return await query.answer("❌ You are not in this game room.", show_alert=True)
-
-        if is_p1:
-            if room["p1_choice"] is not None:
-                return await query.answer("❌ You already made your choice!", show_alert=True)
-            room["p1_choice"] = action
-            if action == "hit":
-                c, r = get_random_card()
-                room["p1_cards"].append(c)
-                room["p1_ranks"].append(r)
-        else:
-            if room["p2_choice"] is not None:
-                return await query.answer("❌ You already made your choice!", show_alert=True)
-            room["p2_choice"] = action
-            if action == "hit":
-                c, r = get_random_card()
-                room["p2_cards"].append(c)
-                room["p2_ranks"].append(r)
-
-        try:
-            await query.edit_message_text(f"✅ Your choice ({action.upper()}) recorded! Waiting for opponent...", parse_mode="HTML", reply_markup=None)
-        except Exception:
-            pass
-
-        if room["p1_choice"] is not None and room["p2_choice"] is not None:
-            asyncio.create_task(finalize_kshan_round(context.bot, room_id))
-
-        return await query.answer("✅ Choice recorded!")
-    # ---------------------------------------------
 
     # --- Callbacks for /kslot ---
     if data.startswith("kslot_bet_"):
@@ -3908,8 +3606,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+        dice_msg = None
         try:
-            dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰", reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None)
+            reply_to_id = query.message.reply_to_message.message_id if query.message and query.message.reply_to_message else None
+            dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰", reply_to_message_id=reply_to_id)
         except Exception:
             try:
                 dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰")
@@ -4707,7 +4407,6 @@ def main():
     app.add_handler(CommandHandler("myre", myre_cmd))
     app.add_handler(CommandHandler("klot", klot_cmd))
     app.add_handler(CommandHandler("kslot", kslot_cmd))  
-    app.add_handler(CommandHandler("kshan", kshan_cmd))  # Added /kshan Shan Koe Mee
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("kdaily", kdaily_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
