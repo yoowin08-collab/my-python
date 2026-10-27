@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kachi Rocket Game</title>
+    <!-- Telegram Web App JS SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+        .container {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 20px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+        .multiplier {
+            font-size: 48px;
+            font-weight: bold;
+            color: #38bdf8;
+            margin: 20px 0;
+        }
+        button {
+            background-color: #2563eb;
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h2>🚀 Kachi Rocket Game</h2>
+    <div class="container">
+        <p id="status">ဂိမ်းစတင်ရန် ခလုတ်ကို နှိပ်ပါ</p>
+        <div class="multiplier" id="display">1.00x</div>
+        <button id="btn" onclick="startRocket()">တိုးမည် (Bet)</button>
+    </div>
+
+    <script>
+        let tg = window.Telegram.WebApp;
+        tg.expand(); // Screen ကို အပြည့်ချဲ့ရန်
+
+        let user = tg.initDataUnsafe.user;
+        if (user) {
+            console.log("Player:", user.first_name);
+        }
+
+        function startRocket() {
+            let btn = document.getElementById("btn");
+            let status = document.getElementById("status");
+            let display = document.getElementById("display");
+            
+            btn.disabled = true;
+            status.innerText = "🚀 ရိုကတ် ထွက်ခွာနေပါပြီ...";
+            
+            let mult = 1.00;
+            let interval = setInterval(() => {
+                mult += 0.05;
+                display.innerText = mult.toFixed(2) + "x";
+                
+                // Random crash logic (ဗီဒီယိုထဲကလို တက်သွားပြီး Crash ဖြစ်မယ့်ပုံစံ)
+                if (mult > (Math.random() * 5 + 1.5)) {
+                    clearInterval(interval);
+                    status.innerText = "💥 Crash ဖြစ်သွားပါပြီ! ရှုံးနိမ့်သွားပါသည်";
+                    display.style.color = "#ef4444";
+                    tg.HapticFeedback.notificationOccurred('error');
+                    setTimeout(resetGame, 3000);
+                }
+            }, 100);
+        }
+
+        function resetGame() {
+            let btn = document.getElementById("btn");
+            let status = document.getElementById("status");
+            let display = document.getElementById("display");
+            btn.disabled = false;
+            status.innerText = "ဂိမ်းစတင်ရန် ခလုတ်ကို နှိပ်ပါ";
+            display.innerText = "1.00x";
+            display.style.color = "#38bdf8";
+        }
+    </script>
+</body>
+</html>
