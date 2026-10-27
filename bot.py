@@ -6,7 +6,7 @@ import string
 import time
 import uuid
 import asyncpg
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions, WebAppInfo
 from telegram.error import TelegramError, NetworkError, TimedOut
 from telegram.ext import (
     Application,
@@ -455,6 +455,32 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
                 pass
             return False
     return True
+
+# --- Rocket Mini App Command ---
+@restricted_command
+async def rocket_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat, context)
+
+    # သင့်ရဲ့ GitHub Pages URL
+    web_app_url = "https://yoowin08-collab.github.io/my-python/"
+
+    text = f"""🚀 <b>Kachi Rocket Game Mini App</b>
+
+👤 Player: {get_mention(user.id, user.first_name)}
+💎 Kachi ဖြင့် ရင်ခုန်စိတ်လှုပ်ရှားစွာ လောင်းကစားနိုင်ပါပြီ။
+
+<i>👇 ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကို နှိပ်၍ ဂိမ်းစတင်ပါ -</i>"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Play Rocket Game", web_app=WebAppInfo(url=web_app_url))]
+    ])
+
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
 # /pre Command Implementation
 @restricted_command
@@ -1589,7 +1615,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -4457,6 +4483,7 @@ def main():
     app.add_handler(CommandHandler("kslot", kslot_cmd))  
     app.add_handler(CommandHandler("kbox", kbox_cmd))
     app.add_handler(CommandHandler("kdaily", kdaily_cmd))
+    app.add_handler(CommandHandler("rocket", rocket_cmd))  # <--- Rocket Mini App Command ထည့်သွင်းထားသည်
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
     app.add_handler(CommandHandler("ksellcard", ksellcard_cmd))
