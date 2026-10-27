@@ -63,7 +63,7 @@ spam_ignores = {}
 seen_registered_users = set()
 seen_registered_groups = set()
 
-# Database Connection Pool (Optimized for High Concurrency - Thousands of Users)
+# Database Connection Pool (Optimized for Hundreds of Users)
 db_pool = None
 
 # --- FastAPI App for Rocket Mini App (Railway Port Compatible) ---
@@ -147,8 +147,8 @@ async def init_db():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
-        min_size=50, 
-        max_size=200, 
+        min_size=10, 
+        max_size=50, 
         command_timeout=60
     )
     
@@ -1727,7 +1727,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         if not user_row:
-            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
 
         coins = user_row['coins'] or 1000
         selected_card_id = user_row['selected_card_id']
