@@ -1429,27 +1429,47 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 3. /c [gpid] [count] - Set threshold for a specific group
 4. /crest - Reset all thresholds & message counts
 5. /k [user_id] [amount] - Add/remove Kachi
-6. /addadmin [user_id] - Add Card Admin
-7. /badmin [user_id] - Set Card Buyer
-8. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
-9. /got [card_id] - Get card directly to your inventory (Admin only)
-10. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
-11. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
-12. /lock [card_id/all] - Lock card or all cards
-13. /spw [card_id] - Spawn random card or specific card
-14. /del [card_id_or_name] - Delete card by ID or Name
-15. /cardlist - View all cards
-16. /seelock - View Yugen cards lock status and drops (Admin only)
-17. /glist - View groups list
-18. /stats - View stats
-19. /broadcast - Broadcast message
-20. /check [user_id] - Check user profile info
-21. /mute [id] [time] [reason] - Mute user from bot usage
-22. /ban [id] [reason] - Ban user from bot usage
-23. /umute [id] - Unmute user from bot usage
-24. /unban [id] - Unban user from bot usage"""
+6. /kcreset [amount] - Reset all users' Kachi balance to specified amount
+7. /addadmin [user_id] - Add Card Admin
+8. /badmin [user_id] - Set Card Buyer
+9. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
+10. /got [card_id] - Get card directly to your inventory (Admin only)
+11. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
+12. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
+13. /lock [card_id/all] - Lock card or all cards
+14. /spw [card_id] - Spawn random card or specific card
+15. /del [card_id_or_name] - Delete card by ID or Name
+16. /cardlist - View all cards
+17. /seelock - View Yugen cards lock status and drops (Admin only)
+18. /glist - View groups list
+19. /stats - View stats
+20. /broadcast - Broadcast message
+21. /check [user_id] - Check user profile info
+22. /mute [id] [time] [reason] - Mute user from bot usage
+23. /ban [id] [reason] - Ban user from bot usage
+24. /umute [id] - Unmute user from bot usage
+25. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+
+@restricted_command
+async def kcreset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("❌ Usage: `/kcreset [amount]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        amount = int(context.args[0])
+    except ValueError:
+        return await update.message.reply_text("❌ Invalid amount.", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET coins = $1", amount)
+
+    await update.message.reply_text(f"✅ Successfully reset all users' Kachi balance to <b>{amount}</b>!", parse_mode="HTML", reply_to_message_id=msg_id)
 
 def parse_time(time_str: str) -> int:
     time_str = time_str.lower().strip()
@@ -1554,7 +1574,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1578,7 +1598,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -2139,19 +2159,19 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     price_key = (user_id, card['card_id'])
     if price_key not in kshop_prices:
         if rarity == 'Birthday Special':
-            kshop_prices[price_key] = random.randint(8000, 10000)
+            kshop_prices[price_key] = random.randint(63000, 77000)
         elif rarity == 'Raiden':
-            kshop_prices[price_key] = random.randint(35000, 50000)
+            kshop_prices[price_key] = random.randint(38000, 54000)
         elif rarity == 'Kryora':
-            kshop_prices[price_key] = random.randint(22000, 35000)
-        elif rarity == 'Kiwami':
-            kshop_prices[price_key] = random.randint(2500, 3000)
-        elif rarity == 'Shinsei':
-            kshop_prices[price_key] = random.randint(4000, 5500)
+            kshop_prices[price_key] = random.randint(23000, 31000)
         elif rarity == 'Yugen':
-            kshop_prices[price_key] = random.randint(6800, 8000)
+            kshop_prices[price_key] = random.randint(20000, 28000)
+        elif rarity == 'Shinsei':
+            kshop_prices[price_key] = random.randint(12000, 18000)
+        elif rarity == 'Kiwami':
+            kshop_prices[price_key] = random.randint(10000, 15000)
         else:
-            kshop_prices[price_key] = 2500
+            kshop_prices[price_key] = random.randint(10000, 15000)
     price = kshop_prices[price_key]
 
     async with db_pool.acquire() as conn:
@@ -2686,50 +2706,126 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await msg.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
 
+@restricted_command
+async def ksearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg_id = update.message.message_id
+    await register_user_group(user, chat, context)
+
+    text = "🔍 <b>Global Card Search (Ksearch)</b>\n\nClick the button below to browse all cards available in the bot database:"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Global Search 🔎", switch_inline_query_current_chat="ksearch")]
+    ])
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
+
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     text = query.query.strip()
     user_id = query.from_user.id
     user_name = query.from_user.first_name
 
-    if text.startswith("harem."):
-        try:
-            target_id = int(text.split(".")[1])
-        except Exception:
-            target_id = user_id
-    else:
-        target_id = user_id
-
     offset = int(query.offset) if query.offset and query.offset.isdigit() else 0
     limit = 50
-
-    async with db_pool.acquire() as conn:
-        owner_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
-        owner_name = owner_row['name'] if owner_row and owner_row['name'] else user_name
-
-        user_cards = await conn.fetch("""
-            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, uc.amount 
-            FROM user_cards uc
-            JOIN cards c ON uc.card_id = c.card_id 
-            WHERE uc.user_id = $1 AND uc.amount > 0
-            ORDER BY c.card_id ASC
-            LIMIT $2 OFFSET $3
-        """, target_id, limit, offset)
-
     results = []
-    for c in user_cards:
-        r = c.get('rarity', 'Ten')
-        r_display = get_rarity_display(r)
-        col_name = c.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
-        title = f"{c['name']} ({c['card_id']})"[:64]
-        description = f"ID: {c['card_id']} | Rarity: {r}"
-        amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
+
+    if text.startswith("ksearch") or text == "":
+        search_query = text.replace("ksearch", "").strip()
+        async with db_pool.acquire() as conn:
+            if search_query:
+                all_cards = await conn.fetch("""
+                    SELECT card_id, name, type, file_id, rarity, collection 
+                    FROM cards 
+                    WHERE card_id ILIKE $1 OR name ILIKE $1 OR rarity ILIKE $1
+                    ORDER BY card_id ASC
+                    LIMIT $2 OFFSET $3
+                """, f"%{search_query}%", limit, offset)
+            else:
+                all_cards = await conn.fetch("""
+                    SELECT card_id, name, type, file_id, rarity, collection 
+                    FROM cards 
+                    ORDER BY card_id ASC
+                    LIMIT $1 OFFSET $2
+                """, limit, offset)
+
+        for c in all_cards:
+            r = c.get('rarity', 'Ten')
+            r_display = get_rarity_display(r)
+            col_name = c.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
+            title = f"{c['name']} ({c['card_id']})"[:64]
+            description = f"ID: {c['card_id']} | Rarity: {r}"
+
+            async with db_pool.acquire() as conn:
+                global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+
+            caption = f"""❀ Global Card Search 🔎
+
+✿ Card Name - <b>{c['name']}</b>
+      ☘ ID - <code>{c['card_id']}</code>
+✿ Rarity - {r_display}
+✿ Collection - {col_name}
+
+⌘ Global Drops - <b>{global_drop_count}</b>"""
+
+            if c['type'] == 'photo':
+                results.append(
+                    InlineQueryResultCachedPhoto(
+                        id=str(uuid.uuid4()),
+                        photo_file_id=c['file_id'],
+                        title=title,
+                        description=description,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                )
+            else:
+                results.append(
+                    InlineQueryResultCachedVideo(
+                        id=str(uuid.uuid4()),
+                        video_file_id=c['file_id'],
+                        title=title,
+                        description=description,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                )
+    else:
+        if text.startswith("harem."):
+            try:
+                target_id = int(text.split(".")[1])
+            except Exception:
+                target_id = user_id
+        else:
+            target_id = user_id
 
         async with db_pool.acquire() as conn:
-            global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+            owner_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", target_id)
+            owner_name = owner_row['name'] if owner_row and owner_row['name'] else user_name
 
-        owner_mention = get_mention(target_id, owner_name)
-        caption = f"""❀ Harem Owner ❝ {owner_mention} ❞
+            user_cards = await conn.fetch("""
+                SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, uc.amount 
+                FROM user_cards uc
+                JOIN cards c ON uc.card_id = c.card_id 
+                WHERE uc.user_id = $1 AND uc.amount > 0
+                ORDER BY c.card_id ASC
+                LIMIT $2 OFFSET $3
+            """, target_id, limit, offset)
+
+        for c in user_cards:
+            r = c.get('rarity', 'Ten')
+            r_display = get_rarity_display(r)
+            col_name = c.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
+            title = f"{c['name']} ({c['card_id']})"[:64]
+            description = f"ID: {c['card_id']} | Rarity: {r}"
+            amount_str = f" ({c['amount']}x)" if c['amount'] > 1 else ""
+
+            async with db_pool.acquire() as conn:
+                global_drop_count = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", c['card_id'])
+
+            owner_mention = get_mention(target_id, owner_name)
+            caption = f"""❀ Harem Owner ❝ {owner_mention} ❞
 
 ✿ Card Name - <b>{c['name']}</b>{amount_str}
       ☘ ID - <code>{c['card_id']}</code>
@@ -2737,32 +2833,32 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 ✿ Collection - {col_name}
 
 ⌘ Global Drops - <b>{global_drop_count}</b>"""
-        
-        if c['type'] == 'photo':
-            results.append(
-                InlineQueryResultCachedPhoto(
-                    id=str(uuid.uuid4()),
-                    photo_file_id=c['file_id'],
-                    title=title,
-                    description=description,
-                    caption=caption,
-                    parse_mode="HTML"
+            
+            if c['type'] == 'photo':
+                results.append(
+                    InlineQueryResultCachedPhoto(
+                        id=str(uuid.uuid4()),
+                        photo_file_id=c['file_id'],
+                        title=title,
+                        description=description,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
                 )
-            )
-        else:
-            results.append(
-                InlineQueryResultCachedVideo(
-                    id=str(uuid.uuid4()),
-                    video_file_id=c['file_id'],
-                    title=title,
-                    description=description,
-                    caption=caption,
-                    parse_mode="HTML"
+            else:
+                results.append(
+                    InlineQueryResultCachedVideo(
+                        id=str(uuid.uuid4()),
+                        video_file_id=c['file_id'],
+                        title=title,
+                        description=description,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
                 )
-            )
 
     try:
-        next_offset = str(offset + limit) if len(user_cards) == limit else ""
+        next_offset = str(offset + limit) if len(results) == limit else ""
         await query.answer(results, next_offset=next_offset, cache_time=1)
     except Exception:
         pass
@@ -3590,7 +3686,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("kslot_cancel_"):
         parts = data.split("_")
-        allowed_uid = int(parts[1])
+        allowed_uid = int(parts[2])
 
         if user.id != allowed_uid:
             return await query.answer("❌ This is not your game!", show_alert=True)
@@ -3662,13 +3758,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbols, score = decode_slot_dice(dice_val)
 
         if score >= 32:
-            payout = bet_amount * 3
+            payout = bet_amount * 2
             result_type = "Win 2x 🏆"
-            net_gain = f"+{bet_amount * 2}"
+            net_gain = f"+{bet_amount}"
         elif score >= 28:
-            payout = int(bet_amount * 2.5)
+            payout = int(bet_amount * 1.75)
             result_type = "Win 1.5x ✨"
-            net_gain = f"+{int(bet_amount * 1.5)}"
+            net_gain = f"+{int(bet_amount * 0.75)}"
         elif score >= 26:
             payout = bet_amount
             result_type = "Draw / Refund 1x 🤝"
@@ -4174,7 +4270,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         if user.id != allowed_uid:
             return await query.answer("❌ Not for you.", show_alert=True)
 
-        if rarity in ['Birthday Special', 'Raiden', 'Kryora'] and user.id != ADMIN_ID:
+        if rarity in ['Birthday Special', 'Raiden'] and user.id != ADMIN_ID:
             return await query.answer(f"❌ Only the Bot Admin can add {rarity} rarity cards!", show_alert=True)
 
         card_info = pending_card_adds.get(user.id)
@@ -4463,6 +4559,7 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
+    app.add_handler(CommandHandler("ksearch", ksearch_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
@@ -4471,6 +4568,7 @@ def main():
     app.add_handler(CommandHandler("seelock", seelock_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("crest", crest_cmd))
+    app.add_handler(CommandHandler("kcreset", kcreset_cmd))
     app.add_handler(CommandHandler("glist", glist_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
