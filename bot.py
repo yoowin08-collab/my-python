@@ -11,6 +11,7 @@ import asyncpg
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions, WebAppInfo
 from telegram.error import TelegramError, NetworkError, TimedOut
 from telegram.ext import (
@@ -67,6 +68,15 @@ db_pool = None
 
 # --- FastAPI App for Rocket Mini App (Railway Port Compatible) ---
 app_web = FastAPI()
+
+# Enable CORS for Telegram WebApp stability
+app_web.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if not os.path.exists("static"):
     os.makedirs("static", exist_ok=True)
@@ -799,7 +809,7 @@ async def rocket_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
     
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "your-app-name.up.railway.app")
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL") or "your-app-name.up.railway.app"
     webapp_url = f"https://{railway_domain}/rocket"
     
     keyboard = InlineKeyboardMarkup([
@@ -1659,7 +1669,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -2047,7 +2057,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if any(c.isalpha() for c in card_id):
             return await update.message.reply_text(
-                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)။",
+                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)。",
                 parse_mode="HTML",
                 reply_to_message_id=msg_id
             )
