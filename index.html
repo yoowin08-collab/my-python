@@ -15,7 +15,6 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: space-height;
             min-height: 100vh;
         }
         .container {
@@ -37,8 +36,6 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            position: relative;
-            overflow: hidden;
             border: 1px solid #30363d;
             margin-bottom: 20px;
         }
@@ -113,7 +110,7 @@
     const tg = window.Telegram.WebApp;
     tg.expand();
 
-    let gameState = 'waiting'; // waiting, running, crashed
+    let gameState = 'waiting';
     let currentMultiplier = 1.00;
     let crashPoint = 2.00;
     let timer = 10;
@@ -123,7 +120,6 @@
 
     const multiplierText = document.getElementById('multiplierText');
     const statusText = document.getElementById('statusText');
-    const roundText = document.getElementById('roundText');
     const actionBtn = document.getElementById('actionBtn');
     const balanceText = document.getElementById('balanceText');
     const betInput = document.getElementById('betInput');
@@ -159,7 +155,7 @@
 
         gameState = 'running';
         currentMultiplier = 1.00;
-        crashPoint = (Math.random() * 4 + 1.2).toFixed(2); // Random crash between 1.2x and 5.2x
+        crashPoint = (Math.random() * 4 + 1.2).toFixed(2);
         betInput.disabled = true;
         actionBtn.innerText = "ငွေထုတ်မည် (Cash Out)";
         actionBtn.className = "btn cashout";
@@ -204,7 +200,7 @@
 
     function toggleGame() {
         if (gameState === 'waiting') {
-            startFlight(); // Instant start or lock bet for next round
+            startFlight();
         } else if (gameState === 'running') {
             cashOut();
         }
@@ -214,7 +210,6 @@
         balanceText.innerText = balance.toLocaleString() + " 🩸 Kachi";
     }
 
-    // Start initial countdown
     startCountdown();
 </script>
 
