@@ -1696,7 +1696,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg_id
+        reply_to_message_id=msg.message_id
     )
 
 @restricted_command
