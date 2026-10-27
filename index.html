@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kachi Rocket Game</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            background-color: #0b0e14;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-height;
+            min-height: 100vh;
+        }
+        .container {
+            width: 100%;
+            max-width: 400px;
+            background: #161b22;
+            border-radius: 12px;
+            padding: 20px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+        h2 { color: #58a6ff; margin-bottom: 5px; }
+        .round-info { color: #8b949e; font-size: 14px; margin-bottom: 20px; }
+        .game-box {
+            background: #0d1117;
+            border-radius: 8px;
+            height: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid #30363d;
+            margin-bottom: 20px;
+        }
+        .multiplier {
+            font-size: 36px;
+            font-weight: bold;
+            color: #3fb950;
+        }
+        .status-text {
+            font-size: 14px;
+            color: #8b949e;
+            margin-top: 10px;
+        }
+        .balance-box {
+            display: flex;
+            justify-content: space-between;
+            background: #21262d;
+            padding: 10px 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        .bet-input {
+            width: 100%;
+            padding: 12px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: white;
+            font-size: 16px;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            background: #238636;
+            color: white;
+        }
+        .btn:active { opacity: 0.8; }
+        .btn.cashout { background: #da3633; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Rocket</h2>
+    <div class="round-info" id="roundText">ROUND #1425</div>
+
+    <div class="game-box">
+        <div class="multiplier" id="multiplierText">10</div>
+        <div class="status-text" id="statusText">စောင့်ဆိုင်းနေသည်...</div>
+    </div>
+
+    <div class="balance-box">
+        <span>လက်ကျန်ငွေ</span>
+        <span id="balanceText">1,000 🩸 Kachi</span>
+    </div>
+
+    <input type="number" id="betInput" class="bet-input" placeholder="လောင်းမည့် Kachi ပမာဏ" value="100">
+
+    <button id="actionBtn" class="btn" onclick="toggleGame()">လောင်းမည် 🪙</button>
+</div>
+
+<script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+
+    let gameState = 'waiting'; // waiting, running, crashed
+    let currentMultiplier = 1.00;
+    let crashPoint = 2.00;
+    let timer = 10;
+    let balance = 1000;
+    let betAmount = 100;
+    let interval = null;
+
+    const multiplierText = document.getElementById('multiplierText');
+    const statusText = document.getElementById('statusText');
+    const roundText = document.getElementById('roundText');
+    const actionBtn = document.getElementById('actionBtn');
+    const balanceText = document.getElementById('balanceText');
+    const betInput = document.getElementById('betInput');
+
+    function startCountdown() {
+        gameState = 'waiting';
+        timer = 10;
+        actionBtn.innerText = "လောင်းမည် 🪙";
+        actionBtn.className = "btn";
+        betInput.disabled = false;
+
+        interval = setInterval(() => {
+            multiplierText.innerText = timer;
+            statusText.innerText = "စောင့်ဆိုင်းနေသည်...";
+            timer--;
+            if (timer < 0) {
+                clearInterval(interval);
+                startFlight();
+            }
+        }, 1000);
+    }
+
+    function startFlight() {
+        betAmount = parseInt(betInput.value) || 100;
+        if (balance < betAmount) {
+            alert("Kachi လက်ကျန်မလုံလောက်ပါ!");
+            startCountdown();
+            return;
+        }
+
+        balance -= betAmount;
+        updateBalance();
+
+        gameState = 'running';
+        currentMultiplier = 1.00;
+        crashPoint = (Math.random() * 4 + 1.2).toFixed(2); // Random crash between 1.2x and 5.2x
+        betInput.disabled = true;
+        actionBtn.innerText = "ငွေထုတ်မည် (Cash Out)";
+        actionBtn.className = "btn cashout";
+        statusText.innerText = "ပျံသန်းနေသည်...";
+
+        interval = setInterval(() => {
+            currentMultiplier += 0.05;
+            multiplierText.innerText = currentMultiplier.toFixed(2) + "x";
+
+            if (currentMultiplier >= parseFloat(crashPoint)) {
+                clearInterval(interval);
+                crashGame();
+            }
+        }, 100);
+    }
+
+    function cashOut() {
+        if (gameState !== 'running') return;
+        clearInterval(interval);
+        let winAmount = Math.floor(betAmount * currentMultiplier);
+        balance += winAmount;
+        updateBalance();
+
+        gameState = 'crashed';
+        multiplierText.innerText = currentMultiplier.toFixed(2) + "x";
+        statusText.innerText = `အောင်မြင်သည်! +${winAmount} Kachi 🎉`;
+        actionBtn.innerText = "စောင့်ပါ...";
+        actionBtn.className = "btn";
+
+        setTimeout(startCountdown, 3000);
+    }
+
+    function crashGame() {
+        gameState = 'crashed';
+        multiplierText.innerText = crashPoint + "x";
+        statusText.innerText = "ပေါက်ကွဲသွားပါပြီ! 💥 ရှုံးနိမ့်ار";
+        actionBtn.innerText = "စောင့်ပါ...";
+        actionBtn.className = "btn";
+
+        setTimeout(startCountdown, 3000);
+    }
+
+    function toggleGame() {
+        if (gameState === 'waiting') {
+            startFlight(); // Instant start or lock bet for next round
+        } else if (gameState === 'running') {
+            cashOut();
+        }
+    }
+
+    function updateBalance() {
+        balanceText.innerText = balance.toLocaleString() + " 🩸 Kachi";
+    }
+
+    // Start initial countdown
+    startCountdown();
+</script>
+
+</body>
+</html>
