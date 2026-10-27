@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kachi Rocket Crash Game</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        .container {
+            background-color: #1e293b;
+            padding: 25px;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+        }
+        h2 {
+            margin-top: 0;
+            color: #38bdf8;
+        }
+        .balance-box {
+            font-size: 18px;
+            margin-bottom: 20px;
+            background: #334155;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .game-screen {
+            height: 160px;
+            background: #090d16;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+            font-weight: bold;
+            color: #4ade80;
+            margin-bottom: 20px;
+            border: 2px dashed #475569;
+            position: relative;
+        }
+        input {
+            width: 80%;
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 8px;
+            border: 1px solid #475569;
+            background: #0f172a;
+            color: white;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        button {
+            width: 88%;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn-bet {
+            background-color: #2563eb;
+            color: white;
+        }
+        .btn-bet:hover {
+            background-color: #1d4ed8;
+        }
+        .btn-cashout {
+            background-color: #16a34a;
+            color: white;
+            display: none;
+        }
+        .btn-cashout:hover {
+            background-color: #15803d;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>🚀 Kachi Rocket</h2>
+        <div class="balance-box">
+            💎 Kachi Balance: <span id="balance">Loading...</span> 🩸
+        </div>
+
+        <div class="game-screen" id="gameScreen">
+            1.00x
+        </div>
+
+        <div id="controls">
+            <input type="number" id="betAmount" placeholder="လောင်းမည့် Kachi ပမာဏ" value="100">
+            <button class="btn-bet" id="actionBtn" onclick="placeBet()">🚀 လောင်းမည် (Bet)</button>
+        </div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        const userId = tg.initDataUnsafe?.user?.id || 7940553702; // Fallback to Admin ID for testing
+        let currentBalance = 1000;
+        let gameInterval = null;
+        let currentMultiplier = 1.00;
+        let isPlaying = false;
+        let betVal = 0;
+
+        async function fetchBalance() {
+            try {
+                let res = await fetch(`/api/balance?user_id=${userId}`);
+                let data = await res.json();
+                currentBalance = data.coins;
+                document.getElementById('balance').innerText = currentBalance;
+            } catch (err) {
+                console.error("Error fetching balance:", err);
+            }
+        }
+
+        fetchBalance();
+
+        async function placeBet() {
+            betVal = parseInt(document.getElementById('betAmount').value);
+            if (isNaN(betVal) || betVal <= 0) {
+                alert("ကျေးဇူးပြု၍ မှန်ကန်သော Kachi ပမာဏ ထည့်ပါ။");
+                return;
+            }
+
+            if (betVal > currentBalance) {
+                alert("Kachi လက်ကျန် မလုံလောက်ပါ။");
+                return;
+            }
+
+            // Call Backend Bet API
+            try {
+                let res = await fetch('/api/bet', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userId, amount: betVal })
+                });
+                let data = await res.json();
+                if (!data.success) {
+                    alert("လောင်း၍ မရပါ။");
+                    return;
+                }
+                currentBalance = data.new_balance;
+                document.getElementById('balance').innerText = currentBalance;
+            } catch (err) {
+                alert("Server Connection Error!");
+                return;
+            }
+
+            isPlaying = true;
+            currentMultiplier = 1.00;
+            
+            const btn = document.getElementById('actionBtn');
+            btn.innerText = "💸 ငွေထုတ်မည် (Cashout)";
+            btn.className = "btn-cashout";
+            btn.style.display = "block";
+            btn.onclick = cashOut;
+
+            let crashPoint = (Math.random() * 3 + 1.1).toFixed(2); // Random crash between 1.1x and 4x
+
+            gameInterval = setInterval(() => {
+                currentMultiplier += 0.05;
+                document.getElementById('gameScreen').innerText = currentMultiplier.toFixed(2) + "x";
+
+                if (currentMultiplier >= crashPoint) {
+                    clearInterval(gameInterval);
+                    document.getElementById('gameScreen').innerText = "💥 CRASHED (" + crashPoint + "x)";
+                    document.getElementById('gameScreen').style.color = "#ef4444";
+                    isPlaying = false;
+                    
+                    setTimeout(resetGame, 2000);
+                }
+            }, 100);
+        }
+
+        async function cashOut() {
+            if (!isPlaying) return;
+            clearInterval(gameInterval);
+            isPlaying = false;
+
+            try {
+                let res = await fetch('/api/cashout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userId, bet_amount: betVal, multiplier: currentMultiplier })
+                });
+                let data = await res.json();
+                currentBalance = data.new_balance;
+                document.getElementById('balance').innerText = currentBalance;
+                
+                document.getElementById('gameScreen').innerText = "🎉 Won +" + data.winnings;
+                document.getElementById('gameScreen').style.color = "#4ade80";
+            } catch (err) {
+                console.error("Cashout error:", err);
+            }
+
+            setTimeout(resetGame, 2000);
+        }
+
+        function resetGame() {
+            document.getElementById('gameScreen').innerText = "1.00x";
+            document.getElementById('gameScreen').style.color = "#4ade80";
+            const btn = document.getElementById('actionBtn');
+            btn.innerText = "🚀 လောင်းမည် (Bet)";
+            btn.className = "btn-bet";
+            btn.style.display = "block";
+            btn.onclick = placeBet;
+        }
+    </script>
+</body>
+</html>
