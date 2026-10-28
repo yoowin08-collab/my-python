@@ -147,9 +147,10 @@ async def init_db():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
-        min_size=10, 
-        max_size=50, 
-        command_timeout=60
+        min_size=1, 
+        max_size=5, 
+        command_timeout=60,
+        max_inactive_connection_lifetime=300
     )
     
     async with db_pool.acquire() as conn:
@@ -1640,7 +1641,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
