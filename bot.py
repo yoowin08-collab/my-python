@@ -5,14 +5,8 @@ import random
 import string
 import time
 import uuid
-import threading
-import uvicorn
 import asyncpg
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, ChatPermissions
 from telegram.error import TelegramError, NetworkError, TimedOut
 from telegram.ext import (
     Application,
@@ -63,94 +57,16 @@ spam_ignores = {}
 seen_registered_users = set()
 seen_registered_groups = set()
 
-# Database Connection Pool (Optimized for Hundreds of Users)
+# Database Connection Pool (Optimized for High Concurrency - Thousands of Users)
 db_pool = None
-
-# --- FastAPI App for Rocket Mini App (Railway Port Compatible) ---
-app_web = FastAPI()
-
-# Enable CORS for Telegram WebApp stability
-app_web.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-if not os.path.exists("static"):
-    os.makedirs("static", exist_ok=True)
-app_web.mount("/static", StaticFiles(directory="static"), name="static")
-
-@app_web.get("/rocket", response_class=HTMLResponse)
-async def rocket_page():
-    if os.path.exists("static/index.html"):
-        with open("static/index.html", "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h3>index.html not found in static folder!</h3>"
-
-@app_web.get("/api/balance")
-async def api_get_balance(user_id: int):
-    if not db_pool:
-        return {"coins": 1000}
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
-        return {"coins": row['coins'] if row else 1000}
-
-@app_web.post("/api/bet")
-async def api_place_bet(request: Request):
-    data = await request.json()
-    user_id = data.get("user_id")
-    amount = data.get("amount")
-    
-    if not db_pool:
-        raise HTTPException(status_code=500, detail="Database not ready")
-        
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
-            current_coins = row['coins'] if row else 1000
-            
-            if current_coins < amount:
-                raise HTTPException(status_code=400, detail="Insufficient Kachi")
-            
-            new_balance = current_coins - amount
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
-            return {"success": True, "new_balance": new_balance}
-
-@app_web.post("/api/cashout")
-async def api_cashout(request: Request):
-    data = await request.json()
-    user_id = data.get("user_id")
-    bet_amount = data.get("bet_amount")
-    multiplier = data.get("multiplier")
-    
-    winnings = int(bet_amount * multiplier)
-    if not db_pool:
-        raise HTTPException(status_code=500, detail="Database not ready")
-        
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
-            current_coins = row['coins'] if row else 1000
-            
-            new_balance = current_coins + winnings
-            await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
-            return {"success": True, "winnings": winnings, "new_balance": new_balance}
-
-def run_fastapi():
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app_web, host="0.0.0.0", port=port, log_level="warning")
-
 
 async def init_db():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
-        min_size=1, 
-        max_size=5, 
-        command_timeout=60,
-        max_inactive_connection_lifetime=300
+        min_size=50, 
+        max_size=200, 
+        command_timeout=60
     )
     
     async with db_pool.acquire() as conn:
@@ -798,31 +714,6 @@ async def send_quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     await msg.reply_text(f"✅ Quiz broadcasted to {success_count} groups (members > 30) successfully!", reply_to_message_id=msg.message_id)
-
-# --- Rocket Game Command Integration ---
-@restricted_command
-async def rocket_game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
-    user = update.effective_user
-    chat = update.effective_chat
-    msg = update.message
-    msg_id = msg.message_id
-    await register_user_group(user, chat, context)
-    
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL") or "your-app-name.up.railway.app"
-    webapp_url = f"https://{railway_domain}/rocket"
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Rocket Crash Game ဖွင့်မည်", web_app=WebAppInfo(url=webapp_url))]
-    ])
-    
-    await msg.reply_text(
-        f"🚀 <b>Kachi Rocket Crash Game</b>\n\nမင်္ဂလာပါ {get_mention(user.id, user.first_name)}၊ အောက်ပါခလုတ်ကိုနှိပ်၍ Kachi ဖြင့် လောင်းကစားနိုင်ပါပြီ!",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-        reply_to_message_id=msg_id
-    )
 
 @restricted_command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1641,7 +1532,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -1670,7 +1561,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -1683,7 +1574,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1707,7 +1598,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1728,7 +1619,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         if not user_row:
-            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         coins = user_row['coins'] or 1000
         selected_card_id = user_row['selected_card_id']
@@ -2058,7 +1949,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if any(c.isalpha() for c in card_id):
             return await update.message.reply_text(
-                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)。",
+                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)။",
                 parse_mode="HTML",
                 reply_to_message_id=msg_id
             )
@@ -2670,6 +2561,7 @@ async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
+    # Check active unfinished kslot
     if user.id in active_kslot_sessions:
         sess = active_kslot_sessions[user.id]
         chat_id_str = str(sess["chat_id"])
@@ -2708,6 +2600,7 @@ async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if row:
         keyboard_rows.append(row)
     
+    # Add All In button
     keyboard_rows.append([InlineKeyboardButton("🔥 All In 🩸", callback_data=f"kslot_bet_{user.id}_allin")])
 
     text = f"""🎰 <b>Kachi Slot Machine Game</b>
@@ -4645,13 +4538,9 @@ async def post_init(app: Application):
     await init_db()
 
 def main():
-    # FastAPI Server ကို Background Thread ဖြင့် Railway Port နှင့် တစ်ပြိုင်နက် Run ခြင်း
-    threading.Thread(target=run_fastapi, daemon=True).start()
-    
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     # Public User Commands
-    app.add_handler(CommandHandler("rocket", rocket_game_cmd)) # <-- Rocket Mini App Command
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("pre", pre_cmd))
     app.add_handler(CommandHandler("kc", check_kc_cmd))
@@ -4705,7 +4594,7 @@ def main():
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), message_handler))
 
-    print("🤖 Python Game Bot & Mini App Server Running...")
+    print("🤖 Python Game Bot Running...")
     app.run_polling()
 
 if __name__ == "__main__":
